@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/macros",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/notthatbreezy/babar"
+readme = "README.md"
+keywords = ["postgres", "postgresql", "database", "tokio", "async"]
+categories = ["database"]
+
+[workspace.dependencies]
+babar-macros = { version = "0.0.0", path = "crates/macros" }
+
+tokio = { version = "1.36", default-features = false }
+tokio-util = { version = "0.7", default-features = false }
+bytes = "1.5"
+postgres-protocol = "0.6"
+futures-core = "0.3"
+futures-util = { version = "0.3", default-features = false }
+thiserror = "1"
+tracing = { version = "0.1", default-features = false }
+hmac = "0.12"
+sha2 = "0.10"
+md-5 = "0.10"
+base64 = "0.21"
+stringprep = "0.1"
+rand = "0.8"
+
+# Dev / test
+proptest = "1"
+hex = "0.4"
+hex-literal = "0.4"
+loom = "0.7"
+testcontainers = "0.15"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+
+[profile.bench]
+debug = true

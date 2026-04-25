@@ -1,0 +1,50 @@
+[package]
+name = "babar"
+description = "Typed, async PostgreSQL driver for Tokio that speaks the wire protocol directly."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "macros", "time"] }
+tokio-util = { workspace = true, features = ["codec"] }
+bytes = { workspace = true }
+postgres-protocol = { workspace = true }
+futures-core = { workspace = true }
+futures-util = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Auth deps
+hmac = { workspace = true }
+sha2 = { workspace = true }
+md-5 = { workspace = true }
+base64 = { workspace = true }
+stringprep = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+proptest = { workspace = true }
+hex = { workspace = true }
+hex-literal = { workspace = true }
+testcontainers = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+missing_panics_doc = "allow"

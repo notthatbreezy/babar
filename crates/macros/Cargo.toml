@@ -1,0 +1,16 @@
+[package]
+name = "babar-macros"
+description = "Procedural macros for the babar PostgreSQL driver."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
