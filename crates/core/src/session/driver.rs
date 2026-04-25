@@ -57,8 +57,19 @@ pub type RawRows = Vec<Vec<Option<Bytes>>>;
 /// `RawRows`.
 type SimpleQueryReply = oneshot::Sender<Result<Vec<RawRows>>>;
 
-/// One unit of work the driver task accepts.
+/// Result of a single round-trip through the extended protocol.
 #[derive(Debug)]
+pub(crate) struct ExtendedOutcome {
+    /// Raw rows the server returned (text format). Empty for commands
+    /// that produce no rows (DDL, modifications without RETURNING).
+    pub rows: RawRows,
+    /// Server's `CommandComplete` tag (e.g. `"INSERT 0 3"`).
+    pub command_tag: Option<String>,
+}
+
+type ExtendedReply = oneshot::Sender<Result<ExtendedOutcome>>;
+
+/// One unit of work the driver task accepts.
 pub enum Command {
     /// Run `sql` through the simple-query protocol. Reply with the rows of
     /// every result set in order. `None` means SQL NULL.
@@ -66,9 +77,43 @@ pub enum Command {
         sql: String,
         reply: SimpleQueryReply,
     },
+    /// Run `sql` through the extended protocol with pre-encoded params.
+    /// All slots are sent in text format; results are requested in text
+    /// format. The driver validates `expected_columns` against the
+    /// server's `RowDescription`.
+    ExtendedQuery {
+        sql: String,
+        params: Vec<Option<Vec<u8>>>,
+        /// `Some(n)`: this is a Query, expect `RowDescription` with
+        /// `n` columns. `None`: this is a Command, no rows expected.
+        expected_columns: Option<usize>,
+        reply: ExtendedReply,
+    },
     /// Send `Terminate` and exit the loop. The reply fires once the socket
     /// is closed.
     Close { reply: oneshot::Sender<Result<()>> },
+}
+
+impl std::fmt::Debug for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SimpleQuery { sql, .. } => {
+                f.debug_struct("SimpleQuery").field("sql", sql).finish()
+            }
+            Self::ExtendedQuery {
+                sql,
+                params,
+                expected_columns,
+                ..
+            } => f
+                .debug_struct("ExtendedQuery")
+                .field("sql", sql)
+                .field("params_len", &params.len())
+                .field("expected_columns", expected_columns)
+                .finish(),
+            Self::Close { .. } => f.debug_struct("Close").finish(),
+        }
+    }
 }
 
 /// Snapshot of `ParameterStatus` messages observed during startup.
@@ -131,6 +176,15 @@ enum Pending {
         results: Vec<RawRows>,
         current_rows: RawRows,
         current_fields: Option<Vec<RowField>>,
+        error: Option<Error>,
+    },
+    Extended {
+        reply: ExtendedReply,
+        /// `Some(n)` means a Query expecting `n` columns; `None` means
+        /// a Command (no rows). Used for the `ColumnAlignment` check.
+        expected_columns: Option<usize>,
+        rows: RawRows,
+        command_tag: Option<String>,
         error: Option<Error>,
     },
     Close {
@@ -207,6 +261,40 @@ impl Driver {
                 });
                 Ok(())
             }
+            Command::ExtendedQuery {
+                sql,
+                params,
+                expected_columns,
+                reply,
+            } => {
+                self.write_buf.clear();
+                let mut build = || -> Result<()> {
+                    // Unnamed prepared statement and unnamed portal:
+                    // M1 doesn't cache statements yet (M2's job).
+                    frontend::parse("", &sql, std::iter::empty(), &mut self.write_buf)?;
+                    frontend::bind_text("", "", &params, &mut self.write_buf)?;
+                    frontend::describe_portal("", &mut self.write_buf)?;
+                    frontend::execute("", 0, &mut self.write_buf)?;
+                    frontend::sync(&mut self.write_buf);
+                    Ok(())
+                };
+                if let Err(e) = build() {
+                    let _ = reply.send(Err(e));
+                    return Ok(());
+                }
+                if let Err(e) = self.flush().await {
+                    let _ = reply.send(Err(e.clone_for_caller()));
+                    return Err(e);
+                }
+                self.pending = Some(Pending::Extended {
+                    reply,
+                    expected_columns,
+                    rows: Vec::new(),
+                    command_tag: None,
+                    error: None,
+                });
+                Ok(())
+            }
             Command::Close { reply } => {
                 self.write_buf.clear();
                 frontend::terminate(&mut self.write_buf);
@@ -228,6 +316,11 @@ impl Driver {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        clippy::match_same_arms,
+        reason = "explicit per-state handling reads more clearly than a merged dispatch"
+    )]
     fn on_message(&mut self, msg: BackendMessage) {
         trace!(?msg, "backend message");
         match (&mut self.pending, msg) {
@@ -276,6 +369,77 @@ impl Driver {
                     let _ = reply.send(outcome);
                 }
             }
+            // ---- Extended protocol -----------------------------------
+            (
+                Some(Pending::Extended { .. }),
+                BackendMessage::ParseComplete | BackendMessage::BindComplete,
+            ) => {}
+            (
+                Some(Pending::Extended {
+                    expected_columns,
+                    error,
+                    ..
+                }),
+                BackendMessage::RowDescription { fields },
+            ) => {
+                if let Some(expected) = *expected_columns {
+                    if fields.len() != expected {
+                        *error = error.take().or(Some(Error::ColumnAlignment {
+                            expected,
+                            actual: fields.len(),
+                        }));
+                    }
+                }
+            }
+            (
+                Some(Pending::Extended {
+                    expected_columns,
+                    error,
+                    ..
+                }),
+                BackendMessage::NoData,
+            ) => {
+                // Server says the statement returns no rows. Mismatch
+                // only if the caller declared a Query expecting > 0
+                // columns.
+                if let Some(expected) = *expected_columns {
+                    if expected != 0 {
+                        *error = error.take().or(Some(Error::ColumnAlignment {
+                            expected,
+                            actual: 0,
+                        }));
+                    }
+                }
+            }
+            (Some(Pending::Extended { rows, .. }), BackendMessage::DataRow { columns }) => {
+                rows.push(columns);
+            }
+            (
+                Some(Pending::Extended { command_tag, .. }),
+                BackendMessage::CommandComplete { tag },
+            ) => {
+                *command_tag = Some(tag);
+            }
+            (Some(Pending::Extended { .. }), BackendMessage::EmptyQueryResponse) => {
+                // Treat as a successful no-op command. command_tag stays None.
+            }
+            (Some(Pending::Extended { error, .. }), BackendMessage::ErrorResponse { fields }) => {
+                *error = error.take().or(Some(server_error(fields)));
+            }
+            (Some(Pending::Extended { .. }), BackendMessage::ReadyForQuery { .. }) => {
+                if let Some(Pending::Extended {
+                    reply,
+                    rows,
+                    command_tag,
+                    error,
+                    ..
+                }) = self.pending.take()
+                {
+                    let outcome =
+                        error.map_or_else(|| Ok(ExtendedOutcome { rows, command_tag }), Err);
+                    let _ = reply.send(outcome);
+                }
+            }
             (
                 _,
                 BackendMessage::ParameterStatus { .. }
@@ -315,6 +479,9 @@ impl Driver {
             Some(Pending::SimpleQuery { reply, .. }) => {
                 let _ = reply.send(Err(err));
             }
+            Some(Pending::Extended { reply, .. }) => {
+                let _ = reply.send(Err(err));
+            }
             Some(Pending::Close { reply }) => {
                 let _ = reply.send(Err(err));
             }
@@ -335,6 +502,9 @@ impl Driver {
 fn fail_command(cmd: Command, err: Error) {
     match cmd {
         Command::SimpleQuery { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        Command::ExtendedQuery { reply, .. } => {
             let _ = reply.send(Err(err));
         }
         Command::Close { reply } => {
@@ -366,6 +536,7 @@ fn pending_kind(p: Option<&Pending>) -> &'static str {
     match p {
         None => "None",
         Some(Pending::SimpleQuery { .. }) => "SimpleQuery",
+        Some(Pending::Extended { .. }) => "Extended",
         Some(Pending::Close { .. }) => "Close",
     }
 }

@@ -11,8 +11,10 @@
 
 use bytes::BytesMut;
 use postgres_protocol::message::frontend;
+use postgres_protocol::IsNull;
 
 use crate::error::{Error, Result};
+use crate::types::Oid;
 
 /// Write a `StartupMessage` with the given parameters into `buf`.
 ///
@@ -52,6 +54,81 @@ pub fn sasl_response(payload: &[u8], buf: &mut BytesMut) -> Result<()> {
 /// Write a `Terminate` message; the next thing to do is close the socket.
 pub fn terminate(buf: &mut BytesMut) {
     frontend::terminate(buf);
+}
+
+/// Write a `Parse` message announcing a prepared statement under
+/// `stmt_name` (use `""` for unnamed). `param_oids` is the OID list the
+/// driver claims for the placeholders; the server will accept `0` for
+/// "let the server infer", which is what M1 does for now.
+pub fn parse(
+    stmt_name: &str,
+    sql: &str,
+    param_oids: impl IntoIterator<Item = Oid>,
+    buf: &mut BytesMut,
+) -> Result<()> {
+    frontend::parse(stmt_name, sql, param_oids, buf).map_err(map_io_to_protocol)
+}
+
+/// Write a `Bind` message attaching parameters to portal `portal_name`,
+/// referencing prepared statement `stmt_name`. M1 always uses text
+/// format (`format = 0`) for both parameters and results — binary lands
+/// in M2.
+///
+/// `params` is a list of optional pre-encoded parameter bytes; `None`
+/// means SQL `NULL`. Each `Some(bytes)` is sent verbatim — the codec
+/// has already produced the right text representation.
+pub fn bind_text(
+    portal_name: &str,
+    stmt_name: &str,
+    params: &[Option<Vec<u8>>],
+    buf: &mut BytesMut,
+) -> Result<()> {
+    // Empty `formats` iterator means "all parameters use text format" —
+    // exactly the M1 default.
+    let no_param_formats = std::iter::empty::<i16>();
+    // For results, sending an empty list also means "all results in
+    // text format".
+    let no_result_formats = std::iter::empty::<i16>();
+    frontend::bind(
+        portal_name,
+        stmt_name,
+        no_param_formats,
+        params.iter(),
+        |slot: &Option<Vec<u8>>, out: &mut BytesMut| match slot {
+            Some(bytes) => {
+                out.extend_from_slice(bytes);
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(IsNull::No)
+            }
+            None => Ok(IsNull::Yes),
+        },
+        no_result_formats,
+        buf,
+    )
+    .map_err(|e| match e {
+        postgres_protocol::message::frontend::BindError::Conversion(inner) => {
+            Error::Codec(format!("Bind: parameter conversion failed: {inner}"))
+        }
+        postgres_protocol::message::frontend::BindError::Serialization(io_err) => {
+            Error::Protocol(format!("Bind: serialization failed: {io_err}"))
+        }
+    })
+}
+
+/// `Describe` for a portal (name; `""` for unnamed). Asks the server
+/// for the resulting `RowDescription`.
+pub fn describe_portal(name: &str, buf: &mut BytesMut) -> Result<()> {
+    frontend::describe(b'P', name, buf).map_err(map_io_to_protocol)
+}
+
+/// `Execute` a portal up to `max_rows` rows; `0` means "no limit".
+pub fn execute(portal_name: &str, max_rows: i32, buf: &mut BytesMut) -> Result<()> {
+    frontend::execute(portal_name, max_rows, buf).map_err(map_io_to_protocol)
+}
+
+/// `Sync` — the boundary that flushes any pending replies and unsticks
+/// the protocol after an error.
+pub fn sync(buf: &mut BytesMut) {
+    frontend::sync(buf);
 }
 
 /// `postgres-protocol`'s frontend writers signal "message too large" via

@@ -32,6 +32,12 @@ const TAG_COMMAND_COMPLETE: u8 = b'C';
 const TAG_EMPTY_QUERY_RESPONSE: u8 = b'I';
 const TAG_ERROR_RESPONSE: u8 = b'E';
 const TAG_NOTICE_RESPONSE: u8 = b'N';
+const TAG_PARSE_COMPLETE: u8 = b'1';
+const TAG_BIND_COMPLETE: u8 = b'2';
+const TAG_CLOSE_COMPLETE: u8 = b'3';
+const TAG_NO_DATA: u8 = b'n';
+const TAG_PARAMETER_DESCRIPTION: u8 = b't';
+const TAG_PORTAL_SUSPENDED: u8 = b's';
 
 impl Decoder for BackendCodec {
     type Item = BackendMessage;
@@ -145,6 +151,22 @@ fn decode_body(tag: u8, mut body: Bytes) -> Result<BackendMessage> {
         TAG_NOTICE_RESPONSE => Ok(BackendMessage::NoticeResponse {
             fields: read_error_fields(&mut body)?,
         }),
+        TAG_PARSE_COMPLETE => Ok(BackendMessage::ParseComplete),
+        TAG_BIND_COMPLETE => Ok(BackendMessage::BindComplete),
+        TAG_CLOSE_COMPLETE => Ok(BackendMessage::CloseComplete),
+        TAG_NO_DATA => Ok(BackendMessage::NoData),
+        TAG_PARAMETER_DESCRIPTION => {
+            let count = read_i16(&mut body, "ParameterDescription.count")?;
+            let count: usize = count
+                .try_into()
+                .map_err(|_| Error::protocol(format!("ParameterDescription count {count} < 0")))?;
+            let mut type_oids = Vec::with_capacity(count);
+            for _ in 0..count {
+                type_oids.push(read_u32(&mut body, "ParameterDescription.oid")?);
+            }
+            Ok(BackendMessage::ParameterDescription { type_oids })
+        }
+        TAG_PORTAL_SUSPENDED => Ok(BackendMessage::PortalSuspended),
         other => Ok(BackendMessage::Other { tag: other, body }),
     }
 }

@@ -32,6 +32,7 @@ pub mod codec;
 mod config;
 mod error;
 pub(crate) mod protocol;
+pub mod query;
 pub mod types;
 
 // `tokio::net` is unavailable under `--cfg loom`; the session machinery

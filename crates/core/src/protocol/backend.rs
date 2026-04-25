@@ -40,10 +40,26 @@ pub enum BackendMessage {
     ErrorResponse { fields: Vec<(u8, String)> },
     /// `N` — `NoticeResponse { fields }`.
     NoticeResponse { fields: Vec<(u8, String)> },
+    /// `1` — `ParseComplete`. Server has accepted a `Parse` message.
+    ParseComplete,
+    /// `2` — `BindComplete`. Server has bound a portal.
+    BindComplete,
+    /// `3` — `CloseComplete`. Server has freed a statement or portal.
+    CloseComplete,
+    /// `n` — `NoData`. Sent in place of `RowDescription` when the
+    /// statement returns no rows.
+    NoData,
+    /// `t` — `ParameterDescription { type_oids }` reporting the OIDs the
+    /// server inferred for the parsed statement's parameters.
+    ParameterDescription { type_oids: Vec<u32> },
+    /// `s` — `PortalSuspended`. Sent when an `Execute` exhausts its row
+    /// limit before the portal is fully drained. M1 always uses unlimited
+    /// `Execute` so this is unexpected; surfaces as a protocol error.
+    PortalSuspended,
     /// Any other message identifier we don't yet care about. The byte is the
     /// message tag and the bytes are the remaining body (without the
-    /// 4-byte length prefix). Used for `ParameterDescription`,
-    /// `NoData`, `NotificationResponse`, etc.
+    /// 4-byte length prefix). Used for `NotificationResponse`,
+    /// `CopyInResponse`, etc.
     Other { tag: u8, body: Bytes },
 }
 
