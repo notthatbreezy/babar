@@ -12,9 +12,15 @@ categories.workspace = true
 
 [features]
 default = []
+# Optional dial9-tokio-telemetry instrumentation in examples. Enable with
+# `cargo run --example playground --features dial9`. Feature lives on the
+# crate (rather than as a dev-dependency) so opting in is explicit and
+# the default build never pulls in the dial9 tree.
+dial9 = ["dep:dial9-tokio-telemetry"]
 
 [dependencies]
 tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "macros", "time"] }
+dial9-tokio-telemetry = { workspace = true, optional = true }
 tokio-util = { workspace = true, features = ["codec"] }
 bytes = { workspace = true }
 postgres-protocol = { workspace = true }

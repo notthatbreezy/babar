@@ -39,6 +39,7 @@ hex = "0.4"
 hex-literal = "0.4"
 loom = "0.7"
 testcontainers = "0.15"
+dial9-tokio-telemetry = "0.3"
 
 [profile.release]
 lto = "thin"

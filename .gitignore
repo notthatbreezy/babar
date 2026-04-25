@@ -1,5 +1,6 @@
 # Rust build artifacts
 /target
+/target-dial9
 **/*.rs.bk
 Cargo.lock.bak
 

@@ -15,13 +15,52 @@
 //! Or against a specific PG:
 //!   PGHOST=127.0.0.1 PGPORT=54320 PGUSER=babar PGPASSWORD=secret \
 //!       PGDATABASE=babar cargo run --example playground
+//!
+//! With `dial9-tokio-telemetry` instrumentation:
+//!   playground.sh --dial9
+//! (writes a binary trace to /tmp/babar-playground/trace.bin by default;
+//! set `BABAR_DIAL9_PATH` to relocate. Requires
+//! `RUSTFLAGS="--cfg tokio_unstable"` — `playground.sh --dial9` sets
+//! that and a separate target dir for you.)
 
 use std::time::{Duration, Instant};
 
 use babar::{Config, Error, Session};
 
+#[cfg(feature = "dial9")]
+fn dial9_config() -> dial9_tokio_telemetry::config::Dial9Config {
+    let path = std::env::var("BABAR_DIAL9_PATH")
+        .unwrap_or_else(|_| "/tmp/babar-playground/trace.bin".into());
+    dial9_tokio_telemetry::config::Dial9ConfigBuilder::new(
+        &path,
+        1024 * 1024,     // rotate per 1 MiB
+        5 * 1024 * 1024, // cap at 5 MiB on disk
+    )
+    .with_runtime(|r| {
+        r.with_runtime_name("babar-playground")
+            .with_task_tracking(true)
+    })
+    .build()
+}
+
+#[cfg(not(feature = "dial9"))]
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    run_playground().await
+}
+
+#[cfg(feature = "dial9")]
+#[dial9_tokio_telemetry::main(config = dial9_config)]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let path = std::env::var("BABAR_DIAL9_PATH")
+        .unwrap_or_else(|_| "/tmp/babar-playground/trace.bin".into());
+    println!("dial9 telemetry enabled — traces → {path}");
+    println!("(view with the dial9-viewer crate)");
+    println!();
+    run_playground().await
+}
+
+async fn run_playground() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cfg = config_from_env();
 
     println!("=== 1. Connect ===");

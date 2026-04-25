@@ -20,12 +20,27 @@ PG_PORT="${PGPORT:-54320}"
 CONTAINER_NAME="${CONTAINER_NAME:-babar-playground}"
 
 mode="run"
-case "${1:-}" in
-    --keep) mode="keep" ;;
-    --reuse) mode="reuse" ;;
-    "") ;;
-    *) echo "unknown flag: $1" >&2; exit 2 ;;
-esac
+with_dial9=""
+for arg in "$@"; do
+    case "$arg" in
+        --keep) mode="keep" ;;
+        --reuse) mode="reuse" ;;
+        --dial9) with_dial9=1 ;;
+        --help|-h)
+            cat <<USAGE
+playground.sh [--keep] [--reuse] [--dial9]
+  --keep    leave the postgres container running afterwards
+  --reuse   skip container management; assume one is already running
+  --dial9   build with --features dial9 and RUSTFLAGS="--cfg tokio_unstable",
+            using a separate target dir so the regular build cache stays
+            intact. Trace lands at \$BABAR_DIAL9_PATH (default
+            /tmp/babar-playground/trace.bin).
+USAGE
+            exit 0
+            ;;
+        *) echo "unknown flag: $arg" >&2; exit 2 ;;
+    esac
+done
 
 cleanup() {
     if [[ "$mode" == "keep" ]]; then
@@ -68,9 +83,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 cd "${REPO_ROOT}"
 
-PGHOST=127.0.0.1 \
-PGPORT="${PG_PORT}" \
-PGUSER="${PG_USER}" \
-PGPASSWORD="${PG_PASSWORD}" \
-PGDATABASE="${PG_DB}" \
-    cargo run --example playground "$@"
+cargo_args=("--example" "playground")
+env_vars=(
+    "PGHOST=127.0.0.1"
+    "PGPORT=${PG_PORT}"
+    "PGUSER=${PG_USER}"
+    "PGPASSWORD=${PG_PASSWORD}"
+    "PGDATABASE=${PG_DB}"
+)
+
+if [[ -n "$with_dial9" ]]; then
+    cargo_args+=("--features" "dial9")
+    env_vars+=(
+        "RUSTFLAGS=--cfg tokio_unstable"
+        "CARGO_TARGET_DIR=${REPO_ROOT}/target-dial9"
+    )
+    mkdir -p "/tmp/babar-playground"
+fi
+
+env "${env_vars[@]}" cargo run "${cargo_args[@]}"
