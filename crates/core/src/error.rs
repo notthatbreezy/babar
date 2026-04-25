@@ -54,6 +54,23 @@ pub enum Error {
     /// Configuration problem detected before any I/O is attempted.
     #[error("configuration error: {0}")]
     Config(String),
+
+    /// A codec failed to encode or decode a value.
+    #[error("codec error: {0}")]
+    Codec(String),
+
+    /// A decoder's declared column count doesn't match the server's
+    /// `RowDescription`. The decoder shape was settled at compile time;
+    /// the schema mismatch shows up at execute time in M1. (M2 catches
+    /// this earlier, at prepare time.)
+    #[error("column alignment: decoder expects {expected} columns, server returned {actual}")]
+    ColumnAlignment {
+        /// Columns the decoder expects (sum of `n_columns()` across the
+        /// decoder tree).
+        expected: usize,
+        /// Columns the server reported in `RowDescription`.
+        actual: usize,
+    },
 }
 
 impl Error {

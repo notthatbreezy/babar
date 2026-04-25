@@ -28,9 +28,11 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub(crate) mod auth;
+pub mod codec;
 mod config;
 mod error;
 pub(crate) mod protocol;
+pub mod types;
 
 // `tokio::net` is unavailable under `--cfg loom`; the session machinery
 // uses TcpStream and so must be cfg-gated. Pure modules above remain

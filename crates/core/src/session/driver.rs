@@ -391,6 +391,11 @@ impl Error {
                 message: message.clone(),
             },
             Error::Config(s) => Error::Config(s.clone()),
+            Error::Codec(s) => Error::Codec(s.clone()),
+            Error::ColumnAlignment { expected, actual } => Error::ColumnAlignment {
+                expected: *expected,
+                actual: *actual,
+            },
         }
     }
 }

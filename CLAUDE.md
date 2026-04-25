@@ -103,13 +103,19 @@ pub const text: TextCodec;
 | M5 | Expanded types + derive | uuid/time/chrono/json/numeric/net/array/range codec modules, `#[derive(Codec)]` |
 | M6 | TLS + observability + release | rustls/native-tls, tracing spans, error polish, v0.1 |
 
+## Resolved decisions
+
+- **A** (M0): Crate name — `babar`.
+- **E** (M1): Zero-param type — Rust's unit type `()`. `Query<(), B>` reads
+  as "no parameters"; no new public vocabulary to teach. Skunk's `Void`
+  exists to dodge Scala's bulky `Unit`; Rust doesn't have that problem.
+- **F** (M0): MSRV — Rust 1.75.
+
 ## Open decisions (resolve before the indicated milestone)
 
 - **B** (M5): `#[derive(Codec)]` shape — attribute-per-field vs column-order matching?
 - **C** (M4): Pool implementation — custom vs deadpool?
 - **D** (M3): `sql!` placeholder syntax — positional `{}` vs named `$name`?
-- **E** (M1): Zero-param type public name — `Void`, `NoParams`, or `()`?
-- **F** (M0): MSRV — likely Rust 1.75+ (async-trait-in-trait stabilization)
 
 ## Testing policy
 
