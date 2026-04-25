@@ -39,9 +39,13 @@ hex-literal = { workspace = true }
 rand = { workspace = true }
 futures-util = { workspace = true, features = ["std"] }
 
+[target.'cfg(loom)'.dev-dependencies]
+loom = { workspace = true }
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

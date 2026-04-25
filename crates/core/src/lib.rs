@@ -31,8 +31,14 @@ pub(crate) mod auth;
 mod config;
 mod error;
 pub(crate) mod protocol;
+
+// `tokio::net` is unavailable under `--cfg loom`; the session machinery
+// uses TcpStream and so must be cfg-gated. Pure modules above remain
+// available so loom tests can import e.g. `babar::Error` if they want.
+#[cfg(not(loom))]
 mod session;
 
 pub use config::Config;
 pub use error::{Error, Result};
+#[cfg(not(loom))]
 pub use session::{RawRows, ServerParams, Session};
