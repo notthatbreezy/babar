@@ -173,8 +173,15 @@ async fn section_nulls(session: &Session) -> Result<(), Error> {
 async fn section_server_error(session: &Session) {
     // Bad SQL — the server sends ErrorResponse, which surfaces as
     // Error::Server with SQLSTATE + severity + message.
-    match session.simple_query_raw("SELECT * FROM no_such_table").await {
-        Err(Error::Server { code, severity, message }) => {
+    match session
+        .simple_query_raw("SELECT * FROM no_such_table")
+        .await
+    {
+        Err(Error::Server {
+            code,
+            severity,
+            message,
+        }) => {
             println!("got expected server error:");
             println!("  severity = {severity}");
             println!("  sqlstate = {code}");
@@ -204,11 +211,16 @@ async fn section_concurrent(session: Session) -> Result<Session, Error> {
     let mut completed = 0;
     for h in handles {
         let (i, rs) = h.await.expect("task panicked")?;
-        let echoed = rs[0][0][0].as_deref().and_then(|b| std::str::from_utf8(b).ok());
+        let echoed = rs[0][0][0]
+            .as_deref()
+            .and_then(|b| std::str::from_utf8(b).ok());
         println!("  task {i:>2} echoed back {echoed:?}");
         completed += 1;
     }
-    println!("ran {completed} concurrent queries in {:?}", started.elapsed());
+    println!(
+        "ran {completed} concurrent queries in {:?}",
+        started.elapsed()
+    );
 
     // Unwrap the Arc so we can return an owned Session for the next
     // section. After every spawned task is joined there's only one
