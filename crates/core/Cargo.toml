@@ -36,7 +36,8 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 proptest = { workspace = true }
 hex = { workspace = true }
 hex-literal = { workspace = true }
-testcontainers = { workspace = true }
+rand = { workspace = true }
+futures-util = { workspace = true, features = ["std"] }
 
 [lints.rust]
 unsafe_code = "forbid"
