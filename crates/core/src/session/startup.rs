@@ -6,8 +6,6 @@
 //! the halves to the driver.
 
 use std::collections::HashMap;
-use std::time::Duration;
-
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -157,8 +155,9 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
             BackendMessage::Authentication(AuthRequest::Unsupported { code }) => {
                 return Err(Error::UnsupportedAuth(format!("auth code {code}")));
             }
-            BackendMessage::Authentication(AuthRequest::SaslContinue { .. })
-            | BackendMessage::Authentication(AuthRequest::SaslFinal { .. }) => {
+            BackendMessage::Authentication(
+                AuthRequest::SaslContinue { .. } | AuthRequest::SaslFinal { .. },
+            ) => {
                 return Err(Error::protocol("unsolicited SASL message during initial auth"));
             }
             BackendMessage::ErrorResponse { fields } => return Err(server_error(fields)),
@@ -198,7 +197,7 @@ struct StartupIo<'a> {
     codec: BackendCodec,
 }
 
-impl<'a> StartupIo<'a> {
+impl StartupIo<'_> {
     async fn flush(&mut self) -> Result<()> {
         self.stream.write_all(&self.tx_buf).await.map_err(Error::Io)?;
         self.tx_buf.clear();
@@ -224,5 +223,3 @@ impl<'a> StartupIo<'a> {
     }
 }
 
-#[allow(dead_code)]
-fn _unused(_: Duration) {}

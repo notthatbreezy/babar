@@ -60,7 +60,7 @@ enum State {
 
 impl ScramClient {
     /// Construct a client. The password must be valid UTF-8 (already true by
-    /// type); we do *not* SASLprep it because Postgres treats the password
+    /// type); we do *not* `SASLprep` it because Postgres treats the password
     /// as opaque bytes — RFC 7677 §4 specifically says servers MAY accept
     /// non-prepared passwords. This matches what `tokio-postgres` does.
     pub fn new(password: impl Into<String>) -> Self {
@@ -133,24 +133,19 @@ impl ScramClient {
         let server_key = hmac_sha256(&salted_password, b"Server Key");
 
         let channel_binding_b64 = STANDARD.encode(b"n,,");
-        let client_final_without_proof = format!(
-            "c={channel_binding_b64},r={nonce}",
-            nonce = parsed.nonce,
-        );
+        let server_nonce = parsed.nonce;
+        let client_final_without_proof =
+            format!("c={channel_binding_b64},r={server_nonce}");
         let auth_message = format!(
-            "{client_first_bare},{server_first},{client_final_without_proof}",
-            server_first = server_first_str,
-            client_final_without_proof = client_final_without_proof,
+            "{client_first_bare},{server_first_str},{client_final_without_proof}"
         );
         let client_signature = hmac_sha256(&stored_key, auth_message.as_bytes());
         let mut client_proof = client_key;
         for (a, b) in client_proof.iter_mut().zip(client_signature.iter()) {
             *a ^= b;
         }
-        let client_final = format!(
-            "{client_final_without_proof},p={proof}",
-            proof = STANDARD.encode(client_proof),
-        );
+        let proof = STANDARD.encode(client_proof);
+        let client_final = format!("{client_final_without_proof},p={proof}");
 
         self.state = State::ClientFinalSent {
             server_key,
@@ -294,8 +289,9 @@ mod tests {
     /// expected client-final ends with:
     ///   "p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ="
     ///
-    /// The RFC vector uses `n=user`; Postgres puts the user in the StartupMessage
-    /// and uses `n=` (empty). We test both shapes by calling the helpers.
+    /// The RFC vector uses `n=user`; Postgres puts the user in the
+    /// `StartupMessage` and uses `n=` (empty). We test both shapes by calling
+    /// the helpers.
     #[test]
     fn scram_rfc7677_client_proof_postgres_style() {
         let nonce_b64 = "rOprNGfwEbeRWgbNEkqO";
@@ -341,9 +337,9 @@ mod tests {
         assert!(cfinal_str.starts_with("c=biws,r=rOprNGfwEbeRWgbNEkqO"));
     }
 
-    /// PBKDF2-HMAC-SHA-256: password "pencil", salt b64
-    /// "W22ZaJ0SNY7soEsUEjb6gQ==", 4096 iterations, dklen 32. The expected
-    /// digest was independently computed with Python's
+    /// `PBKDF2-HMAC-SHA-256`: password `"pencil"`, salt b64
+    /// `"W22ZaJ0SNY7soEsUEjb6gQ=="`, 4096 iterations, `dklen` 32. The
+    /// expected digest was independently computed with Python's
     /// `hashlib.pbkdf2_hmac('sha256', ...)`.
     #[test]
     fn pbkdf2_known_vector() {
@@ -367,7 +363,7 @@ mod tests {
         let s = "e=invalid-proof";
         match parse_server_final(s).unwrap() {
             ServerFinal::Error(e) => assert_eq!(e, "invalid-proof"),
-            _ => panic!("expected error"),
+            ServerFinal::Verifier(_) => panic!("expected error"),
         }
     }
 

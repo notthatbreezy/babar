@@ -14,13 +14,12 @@ mod startup;
 
 use std::time::Duration;
 
-use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
 
-pub use driver::ServerParams;
+pub use driver::{RawRows, ServerParams};
 pub(crate) use driver::Command;
 
 /// Channel buffer between user code and the driver. Backpressure here just
@@ -70,7 +69,7 @@ impl Session {
     ///
     /// This is an internal/raw API in M0; the typed
     /// [`Session::execute`]/[`Session::stream`] surface arrives in M1.
-    pub async fn simple_query_raw(&self, sql: &str) -> Result<Vec<Vec<Vec<Option<Bytes>>>>> {
+    pub async fn simple_query_raw(&self, sql: &str) -> Result<Vec<RawRows>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(Command::SimpleQuery {

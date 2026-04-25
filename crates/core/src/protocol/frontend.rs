@@ -53,6 +53,7 @@ pub fn terminate(buf: &mut BytesMut) {
 /// `postgres-protocol`'s frontend writers signal "message too large" via
 /// `io::Error`. The error is structural, not transient, so we surface it as
 /// a protocol error.
+#[allow(clippy::needless_pass_by_value)] // passed to `map_err` which moves the error in
 fn map_io_to_protocol(e: std::io::Error) -> Error {
     Error::Protocol(format!("frontend message encode failed: {e}"))
 }
@@ -61,17 +62,17 @@ fn map_io_to_protocol(e: std::io::Error) -> Error {
 mod tests {
     use super::*;
 
-    /// Golden bytes for a StartupMessage carrying user + database. Layout:
-    ///   length(u32) || protocol_version(u32) ||
-    ///   "user\0postgres\0database\0postgres\0\0"
-    /// protocol version 3.0 = 0x00030000.
+    /// Golden bytes for a `StartupMessage` carrying user + database. Layout:
+    ///   `length(u32)` || `protocol_version(u32)` ||
+    ///   `"user\0postgres\0database\0postgres\0\0"`. Protocol version 3.0
+    ///   is `0x0003_0000`.
     #[test]
     fn startup_message_golden() {
         let mut buf = BytesMut::new();
         startup([("user", "postgres"), ("database", "postgres")], &mut buf).unwrap();
 
         let body = b"user\0postgres\0database\0postgres\0\0";
-        let length = (4 + 4 + body.len()) as u32; // length field includes itself
+        let length = u32::try_from(4 + 4 + body.len()).expect("startup body fits in u32");
         let mut expected = Vec::new();
         expected.extend_from_slice(&length.to_be_bytes());
         expected.extend_from_slice(&0x0003_0000_u32.to_be_bytes());
@@ -87,7 +88,7 @@ mod tests {
         query("SELECT 1", &mut buf).unwrap();
 
         let mut expected = vec![b'Q'];
-        let length = (4 + "SELECT 1".len() + 1) as u32;
+        let length = u32::try_from(4 + "SELECT 1".len() + 1).expect("query length fits in u32");
         expected.extend_from_slice(&length.to_be_bytes());
         expected.extend_from_slice(b"SELECT 1\0");
         assert_eq!(buf.as_ref(), expected.as_slice());

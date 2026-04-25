@@ -1,5 +1,5 @@
-//! Babar — a typed, async PostgreSQL driver for Tokio that speaks the
-//! Postgres wire protocol directly.
+//! `babar` — a typed, async Postgres driver for Tokio that speaks the
+//! `PostgreSQL` wire protocol directly.
 //!
 //! This is the M0 surface: enough to connect, authenticate, run a simple
 //! query, and shut down cleanly. The public API will broaden in M1.
@@ -35,4 +35,4 @@ mod session;
 
 pub use config::Config;
 pub use error::{Error, Result};
-pub use session::{ServerParams, Session};
+pub use session::{RawRows, ServerParams, Session};

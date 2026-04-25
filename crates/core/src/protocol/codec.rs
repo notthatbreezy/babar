@@ -88,10 +88,10 @@ fn decode_body(tag: u8, mut body: Bytes) -> Result<BackendMessage> {
         }
         TAG_ROW_DESCRIPTION => {
             let count = read_i16(&mut body, "RowDescription.count")?;
-            if count < 0 {
-                return Err(Error::protocol(format!("RowDescription count {count} < 0")));
-            }
-            let mut fields = Vec::with_capacity(count as usize);
+            let count: usize = count
+                .try_into()
+                .map_err(|_| Error::protocol(format!("RowDescription count {count} < 0")))?;
+            let mut fields = Vec::with_capacity(count);
             for _ in 0..count {
                 fields.push(RowField {
                     name: read_cstr(&mut body, "RowDescription.field.name")?,
@@ -107,18 +107,18 @@ fn decode_body(tag: u8, mut body: Bytes) -> Result<BackendMessage> {
         }
         TAG_DATA_ROW => {
             let count = read_i16(&mut body, "DataRow.count")?;
-            if count < 0 {
-                return Err(Error::protocol(format!("DataRow count {count} < 0")));
-            }
-            let mut columns = Vec::with_capacity(count as usize);
+            let count: usize = count
+                .try_into()
+                .map_err(|_| Error::protocol(format!("DataRow count {count} < 0")))?;
+            let mut columns = Vec::with_capacity(count);
             for _ in 0..count {
                 let len = read_i32(&mut body, "DataRow.column.length")?;
                 if len == -1 {
                     columns.push(None);
-                } else if len < 0 {
-                    return Err(Error::protocol(format!("DataRow column length {len} < -1")));
                 } else {
-                    let len = len as usize;
+                    let len: usize = len.try_into().map_err(|_| {
+                        Error::protocol(format!("DataRow column length {len} < -1"))
+                    })?;
                     if body.len() < len {
                         return Err(Error::protocol(
                             "DataRow column truncated past message body",
@@ -253,14 +253,15 @@ mod tests {
         let mut out = BytesMut::new();
         out.put_u8(tag);
         // length includes 4-byte length field
-        out.put_u32(4 + body.len() as u32);
+        let len = u32::try_from(4 + body.len()).expect("test frame fits in u32");
+        out.put_u32(len);
         out.extend_from_slice(body);
         out
     }
 
     #[test]
     fn decodes_ready_for_query_idle() {
-        let mut buf = frame(b'Z', &[b'I']);
+        let mut buf = frame(b'Z', b"I");
         let msg = BackendCodec.decode(&mut buf).unwrap().unwrap();
         match msg {
             BackendMessage::ReadyForQuery { transaction_status } => {

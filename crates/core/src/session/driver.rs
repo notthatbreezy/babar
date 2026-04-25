@@ -45,6 +45,20 @@ use crate::protocol::backend::{BackendMessage, RowField};
 use crate::protocol::codec::BackendCodec;
 use crate::protocol::frontend;
 
+/// Rows of one result set in the simple-query protocol: each row is a vector
+/// of optional column bytes (`None` is SQL `NULL`).
+///
+/// Pub re-exported as [`crate::SimpleQueryRows`] for callers; the typed
+/// [`Session::execute`]/`Session::stream` surface in M1 will replace this
+/// raw shape.
+///
+/// [`Session::execute`]: crate::Session
+pub type RawRows = Vec<Vec<Option<Bytes>>>;
+
+/// One simple-query string can carry multiple statements; each produces a
+/// `RawRows`.
+type SimpleQueryReply = oneshot::Sender<Result<Vec<RawRows>>>;
+
 /// One unit of work the driver task accepts.
 #[derive(Debug)]
 pub enum Command {
@@ -52,7 +66,7 @@ pub enum Command {
     /// every result set in order. `None` means SQL NULL.
     SimpleQuery {
         sql: String,
-        reply: oneshot::Sender<Result<Vec<Vec<Vec<Option<Bytes>>>>>>,
+        reply: SimpleQueryReply,
     },
     /// Send `Terminate` and exit the loop. The reply fires once the socket
     /// is closed.
@@ -115,9 +129,9 @@ struct Driver {
 /// State for the in-flight command.
 enum Pending {
     SimpleQuery {
-        reply: oneshot::Sender<Result<Vec<Vec<Vec<Option<Bytes>>>>>>,
-        results: Vec<Vec<Vec<Option<Bytes>>>>,
-        current_rows: Vec<Vec<Option<Bytes>>>,
+        reply: SimpleQueryReply,
+        results: Vec<RawRows>,
+        current_rows: RawRows,
         current_fields: Option<Vec<RowField>>,
         error: Option<Error>,
     },
@@ -145,10 +159,7 @@ impl Driver {
                 msg = self.reader.next() => {
                     match msg {
                         Some(Ok(message)) => {
-                            if let Err(e) = self.on_message(message).await {
-                                self.fail_pending(e);
-                                break;
-                            }
+                            self.on_message(message);
                         }
                         Some(Err(e)) => {
                             self.fail_pending(e);
@@ -162,18 +173,15 @@ impl Driver {
                     }
                 }
                 cmd = self.inbox.recv(), if self.pending.is_none() => {
-                    match cmd {
-                        Some(c) => {
-                            if let Err(e) = self.start(c).await {
-                                // start() already replied with the error if relevant
-                                debug!("driver start failed: {e:?}");
-                            }
+                    if let Some(c) = cmd {
+                        if let Err(e) = self.start(c).await {
+                            // start() already replied with the error if relevant
+                            debug!("driver start failed: {e:?}");
                         }
-                        None => {
-                            // Session dropped — clean shutdown.
-                            self.shutdown().await;
-                            break;
-                        }
+                    } else {
+                        // Session dropped — clean shutdown.
+                        self.shutdown().await;
+                        break;
                     }
                 }
             }
@@ -206,7 +214,7 @@ impl Driver {
                 frontend::terminate(&mut self.write_buf);
                 let flush_res = self.flush().await;
                 let shut_res = self.writer.shutdown().await;
-                let result = flush_res.and_then(|_| shut_res.map_err(Error::from));
+                let result = flush_res.and_then(|()| shut_res.map_err(Error::from));
                 let _ = reply.send(result);
                 // Drain inbox, fail anything pending.
                 self.inbox.close();
@@ -220,25 +228,20 @@ impl Driver {
         }
     }
 
-    async fn on_message(&mut self, msg: BackendMessage) -> Result<()> {
+    fn on_message(&mut self, msg: BackendMessage) {
         trace!(?msg, "backend message");
         match (&mut self.pending, msg) {
             (
-                Some(Pending::SimpleQuery {
-                    current_fields,
-                    ..
-                }),
+                Some(Pending::SimpleQuery { current_fields, .. }),
                 BackendMessage::RowDescription { fields },
             ) => {
                 *current_fields = Some(fields);
-                Ok(())
             }
             (
                 Some(Pending::SimpleQuery { current_rows, .. }),
                 BackendMessage::DataRow { columns },
             ) => {
                 current_rows.push(columns);
-                Ok(())
             }
             (
                 Some(Pending::SimpleQuery {
@@ -247,49 +250,42 @@ impl Driver {
                     current_fields,
                     ..
                 }),
-                BackendMessage::CommandComplete { tag: _ },
+                BackendMessage::CommandComplete { .. },
             ) => {
                 results.push(std::mem::take(current_rows));
                 *current_fields = None;
-                Ok(())
             }
             (Some(Pending::SimpleQuery { results, .. }), BackendMessage::EmptyQueryResponse) => {
                 results.push(Vec::new());
-                Ok(())
             }
             (Some(Pending::SimpleQuery { error, .. }), BackendMessage::ErrorResponse { fields }) => {
                 *error = Some(server_error(fields));
-                Ok(())
             }
-            (
-                Some(Pending::SimpleQuery { .. }),
-                BackendMessage::ReadyForQuery { transaction_status: _ },
-            ) => {
-                let pending = self.pending.take();
+            (Some(Pending::SimpleQuery { .. }), BackendMessage::ReadyForQuery { .. }) => {
                 if let Some(Pending::SimpleQuery {
                     reply,
                     results,
-                    current_rows: _,
-                    current_fields: _,
                     error,
-                }) = pending
+                    ..
+                }) = self.pending.take()
                 {
-                    let outcome = if let Some(e) = error { Err(e) } else { Ok(results) };
+                    let outcome = error.map_or(Ok(results), Err);
                     let _ = reply.send(outcome);
                 }
-                Ok(())
             }
-            (_, BackendMessage::ParameterStatus { .. } | BackendMessage::NoticeResponse { .. }) => {
-                // Async messages — fine in any state.
-                Ok(())
-            }
-            (None, BackendMessage::ReadyForQuery { .. }) => {
-                // Spurious; ignore.
-                Ok(())
+            (
+                _,
+                BackendMessage::ParameterStatus { .. }
+                | BackendMessage::NoticeResponse { .. }
+                | BackendMessage::ReadyForQuery { .. },
+            ) => {
+                // ParameterStatus / NoticeResponse can arrive at any time;
+                // ReadyForQuery with no in-flight command is treated as
+                // spurious. Either way, no caller is waiting.
             }
             (state, other) => {
-                warn!(?other, "unexpected backend message; pending={:?}", pending_kind(state));
-                Ok(())
+                let kind = pending_kind(state.as_ref().map(|p| -> &Pending { p }));
+                warn!(?other, "unexpected backend message; pending={kind}");
             }
         }
     }
@@ -359,7 +355,7 @@ fn server_error(fields: Vec<(u8, String)>) -> Error {
     Error::Server { severity, code, message }
 }
 
-fn pending_kind(p: &Option<Pending>) -> &'static str {
+fn pending_kind(p: Option<&Pending>) -> &'static str {
     match p {
         None => "None",
         Some(Pending::SimpleQuery { .. }) => "SimpleQuery",
@@ -374,20 +370,16 @@ impl Error {
     /// copy. Acceptable: the run loop is exiting anyway.
     fn clone_for_caller(&self) -> Self {
         match self {
-            Error::Io(_) => Error::Closed,
-            other => match other {
-                Error::Closed => Error::Closed,
-                Error::Protocol(s) => Error::Protocol(s.clone()),
-                Error::Auth(s) => Error::Auth(s.clone()),
-                Error::UnsupportedAuth(s) => Error::UnsupportedAuth(s.clone()),
-                Error::Server { code, severity, message } => Error::Server {
-                    code: code.clone(),
-                    severity: severity.clone(),
-                    message: message.clone(),
-                },
-                Error::Config(s) => Error::Config(s.clone()),
-                Error::Io(_) => Error::Closed,
+            Error::Io(_) | Error::Closed => Error::Closed,
+            Error::Protocol(s) => Error::Protocol(s.clone()),
+            Error::Auth(s) => Error::Auth(s.clone()),
+            Error::UnsupportedAuth(s) => Error::UnsupportedAuth(s.clone()),
+            Error::Server { code, severity, message } => Error::Server {
+                code: code.clone(),
+                severity: severity.clone(),
+                message: message.clone(),
             },
+            Error::Config(s) => Error::Config(s.clone()),
         }
     }
 }
