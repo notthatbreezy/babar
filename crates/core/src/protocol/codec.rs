@@ -80,11 +80,16 @@ fn decode_body(tag: u8, mut body: Bytes) -> Result<BackendMessage> {
         TAG_BACKEND_KEY_DATA => {
             let process_id = read_i32(&mut body, "BackendKeyData.process_id")?;
             let secret_key = read_i32(&mut body, "BackendKeyData.secret_key")?;
-            Ok(BackendMessage::BackendKeyData { process_id, secret_key })
+            Ok(BackendMessage::BackendKeyData {
+                process_id,
+                secret_key,
+            })
         }
         TAG_READY_FOR_QUERY => {
             let status = read_u8(&mut body, "ReadyForQuery.status")?;
-            Ok(BackendMessage::ReadyForQuery { transaction_status: status })
+            Ok(BackendMessage::ReadyForQuery {
+                transaction_status: status,
+            })
         }
         TAG_ROW_DESCRIPTION => {
             let count = read_i16(&mut body, "RowDescription.count")?;
@@ -173,10 +178,9 @@ fn decode_auth(code: i32, body: Bytes) -> Result<AuthRequest> {
                 if rest[0] == 0 {
                     break;
                 }
-                let nul = rest
-                    .iter()
-                    .position(|&b| b == 0)
-                    .ok_or_else(|| Error::protocol("AuthenticationSASL mechanism not NUL-terminated"))?;
+                let nul = rest.iter().position(|&b| b == 0).ok_or_else(|| {
+                    Error::protocol("AuthenticationSASL mechanism not NUL-terminated")
+                })?;
                 let name = std::str::from_utf8(&rest[..nul])
                     .map_err(|_| Error::protocol("AuthenticationSASL mechanism is not UTF-8"))?
                     .to_string();
@@ -283,7 +287,10 @@ mod tests {
         // R + length=8 + code=0 (AuthenticationOk)
         let mut buf = frame(b'R', &[0, 0, 0, 0]);
         let msg = BackendCodec.decode(&mut buf).unwrap().unwrap();
-        assert!(matches!(msg, BackendMessage::Authentication(AuthRequest::Ok)));
+        assert!(matches!(
+            msg,
+            BackendMessage::Authentication(AuthRequest::Ok)
+        ));
     }
 
     #[test]

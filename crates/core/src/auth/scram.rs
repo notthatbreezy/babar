@@ -134,11 +134,9 @@ impl ScramClient {
 
         let channel_binding_b64 = STANDARD.encode(b"n,,");
         let server_nonce = parsed.nonce;
-        let client_final_without_proof =
-            format!("c={channel_binding_b64},r={server_nonce}");
-        let auth_message = format!(
-            "{client_first_bare},{server_first_str},{client_final_without_proof}"
-        );
+        let client_final_without_proof = format!("c={channel_binding_b64},r={server_nonce}");
+        let auth_message =
+            format!("{client_first_bare},{server_first_str},{client_final_without_proof}");
         let client_signature = hmac_sha256(&stored_key, auth_message.as_bytes());
         let mut client_proof = client_key;
         for (a, b) in client_proof.iter_mut().zip(client_signature.iter()) {
@@ -167,8 +165,8 @@ impl ScramClient {
 
         let s = str::from_utf8(server_final)
             .map_err(|_| Error::Auth("SCRAM server-final not UTF-8".into()))?;
-        let parsed =
-            parse_server_final(s).map_err(|e| Error::Auth(format!("SCRAM server-final malformed: {e}")))?;
+        let parsed = parse_server_final(s)
+            .map_err(|e| Error::Auth(format!("SCRAM server-final malformed: {e}")))?;
         match parsed {
             ServerFinal::Verifier(b64) => {
                 let claimed = STANDARD

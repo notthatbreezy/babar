@@ -75,10 +75,7 @@ async fn connect_with_cleartext_auth() {
     let session = Session::connect(pg.config(pg.user(), pg.password()))
         .await
         .expect("connect");
-    let rows = session
-        .simple_query_raw("SELECT 7")
-        .await
-        .expect("query");
+    let rows = session.simple_query_raw("SELECT 7").await.expect("query");
     assert_eq!(rows[0][0][0].as_deref(), Some(&b"7"[..]));
     session.close().await.expect("close");
 }
@@ -217,5 +214,7 @@ impl SessionArcClose for std::sync::Arc<Session> {
 
 #[allow(dead_code)] // used to type-check Config builder shape
 fn _config_compiles() {
-    let _ = Config::new("h", 5432, "u", "d").password("p").application_name("app");
+    let _ = Config::new("h", 5432, "u", "d")
+        .password("p")
+        .application_name("app");
 }

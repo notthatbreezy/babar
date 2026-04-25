@@ -36,7 +36,11 @@ pub fn password_message(password: &str, buf: &mut BytesMut) -> Result<()> {
 }
 
 /// Write a `SASLInitialResponse` for SCRAM-SHA-256.
-pub fn sasl_initial_response(mechanism: &str, client_first: &[u8], buf: &mut BytesMut) -> Result<()> {
+pub fn sasl_initial_response(
+    mechanism: &str,
+    client_first: &[u8],
+    buf: &mut BytesMut,
+) -> Result<()> {
     frontend::sasl_initial_response(mechanism, client_first, buf).map_err(map_io_to_protocol)
 }
 

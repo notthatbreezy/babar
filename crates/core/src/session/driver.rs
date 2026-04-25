@@ -48,11 +48,9 @@ use crate::protocol::frontend;
 /// Rows of one result set in the simple-query protocol: each row is a vector
 /// of optional column bytes (`None` is SQL `NULL`).
 ///
-/// Pub re-exported as [`crate::SimpleQueryRows`] for callers; the typed
-/// [`Session::execute`]/`Session::stream` surface in M1 will replace this
-/// raw shape.
-///
-/// [`Session::execute`]: crate::Session
+/// Public alias for the M0 raw API. The typed `Session::execute` and
+/// `Session::stream` surface arriving in M1 will replace this shape with
+/// codec-driven rows.
 pub type RawRows = Vec<Vec<Option<Bytes>>>;
 
 /// One simple-query string can carry multiple statements; each produces a
@@ -70,9 +68,7 @@ pub enum Command {
     },
     /// Send `Terminate` and exit the loop. The reply fires once the socket
     /// is closed.
-    Close {
-        reply: oneshot::Sender<Result<()>>,
-    },
+    Close { reply: oneshot::Sender<Result<()>> },
 }
 
 /// Snapshot of `ParameterStatus` messages observed during startup.
@@ -83,7 +79,9 @@ pub struct ServerParams {
 
 impl ServerParams {
     pub(crate) fn from_map(map: HashMap<String, String>) -> Self {
-        Self { inner: Arc::new(map) }
+        Self {
+            inner: Arc::new(map),
+        }
     }
 
     /// Look up a parameter (e.g. `"server_version"`).
@@ -221,7 +219,9 @@ impl Driver {
                 while let Some(extra) = self.inbox.recv().await {
                     fail_command(extra, Error::Closed);
                 }
-                self.pending = Some(Pending::Close { reply: oneshot::channel().0 });
+                self.pending = Some(Pending::Close {
+                    reply: oneshot::channel().0,
+                });
                 // Mark a sentinel so the run loop exits next iteration.
                 Err(Error::Closed)
             }
@@ -258,7 +258,10 @@ impl Driver {
             (Some(Pending::SimpleQuery { results, .. }), BackendMessage::EmptyQueryResponse) => {
                 results.push(Vec::new());
             }
-            (Some(Pending::SimpleQuery { error, .. }), BackendMessage::ErrorResponse { fields }) => {
+            (
+                Some(Pending::SimpleQuery { error, .. }),
+                BackendMessage::ErrorResponse { fields },
+            ) => {
                 *error = Some(server_error(fields));
             }
             (Some(Pending::SimpleQuery { .. }), BackendMessage::ReadyForQuery { .. }) => {
@@ -352,7 +355,11 @@ fn server_error(fields: Vec<(u8, String)>) -> Error {
             _ => {}
         }
     }
-    Error::Server { severity, code, message }
+    Error::Server {
+        severity,
+        code,
+        message,
+    }
 }
 
 fn pending_kind(p: Option<&Pending>) -> &'static str {
@@ -374,7 +381,11 @@ impl Error {
             Error::Protocol(s) => Error::Protocol(s.clone()),
             Error::Auth(s) => Error::Auth(s.clone()),
             Error::UnsupportedAuth(s) => Error::UnsupportedAuth(s.clone()),
-            Error::Server { code, severity, message } => Error::Server {
+            Error::Server {
+                code,
+                severity,
+                message,
+            } => Error::Server {
                 code: code.clone(),
                 severity: severity.clone(),
                 message: message.clone(),

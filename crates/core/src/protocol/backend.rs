@@ -110,8 +110,12 @@ mod tests {
         // Sanity check that Debug doesn't panic on representative data.
         let msgs = [
             BackendMessage::Authentication(AuthRequest::Ok),
-            BackendMessage::ReadyForQuery { transaction_status: b'I' },
-            BackendMessage::CommandComplete { tag: "SELECT 1".to_string() },
+            BackendMessage::ReadyForQuery {
+                transaction_status: b'I',
+            },
+            BackendMessage::CommandComplete {
+                tag: "SELECT 1".to_string(),
+            },
         ];
         for m in &msgs {
             let _ = format!("{m:?}");

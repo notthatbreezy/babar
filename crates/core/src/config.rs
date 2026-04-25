@@ -56,7 +56,12 @@ impl Config {
     }
 
     /// Use a pre-resolved IP address as the connection target.
-    pub fn with_addr(addr: IpAddr, port: u16, user: impl Into<String>, database: impl Into<String>) -> Self {
+    pub fn with_addr(
+        addr: IpAddr,
+        port: u16,
+        user: impl Into<String>,
+        database: impl Into<String>,
+    ) -> Self {
         Self {
             host: Host::Addr(addr),
             port,

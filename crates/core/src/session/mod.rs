@@ -19,8 +19,8 @@ use tokio::sync::{mpsc, oneshot};
 use crate::config::Config;
 use crate::error::{Error, Result};
 
-pub use driver::{RawRows, ServerParams};
 pub(crate) use driver::Command;
+pub use driver::{RawRows, ServerParams};
 
 /// Channel buffer between user code and the driver. Backpressure here just
 /// rate-limits how fast users can enqueue commands; the driver handles
@@ -68,7 +68,7 @@ impl Session {
     /// # Note
     ///
     /// This is an internal/raw API in M0; the typed
-    /// [`Session::execute`]/[`Session::stream`] surface arrives in M1.
+    /// `Session::execute`/`Session::stream` surface arrives in M1.
     pub async fn simple_query_raw(&self, sql: &str) -> Result<Vec<RawRows>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -99,7 +99,9 @@ impl Session {
         match outcome {
             Ok(Ok(res)) => res,
             Ok(Err(_)) => Ok(()), // driver dropped its end without replying — acceptable
-            Err(_) => Err(Error::Protocol("Session::close timed out waiting for driver".into())),
+            Err(_) => Err(Error::Protocol(
+                "Session::close timed out waiting for driver".into(),
+            )),
         }
     }
 

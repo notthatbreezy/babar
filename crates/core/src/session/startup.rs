@@ -5,8 +5,8 @@
 //! inline (not on the driver task), then split the [`TcpStream`] and hand
 //! the halves to the driver.
 
-use std::collections::HashMap;
 use bytes::BytesMut;
+use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -28,12 +28,12 @@ pub(super) async fn connect(config: Config) -> Result<Session> {
     let host = config.host_str();
     let connect_fut = TcpStream::connect((host.as_str(), config.port));
     let mut stream = match config.connect_timeout {
-        Some(t) => timeout(t, connect_fut)
-            .await
-            .map_err(|_| Error::Io(std::io::Error::new(
+        Some(t) => timeout(t, connect_fut).await.map_err(|_| {
+            Error::Io(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "TCP connect timed out",
-            )))?,
+            ))
+        })?,
         None => connect_fut.await,
     }
     .map_err(Error::Io)?;
@@ -69,8 +69,14 @@ pub(super) async fn connect(config: Config) -> Result<Session> {
             BackendMessage::ParameterStatus { name, value } => {
                 server_params.insert(name, value);
             }
-            BackendMessage::BackendKeyData { process_id, secret_key } => {
-                key_data = Some(BackendKeyData { process_id, secret_key });
+            BackendMessage::BackendKeyData {
+                process_id,
+                secret_key,
+            } => {
+                key_data = Some(BackendKeyData {
+                    process_id,
+                    secret_key,
+                });
             }
             BackendMessage::NoticeResponse { .. } => {
                 // Informational; ignore.
@@ -99,17 +105,19 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
         match msg {
             BackendMessage::Authentication(AuthRequest::Ok) => return Ok(()),
             BackendMessage::Authentication(AuthRequest::CleartextPassword) => {
-                let password = config
-                    .password_str()
-                    .ok_or_else(|| Error::Auth("server requested cleartext password but no password configured".into()))?;
+                let password = config.password_str().ok_or_else(|| {
+                    Error::Auth(
+                        "server requested cleartext password but no password configured".into(),
+                    )
+                })?;
                 io.tx_buf.clear();
                 frontend::password_message(password, &mut io.tx_buf)?;
                 io.flush().await?;
             }
             BackendMessage::Authentication(AuthRequest::Md5Password { salt }) => {
-                let password = config
-                    .password_str()
-                    .ok_or_else(|| Error::Auth("server requested MD5 password but no password configured".into()))?;
+                let password = config.password_str().ok_or_else(|| {
+                    Error::Auth("server requested MD5 password but no password configured".into())
+                })?;
                 let payload = md5_password(config.user_str(), password, salt);
                 io.tx_buf.clear();
                 frontend::password_message(&payload, &mut io.tx_buf)?;
@@ -134,7 +142,11 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
                 let server_first = match io.read_message().await? {
                     BackendMessage::Authentication(AuthRequest::SaslContinue { data }) => data,
                     BackendMessage::ErrorResponse { fields } => return Err(server_error(fields)),
-                    other => return Err(Error::protocol(format!("expected SASLContinue, got {other:?}"))),
+                    other => {
+                        return Err(Error::protocol(format!(
+                            "expected SASLContinue, got {other:?}"
+                        )))
+                    }
                 };
 
                 let client_final = scram.client_final(&server_first)?;
@@ -146,7 +158,11 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
                 let server_final = match io.read_message().await? {
                     BackendMessage::Authentication(AuthRequest::SaslFinal { data }) => data,
                     BackendMessage::ErrorResponse { fields } => return Err(server_error(fields)),
-                    other => return Err(Error::protocol(format!("expected SASLFinal, got {other:?}"))),
+                    other => {
+                        return Err(Error::protocol(format!(
+                            "expected SASLFinal, got {other:?}"
+                        )))
+                    }
                 };
                 scram.verify_server_final(&server_final)?;
 
@@ -158,14 +174,18 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
             BackendMessage::Authentication(
                 AuthRequest::SaslContinue { .. } | AuthRequest::SaslFinal { .. },
             ) => {
-                return Err(Error::protocol("unsolicited SASL message during initial auth"));
+                return Err(Error::protocol(
+                    "unsolicited SASL message during initial auth",
+                ));
             }
             BackendMessage::ErrorResponse { fields } => return Err(server_error(fields)),
             BackendMessage::ParameterStatus { .. } | BackendMessage::NoticeResponse { .. } => {
                 // OK to receive during auth (rare).
             }
             other => {
-                return Err(Error::protocol(format!("unexpected message during auth: {other:?}")));
+                return Err(Error::protocol(format!(
+                    "unexpected message during auth: {other:?}"
+                )));
             }
         }
     }
@@ -187,7 +207,11 @@ fn server_error(fields: Vec<(u8, String)>) -> Error {
     if code == "28P01" || code == "28000" {
         return Error::Auth(format!("{severity} {code}: {message}"));
     }
-    Error::Server { severity, code, message }
+    Error::Server {
+        severity,
+        code,
+        message,
+    }
 }
 
 struct StartupIo<'a> {
@@ -199,7 +223,10 @@ struct StartupIo<'a> {
 
 impl StartupIo<'_> {
     async fn flush(&mut self) -> Result<()> {
-        self.stream.write_all(&self.tx_buf).await.map_err(Error::Io)?;
+        self.stream
+            .write_all(&self.tx_buf)
+            .await
+            .map_err(Error::Io)?;
         self.tx_buf.clear();
         Ok(())
     }
@@ -222,4 +249,3 @@ impl StartupIo<'_> {
         }
     }
 }
-
