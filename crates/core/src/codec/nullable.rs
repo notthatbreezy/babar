@@ -105,9 +105,7 @@ mod tests {
     fn nullable_int4_decode_present() {
         let codec = nullable(int4);
         assert_eq!(
-            codec
-                .decode(&[Some(Bytes::from_static(b"42"))])
-                .unwrap(),
+            codec.decode(&[Some(Bytes::from_static(b"42"))]).unwrap(),
             Some(42_i32)
         );
     }

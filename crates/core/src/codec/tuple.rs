@@ -12,16 +12,26 @@
 //! cache we'd need to allocate on every call.
 
 use bytes::Bytes;
-use std::sync::OnceLock;
 
 use super::{Decoder, Encoder};
 use crate::error::{Error, Result};
 use crate::types::Oid;
 
-/// Concatenate two static OID slices and stash the result in a `OnceLock`.
-fn cached_oids(cell: &'static OnceLock<Vec<Oid>>, parts: &[&[Oid]]) -> &'static [Oid] {
-    cell.get_or_init(|| parts.iter().copied().flatten().copied().collect())
-        .as_slice()
+/// Concatenate static OID slices into a fresh `&'static [Oid]`.
+///
+/// `Box::leak` is the simple-and-correct option here: tuple codecs are
+/// stateless unit-struct values whose `oids()` is called at query prepare
+/// time, not per row. A `static OnceLock` inside this generic function
+/// would *not* be monomorphized per type instantiation — every tuple
+/// arity would share one cell — so we cannot use one without keying on
+/// the actual codec types. Per-prepare leak is the pragmatic trade.
+fn concat_static_oids(parts: &[&[Oid]]) -> &'static [Oid] {
+    let total: usize = parts.iter().map(|p| p.len()).sum();
+    let mut all: Vec<Oid> = Vec::with_capacity(total);
+    for p in parts {
+        all.extend_from_slice(p);
+    }
+    Box::leak(all.into_boxed_slice())
 }
 
 /// Helper used by the tuple macro: bounds-check that the column slice is
@@ -57,8 +67,7 @@ macro_rules! tuple_codec {
                 Ok(())
             }
             fn oids(&self) -> &'static [Oid] {
-                static CELL: OnceLock<Vec<Oid>> = OnceLock::new();
-                cached_oids(&CELL, &[ $( self.$idx.oids() ),+ ])
+                concat_static_oids(&[ $( self.$idx.oids() ),+ ])
             }
         }
 
@@ -81,8 +90,7 @@ macro_rules! tuple_codec {
                 0_usize $( + self.$idx.n_columns() )+
             }
             fn oids(&self) -> &'static [Oid] {
-                static CELL: OnceLock<Vec<Oid>> = OnceLock::new();
-                cached_oids(&CELL, &[ $( self.$idx.oids() ),+ ])
+                concat_static_oids(&[ $( self.$idx.oids() ),+ ])
             }
         }
     };
@@ -141,10 +149,7 @@ mod tests {
         codec
             .encode(&(7_i32, "hi".to_string()), &mut params)
             .unwrap();
-        assert_eq!(
-            params,
-            vec![Some(b"7".to_vec()), Some(b"hi".to_vec())]
-        );
+        assert_eq!(params, vec![Some(b"7".to_vec()), Some(b"hi".to_vec())]);
     }
 
     #[test]

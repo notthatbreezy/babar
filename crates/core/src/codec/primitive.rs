@@ -26,15 +26,17 @@ fn primitive_bytes<'a>(columns: &'a [Option<Bytes>], type_name: &'static str) ->
             "{type_name}: decoder needs 1 column, got 0; this is a driver bug if it reached you"
         ))
     })?;
-    cell.as_deref()
-        .ok_or_else(|| Error::Codec(format!("{type_name}: unexpected NULL; use nullable() to allow it")))
+    cell.as_deref().ok_or_else(|| {
+        Error::Codec(format!(
+            "{type_name}: unexpected NULL; use nullable() to allow it"
+        ))
+    })
 }
 
 /// Read a primitive's bytes as `&str`.
 fn primitive_str<'a>(columns: &'a [Option<Bytes>], type_name: &'static str) -> Result<&'a str> {
     let bytes = primitive_bytes(columns, type_name)?;
-    str::from_utf8(bytes)
-        .map_err(|e| Error::Codec(format!("{type_name}: column not UTF-8: {e}")))
+    str::from_utf8(bytes).map_err(|e| Error::Codec(format!("{type_name}: column not UTF-8: {e}")))
 }
 
 /// Codec for `int2` / `smallint` / `i16`.
@@ -192,7 +194,11 @@ pub struct BoolCodec;
 pub const bool: BoolCodec = BoolCodec;
 
 impl Encoder<core::primitive::bool> for BoolCodec {
-    fn encode(&self, value: &core::primitive::bool, params: &mut Vec<Option<Vec<u8>>>) -> Result<()> {
+    fn encode(
+        &self,
+        value: &core::primitive::bool,
+        params: &mut Vec<Option<Vec<u8>>>,
+    ) -> Result<()> {
         // PG accepts 'true'/'false', 't'/'f', '1'/'0'. We send the
         // canonical 't'/'f' form for compactness.
         params.push(Some(if *value { b"t".to_vec() } else { b"f".to_vec() }));
@@ -425,9 +431,7 @@ mod tests {
             let params = encode(&int4, &v);
             assert_eq!(params.len(), 1);
             let bytes = params[0].clone().unwrap();
-            let decoded = int4
-                .decode(&[Some(Bytes::from(bytes))])
-                .expect("decode");
+            let decoded = int4.decode(&[Some(Bytes::from(bytes))]).expect("decode");
             assert_eq!(decoded, v);
         }
     }

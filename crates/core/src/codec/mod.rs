@@ -33,6 +33,8 @@
 
 mod nullable;
 mod primitive;
+#[cfg(test)]
+mod proptests;
 mod tuple;
 
 pub use nullable::{nullable, Nullable};
