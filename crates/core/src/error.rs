@@ -1,81 +1,80 @@
-//! Error types.
-//!
-//! In M0 the surface is intentionally narrow: I/O, protocol violations,
-//! authentication failures, server-reported errors, and channel-shutdown
-//! conditions. M2 will expand this to cover schema mismatches, and M6 will
-//! add caret-rendered SQL display.
+//! Error types and rich SQL-aware rendering.
 
 use std::fmt;
 use std::io;
+
+use crate::query::Origin;
 
 /// Convenience alias for `Result<T, babar::Error>`.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// A driver-level error.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
     /// I/O failure on the underlying socket.
-    #[error("I/O error: {0}")]
-    Io(#[from] io::Error),
+    Io(io::Error),
 
-    /// The server closed the connection unexpectedly or the driver task
-    /// shut down before the request could be answered.
-    #[error("connection closed")]
-    Closed,
+    /// The server closed the connection unexpectedly or the driver task shut
+    /// down before the request could be answered.
+    Closed {
+        /// SQL context for the in-flight operation, when available.
+        sql: Option<String>,
+        /// Macro callsite captured by [`crate::sql!`], when available.
+        origin: Option<Origin>,
+    },
 
     /// The server sent a message that violates the protocol (illegal
-    /// transition, malformed frame, unexpected message in the current
-    /// state).
-    #[error("protocol error: {0}")]
+    /// transition, malformed frame, unexpected message in the current state).
     Protocol(String),
 
     /// Authentication failed. Distinct from a generic [`Error::Server`]
     /// because callers commonly want to special-case it.
-    #[error("authentication failed: {0}")]
     Auth(String),
 
     /// Authentication mechanism unsupported by this driver.
-    #[error("unsupported authentication mechanism: {0}")]
     UnsupportedAuth(String),
 
-    /// `ErrorResponse` from the server. Carries the SQLSTATE and severity at
-    /// minimum; richer fields land in M6.
-    #[error("server error: {severity} {code}: {message}")]
+    /// `ErrorResponse` from the server.
     Server {
-        /// SQLSTATE code (e.g. "28P01" for invalid password).
+        /// SQLSTATE code (for example `23505`).
         code: String,
-        /// Severity (`ERROR`, `FATAL`, etc).
+        /// Severity (`ERROR`, `FATAL`, and so on).
         severity: String,
         /// Primary message.
         message: String,
+        /// Optional server-supplied detail.
+        detail: Option<String>,
+        /// Optional server-supplied hint.
+        hint: Option<String>,
+        /// Optional 1-based SQL character position.
+        position: Option<usize>,
+        /// SQL text associated with the failing command.
+        sql: Option<String>,
+        /// Macro callsite captured by [`crate::sql!`], when available.
+        origin: Option<Origin>,
     },
 
     /// Configuration problem detected before any I/O is attempted.
-    #[error("configuration error: {0}")]
     Config(String),
 
     /// A codec failed to encode or decode a value.
-    #[error("codec error: {0}")]
     Codec(String),
 
     /// A decoder's declared column count doesn't match the server's
-    /// `RowDescription`. The decoder shape was settled at compile time;
-    /// the schema mismatch shows up at execute time in M1. (M2 catches
-    /// this earlier, at prepare time.)
-    #[error("column alignment: decoder expects {expected} columns, server returned {actual}")]
+    /// `RowDescription`.
     ColumnAlignment {
-        /// Columns the decoder expects (sum of `n_columns()` across the
-        /// decoder tree).
+        /// Columns the decoder expects.
         expected: usize,
-        /// Columns the server reported in `RowDescription`.
+        /// Columns the server reported.
         actual: usize,
+        /// SQL text associated with the failing command.
+        sql: Option<String>,
+        /// Macro callsite captured by [`crate::sql!`], when available.
+        origin: Option<Origin>,
     },
 
     /// The server's column types don't match the decoder's expected OIDs.
-    /// Detected at prepare time so the caller knows about the mismatch
-    /// before any rows are fetched.
-    #[error("schema mismatch at column {position}: expected OID {expected_oid}, server has OID {actual_oid} (column \"{column_name}\")")]
     SchemaMismatch {
         /// 0-based column position of the first mismatch.
         position: usize,
@@ -85,12 +84,262 @@ pub enum Error {
         actual_oid: u32,
         /// Column name from the server's `RowDescription`.
         column_name: String,
+        /// SQL text associated with the failing command.
+        sql: Option<String>,
+        /// Macro callsite captured by [`crate::sql!`], when available.
+        origin: Option<Origin>,
     },
 }
 
 impl Error {
-    /// Construct a [`Error::Protocol`] from anything `Display`-able.
+    /// Construct an [`Error::Protocol`] from anything `Display`-able.
     pub(crate) fn protocol(msg: impl fmt::Display) -> Self {
         Self::Protocol(msg.to_string())
+    }
+
+    /// Construct a context-free closed-connection error.
+    pub(crate) const fn closed() -> Self {
+        Self::Closed {
+            sql: None,
+            origin: None,
+        }
+    }
+
+    /// Attach SQL context to an error when the variant supports it.
+    #[must_use]
+    pub(crate) fn with_sql(mut self, sql: &str, origin: Option<Origin>) -> Self {
+        match &mut self {
+            Self::Closed {
+                sql: slot,
+                origin: slot_origin,
+            }
+            | Self::ColumnAlignment {
+                sql: slot,
+                origin: slot_origin,
+                ..
+            }
+            | Self::SchemaMismatch {
+                sql: slot,
+                origin: slot_origin,
+                ..
+            }
+            | Self::Server {
+                sql: slot,
+                origin: slot_origin,
+                ..
+            } => {
+                if slot.is_none() {
+                    *slot = Some(sql.to_string());
+                }
+                if slot_origin.is_none() {
+                    *slot_origin = origin;
+                }
+            }
+            Self::Io(_)
+            | Self::Protocol(_)
+            | Self::Auth(_)
+            | Self::UnsupportedAuth(_)
+            | Self::Config(_)
+            | Self::Codec(_) => {}
+        }
+        self
+    }
+
+    pub(crate) fn from_server_fields(fields: Vec<(u8, String)>) -> Self {
+        let mut severity = String::new();
+        let mut code = String::new();
+        let mut message = String::new();
+        let mut detail = None;
+        let mut hint = None;
+        let mut position = None;
+
+        for (key, value) in fields {
+            match key {
+                b'S' | b'V' if severity.is_empty() => severity = value,
+                b'C' => code = value,
+                b'M' => message = value,
+                b'D' => detail = Some(value),
+                b'H' => hint = Some(value),
+                b'P' => position = value.parse::<usize>().ok(),
+                _ => {}
+            }
+        }
+
+        Self::Server {
+            code,
+            severity,
+            message,
+            detail,
+            hint,
+            position,
+            sql: None,
+            origin: None,
+        }
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(err) => write!(f, "I/O error: {err}"),
+            Self::Closed { sql, origin } => {
+                write!(f, "connection closed")?;
+                render_sql_context(f, sql.as_deref(), *origin, None)
+            }
+            Self::Protocol(msg) => write!(f, "protocol error: {msg}"),
+            Self::Auth(msg) => write!(f, "authentication failed: {msg}"),
+            Self::UnsupportedAuth(name) => {
+                write!(f, "unsupported authentication mechanism: {name}")
+            }
+            Self::Server {
+                code,
+                severity,
+                message,
+                detail,
+                hint,
+                position,
+                sql,
+                origin,
+            } => {
+                write!(f, "{severity} {code}: {message}")?;
+                if let Some(detail) = detail {
+                    write!(f, "\nDETAIL: {detail}")?;
+                }
+                if let Some(hint) = hint {
+                    write!(f, "\nHINT: {hint}")?;
+                }
+                render_sql_context(f, sql.as_deref(), *origin, *position)
+            }
+            Self::Config(msg) => write!(f, "configuration error: {msg}"),
+            Self::Codec(msg) => write!(f, "codec error: {msg}"),
+            Self::ColumnAlignment {
+                expected,
+                actual,
+                sql,
+                origin,
+            } => {
+                write!(
+                    f,
+                    "column alignment: decoder expects {expected} columns, server returned {actual}"
+                )?;
+                render_sql_context(f, sql.as_deref(), *origin, None)
+            }
+            Self::SchemaMismatch {
+                position,
+                expected_oid,
+                actual_oid,
+                column_name,
+                sql,
+                origin,
+            } => {
+                write!(
+                    f,
+                    "schema mismatch at column {position}: expected OID {expected_oid}, server has OID {actual_oid} (column \"{column_name}\")"
+                )?;
+                render_sql_context(f, sql.as_deref(), *origin, None)
+            }
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+fn render_sql_context(
+    f: &mut fmt::Formatter<'_>,
+    sql: Option<&str>,
+    origin: Option<Origin>,
+    position: Option<usize>,
+) -> fmt::Result {
+    let Some(sql) = sql else {
+        return Ok(());
+    };
+
+    if let Some(origin) = origin {
+        write!(
+            f,
+            "\n--> {}:{}:{}",
+            origin.file(),
+            origin.line(),
+            origin.column()
+        )?;
+    }
+
+    let (line_no, line, column) = position
+        .and_then(|offset| locate_sql(sql, offset))
+        .unwrap_or((1, sql.lines().next().unwrap_or(sql), None));
+
+    write!(f, "\nSQL {line_no:>2} | {line}")?;
+    if let Some(column) = column {
+        write!(f, "\n      | {}^", " ".repeat(column.saturating_sub(1)))?;
+    }
+
+    Ok(())
+}
+
+fn locate_sql(sql: &str, position: usize) -> Option<(usize, &str, Option<usize>)> {
+    if position == 0 {
+        return None;
+    }
+
+    let mut remaining = position;
+    for (index, line) in sql.lines().enumerate() {
+        let width = line.chars().count() + 1;
+        if remaining <= width {
+            let column = remaining.min(line.chars().count().saturating_add(1));
+            return Some((index + 1, line, Some(column)));
+        }
+        remaining = remaining.saturating_sub(width);
+    }
+
+    let mut last = None;
+    for (index, line) in sql.lines().enumerate() {
+        last = Some((
+            index + 1,
+            line,
+            Some(line.chars().count().saturating_add(1)),
+        ));
+    }
+    last
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+    use crate::query::Origin;
+
+    #[test]
+    fn server_error_display_renders_sql_pointer() {
+        let err = Error::Server {
+            code: "42601".into(),
+            severity: "ERROR".into(),
+            message: "syntax error at or near \"FROM\"".into(),
+            detail: None,
+            hint: Some("check the SELECT list".into()),
+            position: Some(8),
+            sql: Some("SELECT FROM demo".into()),
+            origin: Some(Origin::new("src/main.rs", 10, 5)),
+        };
+
+        let rendered = err.to_string();
+        assert!(rendered.contains("ERROR 42601: syntax error at or near \"FROM\""));
+        assert!(rendered.contains("HINT: check the SELECT list"));
+        assert!(rendered.contains("--> src/main.rs:10:5"));
+        assert!(rendered.contains("SQL  1 | SELECT FROM demo"));
+        assert!(rendered.contains("|        ^"));
+    }
+
+    #[test]
+    fn closed_error_can_render_sql_context() {
+        let rendered = Error::closed()
+            .with_sql("SELECT 1", Some(Origin::new("lib.rs", 2, 1)))
+            .to_string();
+        assert!(rendered.contains("connection closed"));
+        assert!(rendered.contains("SQL  1 | SELECT 1"));
     }
 }

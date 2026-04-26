@@ -97,7 +97,7 @@ impl<B> RowStream<B> {
             if close_transaction_on_finish {
                 finish_transaction_best_effort(&tx).await;
             }
-            return Err(Error::Closed);
+            return Err(Error::closed());
         }
         match reply_rx.await {
             Ok(Ok(())) => {}
@@ -117,7 +117,7 @@ impl<B> RowStream<B> {
                 if close_transaction_on_finish {
                     finish_transaction_best_effort(&tx).await;
                 }
-                return Err(Error::Closed);
+                return Err(Error::closed());
             }
         }
 
@@ -184,7 +184,7 @@ async fn drive_stream<B>(
             .await
             .is_err()
         {
-            let _ = row_tx.send(Err(Error::Closed)).await;
+            let _ = row_tx.send(Err(Error::closed())).await;
             break;
         }
 
@@ -195,7 +195,7 @@ async fn drive_stream<B>(
                 break;
             }
             Err(_) => {
-                let _ = row_tx.send(Err(Error::Closed)).await;
+                let _ = row_tx.send(Err(Error::closed())).await;
                 break;
             }
         };
@@ -308,7 +308,7 @@ async fn close_portal_best_effort(tx: &mpsc::Sender<Command>, name: String) {
     }
 }
 
-async fn run_control_command(tx: &mpsc::Sender<Command>, sql: &str) -> Result<()> {
+pub(crate) async fn run_control_command(tx: &mpsc::Sender<Command>, sql: &str) -> Result<()> {
     let (reply_tx, reply_rx) = oneshot::channel();
     tx.send(Command::ExtendedQuery {
         sql: sql.to_string(),
@@ -319,10 +319,10 @@ async fn run_control_command(tx: &mpsc::Sender<Command>, sql: &str) -> Result<()
         reply: reply_tx,
     })
     .await
-    .map_err(|_| Error::Closed)?;
+    .map_err(|_| Error::closed())?;
     match reply_rx.await {
         Ok(result) => result.map(|_| ()),
-        Err(_) => Err(Error::Closed),
+        Err(_) => Err(Error::closed()),
     }
 }
 

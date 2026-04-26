@@ -1,0 +1,5 @@
+error: missing #[pg(codec = "...")] attribute
+ --> tests/ui/derive/fail/missing_attr.rs:5:5
+  |
+5 |     name: String,
+  |     ^^^^^^^^^^^^

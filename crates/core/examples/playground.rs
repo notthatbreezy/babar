@@ -1,62 +1,19 @@
-//! Hands-on playground for the M0 babar surface.
+//! Hands-on playground for the babar surface.
 //!
-//! Run it with a Postgres pointed at by the standard `PG*` env vars (or
-//! the defaults below). The companion `examples/playground.sh` script
-//! starts a throwaway Postgres container and runs this for you.
-//!
-//! The file is organized into numbered sections; comment any out, edit
-//! freely, and re-run. Nothing is meant to be production-shaped — this
-//! exercises the M0 raw API. M1 brings codecs and typed queries, at
-//! which point the ergonomics will look very different.
-//!
-//! Run with:
-//!   cargo run --example playground
-//!
-//! Or against a specific PG:
-//!   PGHOST=127.0.0.1 PGPORT=54320 PGUSER=babar PGPASSWORD=secret \
-//!       PGDATABASE=babar cargo run --example playground
-//!
-//! With `dial9-tokio-telemetry` instrumentation:
-//!   playground.sh --dial9
-//! (writes a binary trace to /tmp/babar-playground/trace.bin by default;
-//! set `BABAR_DIAL9_PATH` to relocate. Requires
-//! `RUSTFLAGS="--cfg tokio_unstable"` — `playground.sh --dial9` sets
-//! that and a separate target dir for you.)
+//! Run it with a Postgres pointed at by the standard `PG*` env vars (or the
+//! defaults below).
 
 use std::time::{Duration, Instant};
 
 use babar::{Config, Error, Session};
 
-#[cfg(feature = "dial9")]
-fn dial9_config() -> dial9_tokio_telemetry::config::Dial9Config {
-    let path = std::env::var("BABAR_DIAL9_PATH")
-        .unwrap_or_else(|_| "/tmp/babar-playground/trace.bin".into());
-    dial9_tokio_telemetry::config::Dial9ConfigBuilder::new(
-        &path,
-        1024 * 1024,     // rotate per 1 MiB
-        5 * 1024 * 1024, // cap at 5 MiB on disk
-    )
-    .with_runtime(|r| {
-        r.with_runtime_name("babar-playground")
-            .with_task_tracking(true)
-    })
-    .build()
-}
-
-#[cfg(not(feature = "dial9"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    run_playground().await
-}
-
-#[cfg(feature = "dial9")]
-#[dial9_tokio_telemetry::main(config = dial9_config)]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let path = std::env::var("BABAR_DIAL9_PATH")
-        .unwrap_or_else(|_| "/tmp/babar-playground/trace.bin".into());
-    println!("dial9 telemetry enabled — traces → {path}");
-    println!("(view with the dial9-viewer crate)");
-    println!();
+    tracing_subscriber::fmt()
+        .with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "babar=info".to_string()))
+        .with_target(false)
+        .try_init()
+        .ok();
     run_playground().await
 }
 
@@ -102,8 +59,6 @@ async fn run_playground() -> Result<(), Box<dyn std::error::Error + Send + Sync>
     Ok(())
 }
 
-/// Build a Config from the standard PG* environment variables, falling
-/// back to localhost/postgres defaults that match `playground.sh`.
 fn config_from_env() -> Config {
     let host = std::env::var("PGHOST").unwrap_or_else(|_| "127.0.0.1".into());
     let port: u16 = std::env::var("PGPORT")
@@ -161,9 +116,6 @@ async fn section_multi_statement(session: &Session) -> Result<(), Error> {
 }
 
 async fn section_nulls(session: &Session) -> Result<(), Error> {
-    // Postgres returns text-format bytes; NULL is represented as
-    // Option::None in the raw API. Other values come back as the bytes
-    // the server printed.
     let sql = "SELECT NULL::text AS missing, 'present' AS here, 42 AS answer";
     let result_sets = session.simple_query_raw(sql).await?;
     print_result_sets(&result_sets);
@@ -171,8 +123,6 @@ async fn section_nulls(session: &Session) -> Result<(), Error> {
 }
 
 async fn section_server_error(session: &Session) {
-    // Bad SQL — the server sends ErrorResponse, which surfaces as
-    // Error::Server with SQLSTATE + severity + message.
     match session
         .simple_query_raw("SELECT * FROM no_such_table")
         .await
@@ -181,6 +131,7 @@ async fn section_server_error(session: &Session) {
             code,
             severity,
             message,
+            ..
         }) => {
             println!("got expected server error:");
             println!("  severity = {severity}");
@@ -202,8 +153,6 @@ async fn section_concurrent(session: Session) -> Result<Session, Error> {
     for i in 0..n {
         let s = Arc::clone(&session);
         handles.push(tokio::spawn(async move {
-            // Sleep a different amount per task on the server side to
-            // make the multiplexing visible.
             let sql = format!("SELECT {i}, pg_sleep(0.05)");
             s.simple_query_raw(&sql).await.map(|rs| (i, rs))
         }));
@@ -222,9 +171,6 @@ async fn section_concurrent(session: Session) -> Result<Session, Error> {
         started.elapsed()
     );
 
-    // Unwrap the Arc so we can return an owned Session for the next
-    // section. After every spawned task is joined there's only one
-    // strong ref, so try_unwrap succeeds.
     Ok(Arc::try_unwrap(session).expect("all task handles dropped"))
 }
 
@@ -240,7 +186,6 @@ async fn section_wrong_password(mut cfg: Config) {
     }
 }
 
-/// Pretty-print whatever shape `simple_query_raw` returned.
 fn print_result_sets(result_sets: &[Vec<Vec<Option<bytes::Bytes>>>]) {
     for (i, rows) in result_sets.iter().enumerate() {
         println!("  result set #{i}: {} row(s)", rows.len());

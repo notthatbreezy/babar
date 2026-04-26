@@ -53,11 +53,15 @@ struct CacheEntry {
 pub(crate) struct StatementCache {
     stmts: HashMap<CacheKey, CacheEntry>,
     counter: u64,
+    retain_on_zero_handles: bool,
 }
 
 impl StatementCache {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(retain_on_zero_handles: bool) -> Self {
+        Self {
+            retain_on_zero_handles,
+            ..Self::default()
+        }
     }
 
     /// Look up a cached statement by key and acquire another live handle to it.
@@ -75,13 +79,18 @@ impl StatementCache {
     /// Release one prepared-statement handle. Returns the cached statement
     /// metadata only when the last live handle goes away and the server-side
     /// statement should be closed.
-    pub fn release(&mut self, key: &CacheKey) -> Option<CachedStatement> {
+    pub fn release_handle(&mut self, key: &CacheKey) -> Option<CachedStatement> {
         let entry = self.stmts.get_mut(key)?;
         if entry.handles > 1 {
             entry.handles -= 1;
             return None;
         }
-        self.stmts.remove(key).map(|entry| entry.stmt)
+        if self.retain_on_zero_handles {
+            entry.handles = 0;
+            None
+        } else {
+            self.stmts.remove(key).map(|entry| entry.stmt)
+        }
     }
 
     /// Generate a unique statement name for this session.

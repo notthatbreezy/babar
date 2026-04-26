@@ -1,0 +1,19 @@
+[package]
+name = "pool-throughput-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+babar = { path = "../../crates/core" }
+criterion = { workspace = true, features = ["async_tokio"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio-postgres = { workspace = true }
+bb8 = "0.8"
+bb8-postgres = "0.8"
+
+[[bench]]
+name = "pool_throughput"
+harness = false

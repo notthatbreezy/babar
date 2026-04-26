@@ -1,13 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
+    "benches/pool-throughput",
     "benches/prepared-throughput",
     "crates/core",
     "crates/macros",
 ]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
@@ -17,7 +18,7 @@ keywords = ["postgres", "postgresql", "database", "tokio", "async"]
 categories = ["database"]
 
 [workspace.dependencies]
-babar-macros = { version = "0.0.0", path = "crates/macros" }
+babar-macros = { version = "0.1.0", path = "crates/macros" }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "parsing"] }
@@ -30,12 +31,26 @@ futures-core = "0.3"
 futures-util = { version = "0.3", default-features = false }
 thiserror = "1"
 tracing = { version = "0.1", default-features = false }
+tracing-subscriber = { version = "0.3", default-features = false }
 hmac = "0.12"
 sha2 = "0.10"
 md-5 = "0.10"
 base64 = "0.21"
 stringprep = "0.1"
 rand = "0.8"
+serde = "1"
+serde_json = "1"
+uuid = "1"
+time = "0.3"
+chrono = "0.4"
+rust_decimal = "1"
+fallible-iterator = "0.2"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+native-tls = "0.2"
+tokio-native-tls = "0.3"
 
 # Dev / test
 proptest = "1"
@@ -43,9 +58,11 @@ hex = "0.4"
 hex-literal = "0.4"
 loom = "0.7"
 testcontainers = "0.15"
-dial9-tokio-telemetry = "0.3"
 criterion = "0.5"
 tokio-postgres = "0.7"
+tracing-test = "0.2"
+clap = { version = "4.5", features = ["derive", "env"] }
+axum = "0.7"
 
 [profile.release]
 lto = "thin"

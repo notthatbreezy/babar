@@ -1,0 +1,5 @@
+error: Codec derive does not support generic structs yet
+ --> tests/ui/derive/fail/generic.rs:2:15
+  |
+2 | struct Generic<T> {
+  |               ^^^

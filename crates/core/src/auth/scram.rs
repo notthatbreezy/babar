@@ -1,7 +1,4 @@
-//! SCRAM-SHA-256 client implementation per RFC 5802.
-//!
-//! Channel binding (SCRAM-SHA-256-PLUS) is deferred to post-v0.1; we
-//! always advertise `n,,` (no channel binding requested by the client).
+//! SCRAM-SHA-256 client implementation per RFC 5802 / RFC 7677.
 //!
 //! The flow used by the driver:
 //!
@@ -24,7 +21,8 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// Mechanism name used in `SASLInitialResponse`.
 pub const SCRAM_SHA_256: &str = "SCRAM-SHA-256";
-
+/// Mechanism name used in `SASLInitialResponse` when channel binding is active.
+pub const SCRAM_SHA_256_PLUS: &str = "SCRAM-SHA-256-PLUS";
 /// Length of the client nonce in bytes (before base64). Postgres servers
 /// don't constrain this — 18 raw bytes -> 24 base64 chars is comfortable.
 const NONCE_LEN: usize = 18;
@@ -33,7 +31,20 @@ const NONCE_LEN: usize = 18;
 #[derive(Debug)]
 pub struct ScramClient {
     password: String,
+    channel_binding: Option<ChannelBinding>,
     state: State,
+}
+
+/// SCRAM channel binding data to embed in the GS2 header and `c=` attribute.
+#[derive(Debug, Clone)]
+pub struct ChannelBinding {
+    kind: ChannelBindingKind,
+    data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ChannelBindingKind {
+    TlsServerEndPoint,
 }
 
 #[derive(Debug)]
@@ -64,9 +75,27 @@ impl ScramClient {
     /// as opaque bytes — RFC 7677 §4 specifically says servers MAY accept
     /// non-prepared passwords. This matches what `tokio-postgres` does.
     pub fn new(password: impl Into<String>) -> Self {
+        Self::with_channel_binding(password, None)
+    }
+
+    /// Construct a client with optional channel binding data.
+    pub fn with_channel_binding(
+        password: impl Into<String>,
+        channel_binding: Option<ChannelBinding>,
+    ) -> Self {
         Self {
             password: password.into(),
+            channel_binding,
             state: State::Initial,
+        }
+    }
+
+    /// SCRAM mechanism name to advertise in `SASLInitialResponse`.
+    pub fn mechanism_name(&self) -> &'static str {
+        if self.channel_binding.is_some() {
+            SCRAM_SHA_256_PLUS
+        } else {
+            SCRAM_SHA_256
         }
     }
 
@@ -89,7 +118,7 @@ impl ScramClient {
         }
         let client_nonce = STANDARD.encode(nonce_bytes);
         let client_first_bare = format!("n=,r={client_nonce}");
-        let client_first = format!("n,,{client_first_bare}");
+        let client_first = format!("{}{client_first_bare}", self.gs2_header());
 
         self.state = State::ClientFirstSent {
             client_first_bare,
@@ -132,7 +161,7 @@ impl ScramClient {
         let stored_key = sha256(&client_key);
         let server_key = hmac_sha256(&salted_password, b"Server Key");
 
-        let channel_binding_b64 = STANDARD.encode(b"n,,");
+        let channel_binding_b64 = STANDARD.encode(self.encoded_channel_binding());
         let server_nonce = parsed.nonce;
         let client_final_without_proof = format!("c={channel_binding_b64},r={server_nonce}");
         let auth_message =
@@ -181,6 +210,38 @@ impl ScramClient {
             }
             ServerFinal::Error(e) => Err(Error::Auth(format!("SCRAM server reported error: {e}"))),
         }
+    }
+}
+
+impl ChannelBinding {
+    /// Create channel binding data for RFC 5929 `tls-server-end-point`.
+    pub fn tls_server_end_point(data: Vec<u8>) -> Self {
+        Self {
+            kind: ChannelBindingKind::TlsServerEndPoint,
+            data,
+        }
+    }
+
+    fn gs2_header(&self) -> &'static str {
+        match self.kind {
+            ChannelBindingKind::TlsServerEndPoint => "p=tls-server-end-point,,",
+        }
+    }
+}
+
+impl ScramClient {
+    fn gs2_header(&self) -> &str {
+        self.channel_binding
+            .as_ref()
+            .map_or("n,,", ChannelBinding::gs2_header)
+    }
+
+    fn encoded_channel_binding(&self) -> Vec<u8> {
+        let mut out = self.gs2_header().as_bytes().to_vec();
+        if let Some(binding) = &self.channel_binding {
+            out.extend_from_slice(&binding.data);
+        }
+        out
     }
 }
 
@@ -373,5 +434,43 @@ mod tests {
         let bogus = "r=different,s=Zm9v,i=1";
         let err = client.client_final(bogus.as_bytes()).unwrap_err();
         assert!(matches!(err, Error::Auth(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn scram_plus_uses_tls_server_end_point_channel_binding() {
+        let nonce_b64 = "rOprNGfwEbeRWgbNEkqO";
+        let nonce_bytes = STANDARD.decode(nonce_b64).unwrap();
+        let binding_data = vec![0xde, 0xad, 0xbe, 0xef];
+
+        let mut client = ScramClient::with_channel_binding(
+            "pencil",
+            Some(ChannelBinding::tls_server_end_point(binding_data.clone())),
+        );
+        assert_eq!(client.mechanism_name(), SCRAM_SHA_256_PLUS);
+
+        let cfirst = client.client_first_with_nonce(&nonce_bytes).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&cfirst).unwrap(),
+            "p=tls-server-end-point,,n=,r=rOprNGfwEbeRWgbNEkqO"
+        );
+
+        let server_first =
+            "r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096";
+        let cfinal = client.client_final(server_first.as_bytes()).unwrap();
+        let cfinal_str = std::str::from_utf8(&cfinal).unwrap();
+
+        let channel_binding = STANDARD.encode(
+            [
+                b"p=tls-server-end-point,,".as_slice(),
+                binding_data.as_slice(),
+            ]
+            .concat(),
+        );
+        assert!(
+            cfinal_str.starts_with(&format!(
+                "c={channel_binding},r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,"
+            )),
+            "unexpected client-final: {cfinal_str}"
+        );
     }
 }

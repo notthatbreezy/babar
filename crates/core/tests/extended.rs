@@ -172,7 +172,9 @@ async fn column_alignment_mismatch_surfaces_as_error() {
     let q: Query<(), (i32,)> = Query::raw("SELECT 1::int4, 2::int4", (), (int4,));
     let err = session.query(&q, ()).await.expect_err("must mismatch");
     match &err {
-        Error::ColumnAlignment { expected, actual } => {
+        Error::ColumnAlignment {
+            expected, actual, ..
+        } => {
             assert_eq!(*expected, 1);
             assert_eq!(*actual, 2);
         }
@@ -191,7 +193,9 @@ async fn column_alignment_mismatch_surfaces_as_error() {
     let q: Query<(), (i32, i32)> = Query::raw("SELECT 1::int4", (), (int4, int4));
     let err = session2.query(&q, ()).await.expect_err("must mismatch");
     match &err {
-        Error::ColumnAlignment { expected, actual } => {
+        Error::ColumnAlignment {
+            expected, actual, ..
+        } => {
             assert_eq!(*expected, 2);
             assert_eq!(*actual, 1);
         }

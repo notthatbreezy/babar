@@ -1,21 +1,67 @@
-//! `babar` — a typed, async Postgres driver for Tokio that speaks the
-//! `PostgreSQL` wire protocol directly.
+//! `babar` — a typed, async PostgreSQL driver for Tokio that speaks the wire
+//! protocol directly.
 //!
-//! The current public surface includes typed commands and queries, reusable
-//! prepared statements, and portal-backed row streaming on top of a
-//! cancellation-safe background driver task.
+//! `babar` deliberately keeps the API explicit:
+//!
+//! - SQL is a typed value (`Query`, `Command`, `PreparedQuery`, ...).
+//! - Codecs are imported values (`int4`, `text`, `uuid`, ...), not inferred.
+//! - A background task owns the socket so public API calls remain
+//!   cancellation-safe.
+//! - Errors retain SQL context, SQLSTATE metadata, and `sql!` callsite origin.
+//!
+//! ## Feature highlights
+//!
+//! - simple-query, extended query, prepared-statement, transaction, and pool APIs
+//! - text codecs in core plus opt-in `uuid`, `time`, `chrono`, `json`,
+//!   `numeric`, `net`, `interval`, `array`, and `range` modules
+//! - optional TLS via the `rustls` feature (default) or `native-tls`
+//! - OpenTelemetry-friendly `tracing` spans for connect / prepare / execute /
+//!   transaction flows
+//!
+//! ## Quick start
+//!
+//! ```no_run
+//! use babar::codec::{int4, text};
+//! use babar::query::{Command, Query};
+//! use babar::{Config, Session};
+//!
+//! #[tokio::main(flavor = "current_thread")]
+//! async fn main() -> babar::Result<()> {
+//!     let cfg = Config::new("localhost", 5432, "postgres", "postgres")
+//!         .password("secret")
+//!         .application_name("babar-docs");
+//!     let session = Session::connect(cfg).await?;
+//!
+//!     let create: Command<()> = Command::raw(
+//!         "CREATE TEMP TABLE users (id int4 PRIMARY KEY, name text NOT NULL)",
+//!         (),
+//!     );
+//!     session.execute(&create, ()).await?;
+//!
+//!     let insert: Command<(i32, String)> = Command::raw(
+//!         "INSERT INTO users (id, name) VALUES ($1, $2)",
+//!         (int4, text),
+//!     );
+//!     session.execute(&insert, (1, "Ada".to_string())).await?;
+//!
+//!     let select: Query<(), (i32, String)> = Query::raw(
+//!         "SELECT id, name FROM users ORDER BY id",
+//!         (),
+//!         (int4, text),
+//!     );
+//!     let rows = session.query(&select, ()).await?;
+//!     assert_eq!(rows, vec![(1, "Ada".to_string())]);
+//!
+//!     session.close().await?;
+//!     Ok(())
+//! }
+//! ```
 //!
 //! ## `sql!` macro
 //!
-//! [`sql!`] is the preferred way to build SQL fragments in babar. It takes a
-//! SQL string that uses named placeholders like `$id` or `$name`, plus an
-//! explicit codec for each placeholder, and returns a [`query::Fragment`] with
-//! a flat Rust tuple parameter type.
-//!
-//! The macro renumbers placeholders to Postgres' native `$1`, `$2`, ...
-//! protocol form, reuses the same slot when the same named placeholder appears
-//! multiple times, and records the callsite in [`query::Origin`] for error
-//! reporting.
+//! [`sql!`] builds a [`query::Fragment`] from SQL that uses named placeholders
+//! like `$id` or `$name`, captures the macro callsite in [`query::Origin`], and
+//! rewrites placeholders into PostgreSQL's native `$1`, `$2`, ... numbering.
 //!
 //! ```
 //! use babar::codec::{int4, text};
@@ -37,113 +83,35 @@
 //! );
 //! ```
 //!
-//! `sql!` does **not** talk to a database at compile time, infer codecs, or
-//! validate result-column schemas. It only rewrites placeholders, checks that
-//! every `$name` has exactly one binding, and builds the fragment. Server-side
-//! validation still happens when you prepare or execute the statement. The
-//! macro also does not interpolate identifiers or arbitrary SQL text: values
-//! must stay parameterized, and dynamic SQL structure should be assembled from
-//! trusted fragments in Rust.
+//! ## TLS
+//!
+//! Enable the default `rustls` feature (or the optional `native-tls` feature),
+//! then request TLS explicitly via [`Config::require_tls`]. When the server
+//! offers SCRAM-SHA-256-PLUS, babar binds SCRAM to the TLS certificate
+//! automatically. When connecting by IP address, set [`Config::tls_server_name`]
+//! so SNI and certificate verification use the intended DNS name.
+//!
+//! ```no_run
+//! use babar::{Config, TlsMode};
+//!
+//! let _ = Config::new("db.internal", 5432, "app", "app")
+//!     .password("secret")
+//!     .tls_mode(TlsMode::Require);
+//! ```
 //!
 //! ## Architecture
 //!
-//! Every connection is owned by a background driver task. The user holds a
-//! [`Session`] which is a thin handle that sends commands over an `mpsc`
-//! channel and receives responses on per-command `oneshot` channels. The
-//! driver is the sole writer to the socket; user-facing API calls are
-//! cancellation-safe by construction.
-//!
 //! ```text
-//!     User code → Session (mpsc handle)
-//!                       ↓
-//!             Background driver task (owns TcpStream, state machine)
-//!                       ↓
-//!             Postgres server (wire protocol)
+//! User code → Session / Pool handle
+//!                    ↓
+//!        background driver task (owns transport and protocol state)
+//!                    ↓
+//!              PostgreSQL server
 //! ```
 //!
-//! ## Prepared statements
-//!
-//! The prepared-statement lifecycle is:
-//!
-//! 1. Build a [`query::Query`] or [`query::Command`] with explicit codecs.
-//! 2. Call [`Session::prepare_query`] or [`Session::prepare_command`] once.
-//!    The driver sends `Parse`/`Describe`, validates the returned schema, and
-//!    caches the statement per session by SQL text plus parameter OIDs.
-//! 3. Reuse the returned [`PreparedQuery`] / [`PreparedCommand`] as many times
-//!    as needed.
-//! 4. Call `.close().await` for confirmed cleanup, or let the last handle drop
-//!    for best-effort `Close`/deallocate on the server.
-//!
-//! ```no_run
-//! use babar::codec::int4;
-//! use babar::query::Query;
-//! use babar::{Config, Session};
-//!
-//! #[tokio::main(flavor = "current_thread")]
-//! async fn main() -> babar::Result<()> {
-//!     let cfg = Config::new("localhost", 5432, "postgres", "postgres")
-//!         .password("secret")
-//!         .application_name("babar-docs-prepared");
-//!     let session = Session::connect(cfg).await?;
-//!
-//!     let q: Query<(i32,), (i32,)> =
-//!         Query::raw("SELECT $1::int4 + 1", (int4,), (int4,));
-//!     let prepared = session.prepare_query(&q).await?;
-//!
-//!     assert_eq!(prepared.query((41,)).await?, vec![(42,)]);
-//!     assert_eq!(prepared.query((99,)).await?, vec![(100,)]);
-//!
-//!     prepared.close().await?;
-//!     session.close().await?;
-//!     Ok(())
-//! }
-//! ```
-//!
-//! ## Streaming
-//!
-//! [`Session::stream`] and [`Session::stream_with_batch_size`] run a query
-//! through a server-side portal and fetch rows in bounded `Execute(max_rows)`
-//! batches. This keeps memory bounded and naturally applies backpressure when
-//! the consumer is slower than the database.
-//!
-//! Draining the stream closes the portal automatically. Dropping it early stops
-//! future fetches and best-effort closes the temporary portal and statement.
-//!
-//! ```no_run
-//! use babar::codec::int4;
-//! use babar::query::Query;
-//! use babar::{Config, Session};
-//! use futures_util::StreamExt;
-//!
-//! #[tokio::main(flavor = "current_thread")]
-//! async fn main() -> babar::Result<()> {
-//!     let cfg = Config::new("localhost", 5432, "postgres", "postgres")
-//!         .password("secret")
-//!         .application_name("babar-docs-stream");
-//!     let session = Session::connect(cfg).await?;
-//!
-//!     let q: Query<(), (i32,)> = Query::raw(
-//!         "SELECT gs::int4 FROM generate_series(1, 5) AS gs ORDER BY gs",
-//!         (),
-//!         (int4,),
-//!     );
-//!     let mut rows = session.stream_with_batch_size(&q, (), 2).await?;
-//!     while let Some(row) = rows.next().await {
-//!         println!("{:?}", row?);
-//!     }
-//!
-//!     session.close().await?;
-//!     Ok(())
-//! }
-//! ```
-//!
-//! See `cargo run -p babar --example prepared_and_stream` for a complete M2
-//! example that combines both patterns.
-//!
-//! ## Stability
-//!
-//! Nothing in this crate is stable yet. The public surface is still evolving
-//! and may change in every milestone up to v0.1.
+//! The driver task is the sole owner of the transport. Public futures communicate
+//! with it over `mpsc` + `oneshot`, which keeps cancellation localized to the
+//! caller while the protocol state machine continues to completion.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -153,8 +121,15 @@ pub(crate) mod auth;
 pub mod codec;
 mod config;
 mod error;
+#[cfg(not(loom))]
+pub mod pool;
 pub(crate) mod protocol;
 pub mod query;
+pub(crate) mod telemetry;
+#[cfg(not(loom))]
+pub mod tls;
+#[cfg(not(loom))]
+pub mod transaction;
 pub mod types;
 
 /// Build a [`query::Fragment`] from SQL that uses named placeholders.
@@ -167,7 +142,6 @@ pub mod types;
 /// The macro only rewrites placeholders and captures source origin metadata. It
 /// does not connect to Postgres, infer codecs, quote identifiers, or validate
 /// output columns.
-/// Build typed SQL fragments with named `$name` placeholders.
 ///
 /// ```
 /// use babar::codec::{bool, int4, text};
@@ -196,15 +170,24 @@ pub mod types;
 ///     "INSERT INTO users (id, name) VALUES ($1, $2)"
 /// );
 /// ```
-pub use babar_macros::sql;
+pub use babar_macros::{sql, Codec};
 
-// `tokio::net` is unavailable under `--cfg loom`; the session machinery
-// uses TcpStream and so must be cfg-gated. Pure modules above remain
-// available so loom tests can import e.g. `babar::Error` if they want.
+#[doc(hidden)]
+pub mod __private {
+    pub use bytes::Bytes;
+}
+
 #[cfg(not(loom))]
 mod session;
 
-pub use config::Config;
+pub use config::{Config, TlsBackend, TlsMode};
 pub use error::{Error, Result};
 #[cfg(not(loom))]
+pub use pool::{
+    HealthCheck, Pool, PoolConfig, PoolConnection, PoolError, PooledPreparedCommand,
+    PooledPreparedQuery, PooledRowStream, PooledTransaction,
+};
+#[cfg(not(loom))]
 pub use session::{PreparedCommand, PreparedQuery, RawRows, RowStream, ServerParams, Session};
+#[cfg(not(loom))]
+pub use transaction::Transaction;

@@ -1,0 +1,89 @@
+error[E0277]: the trait bound `Int4Codec: Encoder<String>` is not satisfied
+ --> tests/ui/derive/fail/wrong_type.rs:1:10
+  |
+1 | #[derive(babar::Codec)]
+  |          ^^^^^^^^^^^^ the trait `Encoder<String>` is not implemented for `Int4Codec`
+  |
+help: the trait `Encoder<String>` is not implemented for `Int4Codec`
+      but trait `Encoder<i32>` is implemented for it
+ --> src/codec/primitive.rs
+  |
+  | impl Encoder<i32> for Int4Codec {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = help: for that trait implementation, expected `i32`, found `String`
+note: required by a bound in `assert_codec`
+ --> tests/ui/derive/fail/wrong_type.rs:1:10
+  |
+1 | #[derive(babar::Codec)]
+  |          ^^^^^^^^^^^^ required by this bound in `assert_codec`
+  = note: this error originates in the derive macro `babar::Codec` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Int4Codec: Decoder<String>` is not satisfied
+ --> tests/ui/derive/fail/wrong_type.rs:1:10
+  |
+1 | #[derive(babar::Codec)]
+  |          ^^^^^^^^^^^^ the trait `Decoder<String>` is not implemented for `Int4Codec`
+  |
+help: the trait `Decoder<String>` is not implemented for `Int4Codec`
+      but trait `Decoder<i32>` is implemented for it
+ --> src/codec/primitive.rs
+  |
+  | impl Decoder<i32> for Int4Codec {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = help: for that trait implementation, expected `i32`, found `String`
+note: required by a bound in `assert_codec`
+ --> tests/ui/derive/fail/wrong_type.rs:1:10
+  |
+1 | #[derive(babar::Codec)]
+  |          ^^^^^^^^^^^^ required by this bound in `assert_codec`
+  = note: this error originates in the derive macro `babar::Codec` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+ --> tests/ui/derive/fail/wrong_type.rs:1:10
+  |
+1 | #[derive(babar::Codec)]
+  |          ^^^^^^^^^^^^
+  |          |
+  |          expected `&i32`, found `&String`
+  |          arguments to this function are incorrect
+  |
+  = note: expected reference `&i32`
+             found reference `&String`
+note: method defined here
+ --> src/codec/mod.rs
+  |
+  |     fn encode(&self, value: &A, params: &mut Vec<Option<Vec<u8>>>) -> Result<()>;
+  |        ^^^^^^
+  = note: this error originates in the derive macro `babar::Codec` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Int4Codec: Encoder<String>` is not satisfied
+ --> tests/ui/derive/fail/wrong_type.rs:1:10
+  |
+1 | #[derive(babar::Codec)]
+  |          ^^^^^^^^^^^^ the trait `Encoder<String>` is not implemented for `Int4Codec`
+  |
+help: the trait `Encoder<String>` is not implemented for `Int4Codec`
+      but trait `Encoder<i32>` is implemented for it
+ --> src/codec/primitive.rs
+  |
+  | impl Encoder<i32> for Int4Codec {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = help: for that trait implementation, expected `i32`, found `String`
+  = note: required for `(Int4Codec,)` to implement `Encoder<(String,)>`
+  = note: this error originates in the derive macro `babar::Codec` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Int4Codec: Decoder<String>` is not satisfied
+ --> tests/ui/derive/fail/wrong_type.rs:1:10
+  |
+1 | #[derive(babar::Codec)]
+  |          ^^^^^^^^^^^^ the trait `Decoder<String>` is not implemented for `Int4Codec`
+  |
+help: the trait `Decoder<String>` is not implemented for `Int4Codec`
+      but trait `Decoder<i32>` is implemented for it
+ --> src/codec/primitive.rs
+  |
+  | impl Decoder<i32> for Int4Codec {
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = help: for that trait implementation, expected `i32`, found `String`
+  = note: required for `(Int4Codec,)` to implement `Decoder<(String,)>`
+  = note: this error originates in the derive macro `babar::Codec` (in Nightly builds, run with -Z macro-backtrace for more info)

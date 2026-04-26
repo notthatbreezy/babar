@@ -1,0 +1,5 @@
+error: Codec requires a struct with named fields
+ --> tests/ui/derive/fail/tuple_struct.rs:2:14
+  |
+2 | struct Broken(#[allow(dead_code)] i32);
+  |              ^^^^^^^^^^^^^^^^^^^^^^^^^

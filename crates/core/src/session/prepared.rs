@@ -1,33 +1,23 @@
-//! `PreparedQuery` and `PreparedCommand` — handles to named prepared
-//! statements that live server-side until explicitly closed or dropped.
+//! `PreparedQuery` and `PreparedCommand` handles.
 
 use std::marker::PhantomData;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tracing::Instrument as _;
 
 use super::cache::{CacheKey, StatementCache};
 use super::{parse_affected_rows, Command};
 use crate::codec::{Decoder, Encoder};
 use crate::error::{Error, Result};
-use crate::query::{Command as QueryCommand, Query};
+use crate::query::{Command as QueryCommand, Origin, Query};
+use crate::telemetry;
 
-/// A prepared statement that returns rows. Created by
-/// [`Session::prepare_query`](super::Session::prepare_query).
-///
-/// Holds an `Arc` reference to the encoder and decoder from the original
-/// `Query`, plus the server-side statement name.
-///
-/// Each handle participates in the session's prepared-statement cache. If the
-/// same query is prepared again, the cache returns another `PreparedQuery`
-/// pointing at the same server-side statement. The statement stays alive until
-/// the last handle closes or drops.
-///
-/// Call [`PreparedQuery::close`] when you need confirmation that the server has
-/// released the statement. Dropping the last live handle triggers best-effort,
-/// non-blocking cleanup in the background.
+/// A prepared statement that returns rows.
 pub struct PreparedQuery<A, B> {
     name: String,
+    sql: String,
+    origin: Option<Origin>,
     encoder: Arc<dyn Encoder<A> + Send + Sync>,
     decoder: Arc<dyn Decoder<B> + Send + Sync>,
     tx: mpsc::Sender<Command>,
@@ -46,6 +36,8 @@ impl<A, B> PreparedQuery<A, B> {
     ) -> Self {
         Self {
             name,
+            sql: query.sql().to_string(),
+            origin: query.origin(),
             encoder: Arc::clone(&query.encoder),
             decoder: Arc::clone(&query.decoder),
             tx,
@@ -56,35 +48,43 @@ impl<A, B> PreparedQuery<A, B> {
     }
 
     /// Execute the prepared query with the given arguments and decode all rows.
-    ///
-    /// Reuses the already-prepared server-side statement, so repeated calls
-    /// avoid another parse/describe roundtrip.
     pub async fn query(&self, args: A) -> Result<Vec<B>> {
-        let mut params: Vec<Option<Vec<u8>>> = Vec::with_capacity(self.encoder.oids().len());
-        self.encoder.encode(&args, &mut params)?;
-        let param_formats = self.encoder.format_codes().to_vec();
-        let result_formats = self.decoder.format_codes().to_vec();
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(Command::ExecutePrepared {
-                stmt_name: self.name.clone(),
-                params,
-                param_formats,
-                result_formats,
-                expected_columns: Some(self.decoder.n_columns()),
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| Error::Closed)?;
-        let outcome = match reply_rx.await {
-            Ok(result) => result?,
-            Err(_) => return Err(Error::Closed),
-        };
-        let mut rows = Vec::with_capacity(outcome.rows.len());
-        for cols in outcome.rows {
-            rows.push(self.decoder.decode(&cols)?);
+        let span = telemetry::execute_span(&self.sql);
+        async {
+            let mut params: Vec<Option<Vec<u8>>> = Vec::with_capacity(self.encoder.oids().len());
+            self.encoder
+                .encode(&args, &mut params)
+                .map_err(|err| err.with_sql(&self.sql, self.origin))?;
+            let param_formats = self.encoder.format_codes().to_vec();
+            let result_formats = self.decoder.format_codes().to_vec();
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.tx
+                .send(Command::ExecutePrepared {
+                    stmt_name: self.name.clone(),
+                    params,
+                    param_formats,
+                    result_formats,
+                    expected_columns: Some(self.decoder.n_columns()),
+                    reply: reply_tx,
+                })
+                .await
+                .map_err(|_| Error::closed().with_sql(&self.sql, self.origin))?;
+            let outcome = match reply_rx.await {
+                Ok(result) => result.map_err(|err| err.with_sql(&self.sql, self.origin))?,
+                Err(_) => return Err(Error::closed().with_sql(&self.sql, self.origin)),
+            };
+            let mut rows = Vec::with_capacity(outcome.rows.len());
+            for cols in outcome.rows {
+                rows.push(
+                    self.decoder
+                        .decode(&cols)
+                        .map_err(|err| err.with_sql(&self.sql, self.origin))?,
+                );
+            }
+            Ok(rows)
         }
-        Ok(rows)
+        .instrument(span)
+        .await
     }
 
     /// The server-side statement name.
@@ -92,12 +92,10 @@ impl<A, B> PreparedQuery<A, B> {
         &self.name
     }
 
-    /// Explicitly close this prepared statement, deallocating it on the
-    /// server. Prefer this over relying on `Drop` when you need
-    /// confirmation that the statement was successfully closed.
+    /// Explicitly close this prepared statement.
     pub async fn close(mut self) -> Result<()> {
         self.closed = true;
-        if self.cache.lock().await.release(&self.key).is_none() {
+        if self.cache.lock().await.release_handle(&self.key).is_none() {
             return Ok(());
         }
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -107,10 +105,10 @@ impl<A, B> PreparedQuery<A, B> {
                 reply: reply_tx,
             })
             .await
-            .map_err(|_| Error::Closed)?;
+            .map_err(|_| Error::closed().with_sql(&self.sql, self.origin))?;
         match reply_rx.await {
-            Ok(result) => result,
-            Err(_) => Err(Error::Closed),
+            Ok(result) => result.map_err(|err| err.with_sql(&self.sql, self.origin)),
+            Err(_) => Err(Error::closed().with_sql(&self.sql, self.origin)),
         }
     }
 }
@@ -123,8 +121,7 @@ impl<A, B> Drop for PreparedQuery<A, B> {
             let cache = Arc::clone(&self.cache);
             let key = self.key.clone();
             tokio::spawn(async move {
-                // Best-effort: only the last live handle tears down the server-side statement.
-                if cache.lock().await.release(&key).is_none() {
+                if cache.lock().await.release_handle(&key).is_none() {
                     return;
                 }
                 let (reply_tx, _reply_rx) = oneshot::channel();
@@ -147,12 +144,11 @@ impl<A, B> std::fmt::Debug for PreparedQuery<A, B> {
     }
 }
 
-/// A prepared statement that does not return rows. Created by
-/// [`Session::prepare_command`](super::Session::prepare_command).
-///
-/// Shares the same cache and close/drop lifecycle as [`PreparedQuery`].
+/// A prepared statement that does not return rows.
 pub struct PreparedCommand<A> {
     name: String,
+    sql: String,
+    origin: Option<Origin>,
     encoder: Arc<dyn Encoder<A> + Send + Sync>,
     tx: mpsc::Sender<Command>,
     cache: Arc<Mutex<StatementCache>>,
@@ -171,6 +167,8 @@ impl<A> PreparedCommand<A> {
     ) -> Self {
         Self {
             name,
+            sql: cmd.sql().to_string(),
+            origin: cmd.origin(),
             encoder: Arc::clone(&cmd.encoder),
             tx,
             cache,
@@ -180,29 +178,35 @@ impl<A> PreparedCommand<A> {
         }
     }
 
-    /// Execute the prepared command with the given arguments. Returns the
-    /// affected-row count.
+    /// Execute the prepared command with the given arguments.
     pub async fn execute(&self, args: A) -> Result<u64> {
-        let mut params: Vec<Option<Vec<u8>>> = Vec::with_capacity(self.encoder.oids().len());
-        self.encoder.encode(&args, &mut params)?;
-        let param_formats = self.encoder.format_codes().to_vec();
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(Command::ExecutePrepared {
-                stmt_name: self.name.clone(),
-                params,
-                param_formats,
-                result_formats: Vec::new(),
-                expected_columns: None,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| Error::Closed)?;
-        let outcome = match reply_rx.await {
-            Ok(result) => result?,
-            Err(_) => return Err(Error::Closed),
-        };
-        Ok(parse_affected_rows(outcome.command_tag.as_deref()))
+        let span = telemetry::execute_span(&self.sql);
+        async {
+            let mut params: Vec<Option<Vec<u8>>> = Vec::with_capacity(self.encoder.oids().len());
+            self.encoder
+                .encode(&args, &mut params)
+                .map_err(|err| err.with_sql(&self.sql, self.origin))?;
+            let param_formats = self.encoder.format_codes().to_vec();
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.tx
+                .send(Command::ExecutePrepared {
+                    stmt_name: self.name.clone(),
+                    params,
+                    param_formats,
+                    result_formats: Vec::new(),
+                    expected_columns: None,
+                    reply: reply_tx,
+                })
+                .await
+                .map_err(|_| Error::closed().with_sql(&self.sql, self.origin))?;
+            let outcome = match reply_rx.await {
+                Ok(result) => result.map_err(|err| err.with_sql(&self.sql, self.origin))?,
+                Err(_) => return Err(Error::closed().with_sql(&self.sql, self.origin)),
+            };
+            Ok(parse_affected_rows(outcome.command_tag.as_deref()))
+        }
+        .instrument(span)
+        .await
     }
 
     /// The server-side statement name.
@@ -213,7 +217,7 @@ impl<A> PreparedCommand<A> {
     /// Explicitly close this prepared statement.
     pub async fn close(mut self) -> Result<()> {
         self.closed = true;
-        if self.cache.lock().await.release(&self.key).is_none() {
+        if self.cache.lock().await.release_handle(&self.key).is_none() {
             return Ok(());
         }
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -223,10 +227,10 @@ impl<A> PreparedCommand<A> {
                 reply: reply_tx,
             })
             .await
-            .map_err(|_| Error::Closed)?;
+            .map_err(|_| Error::closed().with_sql(&self.sql, self.origin))?;
         match reply_rx.await {
-            Ok(result) => result,
-            Err(_) => Err(Error::Closed),
+            Ok(result) => result.map_err(|err| err.with_sql(&self.sql, self.origin)),
+            Err(_) => Err(Error::closed().with_sql(&self.sql, self.origin)),
         }
     }
 }
@@ -239,7 +243,7 @@ impl<A> Drop for PreparedCommand<A> {
             let cache = Arc::clone(&self.cache);
             let key = self.key.clone();
             tokio::spawn(async move {
-                if cache.lock().await.release(&key).is_none() {
+                if cache.lock().await.release_handle(&key).is_none() {
                     return;
                 }
                 let (reply_tx, _reply_rx) = oneshot::channel();

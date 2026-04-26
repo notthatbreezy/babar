@@ -31,12 +31,12 @@
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use futures_util::stream::StreamExt;
-use tokio::io::AsyncWriteExt;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::codec::FramedRead;
 use tracing::{debug, trace, warn};
@@ -253,6 +253,28 @@ impl ServerParams {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct DriverState {
+    transaction_status: AtomicU8,
+}
+
+impl DriverState {
+    fn new(initial_transaction_status: u8) -> Self {
+        Self {
+            transaction_status: AtomicU8::new(initial_transaction_status),
+        }
+    }
+
+    pub(crate) fn transaction_status(&self) -> u8 {
+        self.transaction_status.load(Ordering::Relaxed)
+    }
+
+    fn set_transaction_status(&self, transaction_status: u8) {
+        self.transaction_status
+            .store(transaction_status, Ordering::Relaxed);
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BackendKeyData {
     pub process_id: i32,
@@ -261,26 +283,37 @@ pub(crate) struct BackendKeyData {
 
 /// Internal: spawn the driver and return everything the public `Session`
 /// needs to wrap it.
-pub(crate) async fn spawn(
-    read: OwnedReadHalf,
-    write: OwnedWriteHalf,
+pub(crate) async fn spawn<S>(
+    stream: S,
     params: HashMap<String, String>,
     key_data: Option<BackendKeyData>,
-) -> Result<(mpsc::Sender<Command>, ServerParams, Option<BackendKeyData>)> {
+    initial_transaction_status: u8,
+) -> Result<(
+    mpsc::Sender<Command>,
+    ServerParams,
+    Option<BackendKeyData>,
+    Arc<DriverState>,
+)>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let (tx, rx) = mpsc::channel(super::COMMAND_BUFFER_SIZE);
-    let driver = Driver::new(read, write, rx);
+    let state = Arc::new(DriverState::new(initial_transaction_status));
+    let (read, write) = tokio::io::split(stream);
+    let driver = Driver::new(read, write, rx, Arc::clone(&state));
     tokio::spawn(driver.run());
-    Ok((tx, ServerParams::from_map(params), key_data))
+    Ok((tx, ServerParams::from_map(params), key_data, state))
 }
 
-struct Driver {
-    reader: FramedRead<OwnedReadHalf, BackendCodec>,
-    writer: OwnedWriteHalf,
+struct Driver<R, W> {
+    reader: FramedRead<R, BackendCodec>,
+    writer: W,
     inbox: mpsc::Receiver<Command>,
     /// Pending command in flight. The driver still serializes commands:
     /// at most one round-trip is active at a time.
     pending: Option<Pending>,
     write_buf: BytesMut,
+    state: Arc<DriverState>,
 }
 
 /// State for the in-flight command.
@@ -345,14 +378,19 @@ enum Pending {
     },
 }
 
-impl Driver {
-    fn new(read: OwnedReadHalf, write: OwnedWriteHalf, inbox: mpsc::Receiver<Command>) -> Self {
+impl<R, W> Driver<R, W>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    fn new(read: R, write: W, inbox: mpsc::Receiver<Command>, state: Arc<DriverState>) -> Self {
         Self {
             reader: FramedRead::new(read, BackendCodec),
             writer: write,
             inbox,
             pending: None,
             write_buf: BytesMut::with_capacity(512),
+            state,
         }
     }
 
@@ -372,7 +410,7 @@ impl Driver {
                         }
                         None => {
                             // Socket EOF.
-                            self.fail_pending(Error::Closed);
+                            self.fail_pending(Error::closed());
                             break;
                         }
                     }
@@ -630,13 +668,13 @@ impl Driver {
                 // Drain inbox, fail anything pending.
                 self.inbox.close();
                 while let Some(extra) = self.inbox.recv().await {
-                    fail_command(extra, Error::Closed);
+                    fail_command(extra, Error::closed());
                 }
                 self.pending = Some(Pending::Close {
                     reply: oneshot::channel().0,
                 });
                 // Mark a sentinel so the run loop exits next iteration.
-                Err(Error::Closed)
+                Err(Error::closed())
             }
         }
     }
@@ -647,6 +685,9 @@ impl Driver {
         reason = "explicit per-state handling reads more clearly than a merged dispatch"
     )]
     fn on_message(&mut self, msg: BackendMessage) {
+        if let BackendMessage::ReadyForQuery { transaction_status } = &msg {
+            self.state.set_transaction_status(*transaction_status);
+        }
         trace!(?msg, "backend message");
         match (&mut self.pending, msg) {
             (
@@ -680,7 +721,7 @@ impl Driver {
                 Some(Pending::SimpleQuery { error, .. }),
                 BackendMessage::ErrorResponse { fields },
             ) => {
-                *error = Some(server_error(fields));
+                *error = Some(Error::from_server_fields(fields));
             }
             (Some(Pending::SimpleQuery { .. }), BackendMessage::ReadyForQuery { .. }) => {
                 if let Some(Pending::SimpleQuery {
@@ -712,6 +753,8 @@ impl Driver {
                         *error = error.take().or(Some(Error::ColumnAlignment {
                             expected,
                             actual: fields.len(),
+                            sql: None,
+                            origin: None,
                         }));
                     }
                 }
@@ -732,6 +775,8 @@ impl Driver {
                         *error = error.take().or(Some(Error::ColumnAlignment {
                             expected,
                             actual: 0,
+                            sql: None,
+                            origin: None,
                         }));
                     }
                 }
@@ -749,7 +794,7 @@ impl Driver {
                 // Treat as a successful no-op command. command_tag stays None.
             }
             (Some(Pending::Extended { error, .. }), BackendMessage::ErrorResponse { fields }) => {
-                *error = error.take().or(Some(server_error(fields)));
+                *error = error.take().or(Some(Error::from_server_fields(fields)));
             }
             (Some(Pending::Extended { .. }), BackendMessage::ReadyForQuery { .. }) => {
                 if let Some(Pending::Extended {
@@ -792,7 +837,7 @@ impl Driver {
                 *slot = Some(Vec::new());
             }
             (Some(Pending::Prepare { error, .. }), BackendMessage::ErrorResponse { fields }) => {
-                *error = error.take().or(Some(server_error(fields)));
+                *error = error.take().or(Some(Error::from_server_fields(fields)));
             }
             (Some(Pending::Prepare { .. }), BackendMessage::ReadyForQuery { .. }) => {
                 if let Some(Pending::Prepare {
@@ -831,6 +876,8 @@ impl Driver {
                         *error = error.take().or(Some(Error::ColumnAlignment {
                             expected,
                             actual: fields.len(),
+                            sql: None,
+                            origin: None,
                         }));
                     }
                 }
@@ -848,6 +895,8 @@ impl Driver {
                         *error = error.take().or(Some(Error::ColumnAlignment {
                             expected,
                             actual: 0,
+                            sql: None,
+                            origin: None,
                         }));
                     }
                 }
@@ -863,7 +912,7 @@ impl Driver {
                 Some(Pending::ExecutePrepared { error, .. }),
                 BackendMessage::ErrorResponse { fields },
             ) => {
-                *error = error.take().or(Some(server_error(fields)));
+                *error = error.take().or(Some(Error::from_server_fields(fields)));
             }
             (Some(Pending::ExecutePrepared { .. }), BackendMessage::ReadyForQuery { .. }) => {
                 if let Some(Pending::ExecutePrepared {
@@ -882,7 +931,7 @@ impl Driver {
             // ---- BindPortal ----------------------------------------------
             (Some(Pending::BindPortal { .. }), BackendMessage::BindComplete) => {}
             (Some(Pending::BindPortal { error, .. }), BackendMessage::ErrorResponse { fields }) => {
-                *error = error.take().or(Some(server_error(fields)));
+                *error = error.take().or(Some(Error::from_server_fields(fields)));
             }
             (Some(Pending::BindPortal { .. }), BackendMessage::ReadyForQuery { .. }) => {
                 if let Some(Pending::BindPortal { reply, error }) = self.pending.take() {
@@ -904,7 +953,7 @@ impl Driver {
                 Some(Pending::ExecutePortal { error, .. }),
                 BackendMessage::ErrorResponse { fields },
             ) => {
-                *error = error.take().or(Some(server_error(fields)));
+                *error = error.take().or(Some(Error::from_server_fields(fields)));
             }
             (Some(Pending::ExecutePortal { .. }), BackendMessage::ReadyForQuery { .. }) => {
                 if let Some(Pending::ExecutePortal {
@@ -924,7 +973,7 @@ impl Driver {
                 Some(Pending::ClosePortal { error, .. }),
                 BackendMessage::ErrorResponse { fields },
             ) => {
-                *error = error.take().or(Some(server_error(fields)));
+                *error = error.take().or(Some(Error::from_server_fields(fields)));
             }
             (Some(Pending::ClosePortal { .. }), BackendMessage::ReadyForQuery { .. }) => {
                 if let Some(Pending::ClosePortal { reply, error }) = self.pending.take() {
@@ -938,7 +987,7 @@ impl Driver {
                 Some(Pending::CloseStatement { error, .. }),
                 BackendMessage::ErrorResponse { fields },
             ) => {
-                *error = error.take().or(Some(server_error(fields)));
+                *error = error.take().or(Some(Error::from_server_fields(fields)));
             }
             (Some(Pending::CloseStatement { .. }), BackendMessage::ReadyForQuery { .. }) => {
                 if let Some(Pending::CloseStatement { reply, error }) = self.pending.take() {
@@ -1011,7 +1060,7 @@ impl Driver {
             leftover.push_back(extra);
         }
         for extra in leftover {
-            fail_command(extra, Error::Closed);
+            fail_command(extra, Error::closed());
         }
     }
 }
@@ -1039,25 +1088,6 @@ fn fail_command(cmd: Command, err: Error) {
     }
 }
 
-fn server_error(fields: Vec<(u8, String)>) -> Error {
-    let mut severity = String::new();
-    let mut code = String::new();
-    let mut message = String::new();
-    for (k, v) in fields {
-        match k {
-            b'S' | b'V' if severity.is_empty() => severity = v,
-            b'C' => code = v,
-            b'M' => message = v,
-            _ => {}
-        }
-    }
-    Error::Server {
-        severity,
-        code,
-        message,
-    }
-}
-
 fn pending_kind(p: Option<&Pending>) -> &'static str {
     match p {
         None => "None",
@@ -1080,7 +1110,7 @@ impl Error {
     /// copy. Acceptable: the run loop is exiting anyway.
     fn clone_for_caller(&self) -> Self {
         match self {
-            Error::Io(_) | Error::Closed => Error::Closed,
+            Error::Io(_) | Error::Closed { .. } => Error::closed(),
             Error::Protocol(s) => Error::Protocol(s.clone()),
             Error::Auth(s) => Error::Auth(s.clone()),
             Error::UnsupportedAuth(s) => Error::UnsupportedAuth(s.clone()),
@@ -1088,27 +1118,48 @@ impl Error {
                 code,
                 severity,
                 message,
+                detail,
+                hint,
+                position,
+                sql,
+                origin,
             } => Error::Server {
                 code: code.clone(),
                 severity: severity.clone(),
                 message: message.clone(),
+                detail: detail.clone(),
+                hint: hint.clone(),
+                position: *position,
+                sql: sql.clone(),
+                origin: *origin,
             },
             Error::Config(s) => Error::Config(s.clone()),
             Error::Codec(s) => Error::Codec(s.clone()),
-            Error::ColumnAlignment { expected, actual } => Error::ColumnAlignment {
+            Error::ColumnAlignment {
+                expected,
+                actual,
+                sql,
+                origin,
+            } => Error::ColumnAlignment {
                 expected: *expected,
                 actual: *actual,
+                sql: sql.clone(),
+                origin: *origin,
             },
             Error::SchemaMismatch {
                 position,
                 expected_oid,
                 actual_oid,
                 ref column_name,
+                sql,
+                origin,
             } => Error::SchemaMismatch {
                 position: *position,
                 expected_oid: *expected_oid,
                 actual_oid: *actual_oid,
                 column_name: column_name.clone(),
+                sql: sql.clone(),
+                origin: *origin,
             },
         }
     }

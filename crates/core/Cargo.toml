@@ -10,25 +10,53 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[package.metadata.docs.rs]
+features = ["rustls", "uuid", "time", "chrono", "json", "numeric", "net", "interval", "array", "range"]
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
-default = []
-# Optional dial9-tokio-telemetry instrumentation in examples. Enable with
-# `cargo run --example playground --features dial9`. Feature lives on the
-# crate (rather than as a dev-dependency) so opting in is explicit and
-# the default build never pulls in the dial9 tree.
-dial9 = ["dep:dial9-tokio-telemetry"]
+default = ["rustls"]
+rustls = [
+    "dep:rustls",
+    "dep:tokio-rustls",
+    "dep:rustls-native-certs",
+    "dep:rustls-pemfile",
+]
+native-tls = ["dep:native-tls", "dep:tokio-native-tls"]
+uuid = ["dep:uuid"]
+time = ["dep:time"]
+chrono = ["dep:chrono"]
+json = ["dep:serde", "dep:serde_json"]
+numeric = ["dep:rust_decimal"]
+net = []
+interval = []
+array = ["dep:fallible-iterator"]
+range = []
 
 [dependencies]
 babar-macros = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "macros", "time"] }
-dial9-tokio-telemetry = { workspace = true, optional = true }
 tokio-util = { workspace = true, features = ["codec"] }
 bytes = { workspace = true }
 postgres-protocol = { workspace = true }
 futures-core = { workspace = true }
 futures-util = { workspace = true, features = ["std"] }
 thiserror = { workspace = true }
-tracing = { workspace = true }
+tracing = { workspace = true, features = ["attributes", "std"] }
+async_fn_traits = "0.1"
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+time = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+rust_decimal = { workspace = true, optional = true }
+fallible-iterator = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+rustls-native-certs = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+native-tls = { workspace = true, optional = true }
+tokio-native-tls = { workspace = true, optional = true }
 
 # Auth deps
 hmac = { workspace = true }
@@ -46,6 +74,16 @@ hex-literal = { workspace = true }
 rand = { workspace = true }
 futures-util = { workspace = true, features = ["std"] }
 trybuild = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+time = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "std"] }
+tracing-test = { workspace = true }
+clap = { workspace = true }
+axum = { workspace = true }
 
 [target.'cfg(loom)'.dev-dependencies]
 loom = { workspace = true }
@@ -61,3 +99,5 @@ module_name_repetitions = "allow"
 missing_errors_doc = "allow"
 must_use_candidate = "allow"
 missing_panics_doc = "allow"
+doc_markdown = "allow"
+result_large_err = "allow"

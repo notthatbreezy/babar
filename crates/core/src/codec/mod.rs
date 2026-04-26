@@ -29,19 +29,64 @@
 //! negotiates binary format when both the encoder and decoder support it.
 //! Postgres format codes: `0` = text, `1` = binary.
 
-#![allow(non_upper_case_globals)] // codec consts (`int4`, `text`, ...) are lowercase to match Skunk
+#![allow(non_upper_case_globals)]
 
+#[cfg(feature = "array")]
+mod array;
+#[cfg(feature = "chrono")]
+mod chrono;
+#[cfg(feature = "interval")]
+mod interval;
+#[cfg(feature = "json")]
+mod json;
+#[cfg(feature = "net")]
+mod net;
 mod nullable;
+#[cfg(feature = "numeric")]
+mod numeric;
 mod primitive;
 #[cfg(test)]
 mod proptests;
+#[cfg(feature = "range")]
+mod range;
+#[cfg(feature = "time")]
+mod time;
 mod tuple;
+#[cfg(feature = "uuid")]
+mod uuid;
 
+#[cfg(feature = "array")]
+pub use array::{array, Array, ArrayCodec, ArrayDimension};
+#[cfg(feature = "chrono")]
+pub use chrono::{
+    chrono_date, chrono_time, chrono_timestamp, chrono_timestamptz, ChronoDateCodec,
+    ChronoDateTimeCodec, ChronoTimeCodec, ChronoTimestampCodec,
+};
+#[cfg(feature = "interval")]
+pub use interval::{interval, Interval, IntervalCodec};
+#[cfg(feature = "json")]
+pub use json::{
+    json, jsonb, typed_json, typed_json_text, JsonCodec, JsonbCodec, TypedJsonCodec,
+    TypedJsonTextCodec,
+};
+#[cfg(feature = "net")]
+pub use net::{cidr, inet, CidrCodec, InetCodec};
 pub use nullable::{nullable, Nullable};
+#[cfg(feature = "numeric")]
+pub use numeric::{numeric, NumericCodec};
 pub use primitive::{
     bool, bpchar, bytea, float4, float8, int2, int4, int8, text, varchar, BoolCodec, BpcharCodec,
     ByteaCodec, Float4Codec, Float8Codec, Int2Codec, Int4Codec, Int8Codec, TextCodec, VarcharCodec,
 };
+#[cfg(feature = "range")]
+pub use range::{range, Range, RangeBound, RangeCodec};
+#[cfg(feature = "time")]
+pub use time::{
+    date, time, timestamp, timestamptz, DateCodec, OffsetDateTimeCodec, PrimitiveDateTimeCodec,
+    TimeCodec,
+};
+#[cfg(feature = "uuid")]
+pub use uuid::{uuid, UuidCodec};
 
 use bytes::Bytes;
 
@@ -67,8 +112,6 @@ pub trait Encoder<A>: Send + Sync {
     /// Postgres format codes for parameter slots, in order. Each element
     /// is `0` (text) or `1` (binary). Default: text for all.
     fn format_codes(&self) -> &'static [i16] {
-        // Default: text for all slots. Codecs that support binary
-        // override this.
         &[]
     }
 }
@@ -98,8 +141,8 @@ pub trait Decoder<A>: Send + Sync {
     }
 }
 
-/// A codec is anything that's both an [`Encoder`] and [`Decoder`] for the
-/// same type.
+/// A codec is anything that's both an [`Encoder`] and [`Decoder`] for the same
+/// type.
 pub trait Codec<A>: Encoder<A> + Decoder<A> {}
 
 impl<C, A> Codec<A> for C where C: Encoder<A> + Decoder<A> {}

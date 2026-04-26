@@ -1,102 +1,94 @@
 //! Connection startup and authentication.
 //!
-//! Startup is sequential and has no concurrency: the client speaks, the
-//! server replies, until we see the first `ReadyForQuery`. We drive it
-//! inline (not on the driver task), then split the [`TcpStream`] and hand
-//! the halves to the driver.
+//! Startup is sequential and has no concurrency: the client speaks, the server
+//! replies, until we see the first `ReadyForQuery`. We drive it inline (not on
+//! the driver task), then hand the fully-negotiated transport to the driver.
 
 use bytes::BytesMut;
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio::time::timeout;
 use tokio_util::codec::Decoder;
-use tracing::debug;
+use tracing::{debug, Instrument as _};
 
 use crate::auth::md5::md5_password;
-use crate::auth::scram::{ScramClient, SCRAM_SHA_256};
+use crate::auth::scram::{ScramClient, SCRAM_SHA_256, SCRAM_SHA_256_PLUS};
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::protocol::backend::{AuthRequest, BackendMessage};
 use crate::protocol::codec::BackendCodec;
 use crate::protocol::frontend;
+use crate::telemetry;
+use crate::tls::{self, AnyStream, ChannelBindingState};
 
 use super::driver::{spawn, BackendKeyData};
 use super::Session;
 
-pub(super) async fn connect(config: Config) -> Result<Session> {
-    let host = config.host_str();
-    let connect_fut = TcpStream::connect((host.as_str(), config.port));
-    let mut stream = match config.connect_timeout {
-        Some(t) => timeout(t, connect_fut).await.map_err(|_| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "TCP connect timed out",
-            ))
-        })?,
-        None => connect_fut.await,
-    }
-    .map_err(Error::Io)?;
-    stream.set_nodelay(true).map_err(Error::Io)?;
+pub(super) async fn connect(config: Config, retain_prepared_statements: bool) -> Result<Session> {
+    let span = telemetry::connect_span(&config);
+    async move {
+        let mut stream = tls::connect_transport(&config).await?;
 
-    let mut io = StartupIo {
-        stream: &mut stream,
-        rx_buf: BytesMut::with_capacity(1024),
-        tx_buf: BytesMut::with_capacity(512),
-        codec: BackendCodec,
-    };
+        let mut io = StartupIo {
+            stream: &mut stream,
+            rx_buf: BytesMut::with_capacity(1024),
+            tx_buf: BytesMut::with_capacity(512),
+            codec: BackendCodec,
+        };
 
-    // Build and send StartupMessage.
-    let mut params: Vec<(&str, &str)> = vec![
-        ("user", config.user_str()),
-        ("database", config.database_str()),
-        ("client_encoding", "UTF8"),
-    ];
-    if let Some(app) = config.application_name_str() {
-        params.push(("application_name", app));
-    }
-    frontend::startup(params.iter().map(|(k, v)| (*k, *v)), &mut io.tx_buf)?;
-    io.flush().await?;
+        let mut params: Vec<(&str, &str)> = vec![
+            ("user", config.user_str()),
+            ("database", config.database_str()),
+            ("client_encoding", "UTF8"),
+        ];
+        if let Some(app) = config.application_name_str() {
+            params.push(("application_name", app));
+        }
+        frontend::startup(params.iter().map(|(k, v)| (*k, *v)), &mut io.tx_buf)?;
+        io.flush().await?;
 
-    // Authenticate.
-    authenticate(&mut io, &config).await?;
+        authenticate(&mut io, &config).await?;
 
-    // Now collect ParameterStatus, BackendKeyData until ReadyForQuery.
-    let mut server_params: HashMap<String, String> = HashMap::new();
-    let mut key_data: Option<BackendKeyData> = None;
-    loop {
-        match io.read_message().await? {
-            BackendMessage::ParameterStatus { name, value } => {
-                server_params.insert(name, value);
-            }
-            BackendMessage::BackendKeyData {
-                process_id,
-                secret_key,
-            } => {
-                key_data = Some(BackendKeyData {
+        let mut server_params: HashMap<String, String> = HashMap::new();
+        let mut key_data: Option<BackendKeyData> = None;
+        let initial_transaction_status = loop {
+            match io.read_message().await? {
+                BackendMessage::ParameterStatus { name, value } => {
+                    server_params.insert(name, value);
+                }
+                BackendMessage::BackendKeyData {
                     process_id,
                     secret_key,
-                });
+                } => {
+                    key_data = Some(BackendKeyData {
+                        process_id,
+                        secret_key,
+                    });
+                }
+                BackendMessage::NoticeResponse { .. } => {}
+                BackendMessage::ReadyForQuery { transaction_status } => break transaction_status,
+                BackendMessage::ErrorResponse { fields } => {
+                    return Err(Error::from_server_fields(fields));
+                }
+                other => {
+                    return Err(Error::protocol(format!(
+                        "unexpected message after auth: {other:?}"
+                    )));
+                }
             }
-            BackendMessage::NoticeResponse { .. } => {
-                // Informational; ignore.
-            }
-            BackendMessage::ReadyForQuery { .. } => break,
-            BackendMessage::ErrorResponse { fields } => {
-                return Err(server_error(fields));
-            }
-            other => {
-                return Err(Error::protocol(format!(
-                    "unexpected message after auth: {other:?}"
-                )));
-            }
-        }
-    }
+        };
 
-    // Hand the connection off to the driver task.
-    let (read, write) = stream.into_split();
-    let (tx, params, kd) = spawn(read, write, server_params, key_data).await?;
-    Ok(super::new_session(tx, params, kd))
+        let (tx, params, kd, state) =
+            spawn(stream, server_params, key_data, initial_transaction_status).await?;
+        Ok(super::new_session(
+            tx,
+            params,
+            kd,
+            state,
+            retain_prepared_statements,
+        ))
+    }
+    .instrument(span)
+    .await
 }
 
 async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
@@ -124,28 +116,34 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
                 io.flush().await?;
             }
             BackendMessage::Authentication(AuthRequest::SaslMechanisms { mechanisms }) => {
-                if !mechanisms.iter().any(|m| m == SCRAM_SHA_256) {
-                    return Err(Error::UnsupportedAuth(format!(
-                        "server offered {mechanisms:?}; only SCRAM-SHA-256 is supported"
-                    )));
-                }
                 let password = config.password_str().ok_or_else(|| {
                     Error::Auth("server requested SCRAM auth but no password configured".into())
                 })?;
-                let mut scram = ScramClient::new(password);
+                let mut scram =
+                    match select_scram_client(&mechanisms, io.stream.scram_channel_binding())? {
+                        SelectedScram::Plain => ScramClient::new(password),
+                        SelectedScram::Plus(binding) => {
+                            ScramClient::with_channel_binding(password, Some(binding.clone()))
+                        }
+                    };
                 let client_first = scram.client_first()?;
                 io.tx_buf.clear();
-                frontend::sasl_initial_response(SCRAM_SHA_256, &client_first, &mut io.tx_buf)?;
+                frontend::sasl_initial_response(
+                    scram.mechanism_name(),
+                    &client_first,
+                    &mut io.tx_buf,
+                )?;
                 io.flush().await?;
 
-                // Server responds with SASLContinue.
                 let server_first = match io.read_message().await? {
                     BackendMessage::Authentication(AuthRequest::SaslContinue { data }) => data,
-                    BackendMessage::ErrorResponse { fields } => return Err(server_error(fields)),
+                    BackendMessage::ErrorResponse { fields } => {
+                        return Err(Error::from_server_fields(fields));
+                    }
                     other => {
                         return Err(Error::protocol(format!(
                             "expected SASLContinue, got {other:?}"
-                        )))
+                        )));
                     }
                 };
 
@@ -154,19 +152,18 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
                 frontend::sasl_response(&client_final, &mut io.tx_buf)?;
                 io.flush().await?;
 
-                // Server responds with SASLFinal.
                 let server_final = match io.read_message().await? {
                     BackendMessage::Authentication(AuthRequest::SaslFinal { data }) => data,
-                    BackendMessage::ErrorResponse { fields } => return Err(server_error(fields)),
+                    BackendMessage::ErrorResponse { fields } => {
+                        return Err(Error::from_server_fields(fields));
+                    }
                     other => {
                         return Err(Error::protocol(format!(
                             "expected SASLFinal, got {other:?}"
-                        )))
+                        )));
                     }
                 };
                 scram.verify_server_final(&server_final)?;
-
-                // Then AuthenticationOk follows in the next loop iteration.
             }
             BackendMessage::Authentication(AuthRequest::Unsupported { code }) => {
                 return Err(Error::UnsupportedAuth(format!("auth code {code}")));
@@ -178,10 +175,10 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
                     "unsolicited SASL message during initial auth",
                 ));
             }
-            BackendMessage::ErrorResponse { fields } => return Err(server_error(fields)),
-            BackendMessage::ParameterStatus { .. } | BackendMessage::NoticeResponse { .. } => {
-                // OK to receive during auth (rare).
+            BackendMessage::ErrorResponse { fields } => {
+                return Err(Error::from_server_fields(fields))
             }
+            BackendMessage::ParameterStatus { .. } | BackendMessage::NoticeResponse { .. } => {}
             other => {
                 return Err(Error::protocol(format!(
                     "unexpected message during auth: {other:?}"
@@ -191,31 +188,46 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
     }
 }
 
-fn server_error(fields: Vec<(u8, String)>) -> Error {
-    let mut severity = String::new();
-    let mut code = String::new();
-    let mut message = String::new();
-    for (k, v) in fields {
-        match k {
-            b'S' | b'V' if severity.is_empty() => severity = v,
-            b'C' => code = v,
-            b'M' => message = v,
-            _ => {}
-        }
+#[derive(Debug)]
+enum SelectedScram<'a> {
+    Plain,
+    Plus(&'a crate::auth::scram::ChannelBinding),
+}
+
+fn select_scram_client<'a>(
+    mechanisms: &[String],
+    channel_binding: &'a ChannelBindingState,
+) -> Result<SelectedScram<'a>> {
+    if mechanisms
+        .iter()
+        .any(|mechanism| mechanism == SCRAM_SHA_256_PLUS)
+    {
+        return match channel_binding {
+            ChannelBindingState::Available(binding) => Ok(SelectedScram::Plus(binding)),
+            ChannelBindingState::Unavailable => Err(Error::UnsupportedAuth(
+                "server offered SCRAM-SHA-256-PLUS but TLS channel binding data is unavailable"
+                    .into(),
+            )),
+            ChannelBindingState::Failed(reason) => Err(Error::UnsupportedAuth(format!(
+                "server offered SCRAM-SHA-256-PLUS but channel binding setup failed: {reason}"
+            ))),
+        };
     }
-    // Auth failures get rewrapped as Error::Auth so callers can match on it.
-    if code == "28P01" || code == "28000" {
-        return Error::Auth(format!("{severity} {code}: {message}"));
+
+    if mechanisms
+        .iter()
+        .any(|mechanism| mechanism == SCRAM_SHA_256)
+    {
+        return Ok(SelectedScram::Plain);
     }
-    Error::Server {
-        severity,
-        code,
-        message,
-    }
+
+    Err(Error::UnsupportedAuth(format!(
+        "server offered {mechanisms:?}; only SCRAM-SHA-256 and SCRAM-SHA-256-PLUS are supported"
+    )))
 }
 
 struct StartupIo<'a> {
-    stream: &'a mut TcpStream,
+    stream: &'a mut AnyStream,
     rx_buf: BytesMut,
     tx_buf: BytesMut,
     codec: BackendCodec,
@@ -237,15 +249,36 @@ impl StartupIo<'_> {
                 debug!(?msg, "startup recv");
                 return Ok(msg);
             }
-            // Read more bytes.
             let read = self
                 .stream
                 .read_buf(&mut self.rx_buf)
                 .await
                 .map_err(Error::Io)?;
             if read == 0 {
-                return Err(Error::Closed);
+                return Err(Error::closed());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::scram::ChannelBinding;
+
+    #[test]
+    fn prefers_scram_plus_when_channel_binding_is_available() {
+        let mechanisms = vec![SCRAM_SHA_256.to_string(), SCRAM_SHA_256_PLUS.to_string()];
+        let binding = ChannelBinding::tls_server_end_point(vec![1, 2, 3]);
+        let binding = ChannelBindingState::Available(binding);
+        let selected = select_scram_client(&mechanisms, &binding).unwrap();
+        assert!(matches!(selected, SelectedScram::Plus(_)));
+    }
+
+    #[test]
+    fn rejects_scram_plus_when_channel_binding_is_missing() {
+        let mechanisms = vec![SCRAM_SHA_256_PLUS.to_string()];
+        let err = select_scram_client(&mechanisms, &ChannelBindingState::Unavailable).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedAuth(_)));
     }
 }

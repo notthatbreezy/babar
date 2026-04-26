@@ -244,7 +244,9 @@ async fn schema_mismatch_column_count() {
         .await
         .expect_err("should mismatch");
     match err {
-        Error::ColumnAlignment { expected, actual } => {
+        Error::ColumnAlignment {
+            expected, actual, ..
+        } => {
             assert_eq!(expected, 1);
             assert_eq!(actual, 2);
         }
