@@ -7,7 +7,7 @@ Target Branch: feature/prepared-statements
 Execution Mode: current-checkout
 Repository Identity: none
 Execution Binding: none
-Workflow Mode: full
+Workflow Mode: custom
 Review Strategy: local
 Review Policy: milestones
 Session Policy: continuous
@@ -32,7 +32,7 @@ Planning Review Interaction Mode: parallel
 Planning Review Specialist Models: none
 Planning Review Perspectives: auto
 Planning Review Perspective Cap: 2
-Custom Workflow Instructions: none
+Custom Workflow Instructions: PAW Lite workflow. Use .paw/work/prepared-statements/Plan.md as the implementation plan artifact. No Spec.md, CodeResearch.md, SpecResearch.md, or Docs.md were produced for this run.
 Initial Prompt: prepared statement support and related tests
 Issue URL: none
 Remote: origin
