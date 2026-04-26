@@ -115,10 +115,13 @@ macro crate directly.
 ```rust
 // Session
 pub struct Session { /* handle to driver task */ }
+pub struct CopyIn<T> { /* typed binary COPY FROM STDIN bulk ingest */ }
 
 impl Session {
     pub async fn connect(config: Config) -> Result<Self>;
     pub async fn execute<A>(&self, cmd: &Command<A>, args: A) -> Result<u64>;
+    pub async fn copy_in<T, I>(&self, copy: &CopyIn<T>, rows: I) -> Result<u64>
+        where I: IntoIterator<Item = T>;
     pub async fn stream<A, B>(&self, q: &Query<A, B>, args: A)
         -> Result<impl Stream<Item = Result<B>>>;
     pub async fn prepare<A, B>(&self, q: &Query<A, B>) -> Result<PreparedQuery<A, B>>;
@@ -194,5 +197,9 @@ Detail and acceptance criteria in `MILESTONES.md`.
 | M5 | Expanded type coverage + `#[derive(Codec)]` | 12–15 |
 | M6 | TLS, observability, error rendering polish, v0.1 release | 16–17 |
 
-Deferred past v0.1: LISTEN/NOTIFY channels, COPY protocol, out-of-band
-cancellation, logical replication.
+Deferred past v0.1: LISTEN/NOTIFY channels, remaining COPY protocol work,
+out-of-band cancellation, logical replication.
+
+Current COPY support is intentionally narrower: typed binary `COPY FROM STDIN`
+bulk ingest is in scope, while `COPY TO`, text/CSV COPY modes, and other COPY
+protocol variants remain deferred.

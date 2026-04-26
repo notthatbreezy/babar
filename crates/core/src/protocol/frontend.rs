@@ -9,7 +9,7 @@
 //! bytes minus its length prefix). We surface that invariant as a
 //! [`crate::Error::Protocol`] rather than panicking.
 
-use bytes::BytesMut;
+use bytes::{Buf, BufMut, BytesMut};
 use postgres_protocol::message::frontend;
 use postgres_protocol::IsNull;
 
@@ -156,6 +156,41 @@ pub fn execute(portal_name: &str, max_rows: i32, buf: &mut BytesMut) -> Result<(
     frontend::execute(portal_name, max_rows, buf).map_err(map_io_to_protocol)
 }
 
+/// Write one `CopyData` message carrying raw COPY payload bytes.
+pub fn copy_data<T>(payload: T, buf: &mut BytesMut) -> Result<()>
+where
+    T: Buf,
+{
+    frontend::CopyData::new(payload)
+        .map_err(map_io_to_protocol)?
+        .write(buf);
+    Ok(())
+}
+
+/// Write `CopyDone`.
+pub fn copy_done(buf: &mut BytesMut) {
+    frontend::copy_done(buf);
+}
+
+/// Write `CopyFail` with a human-readable abort reason.
+pub fn copy_fail(message: &str, buf: &mut BytesMut) -> Result<()> {
+    frontend::copy_fail(message, buf).map_err(map_io_to_protocol)
+}
+
+/// Append the binary COPY header payload to `buf`.
+#[allow(dead_code, reason = "typed COPY API lands in a follow-on slice")]
+pub fn copy_binary_header(buf: &mut BytesMut) {
+    buf.extend_from_slice(b"PGCOPY\n\xff\r\n\0");
+    buf.put_u32(0);
+    buf.put_u32(0);
+}
+
+/// Append the binary COPY trailer payload to `buf`.
+#[allow(dead_code, reason = "typed COPY API lands in a follow-on slice")]
+pub fn copy_binary_trailer(buf: &mut BytesMut) {
+    buf.put_i16(-1);
+}
+
 /// `Sync` — the boundary that flushes any pending replies and unsticks
 /// the protocol after an error.
 pub fn sync(buf: &mut BytesMut) {
@@ -223,5 +258,40 @@ mod tests {
         let mut buf = BytesMut::new();
         terminate(&mut buf);
         assert_eq!(buf.as_ref(), &[b'X', 0, 0, 0, 4]);
+    }
+
+    #[test]
+    fn copy_messages_and_binary_payloads_are_framed() {
+        let mut payload = BytesMut::new();
+        copy_binary_header(&mut payload);
+        payload.extend_from_slice(b"row");
+        copy_binary_trailer(&mut payload);
+
+        let mut buf = BytesMut::new();
+        copy_data(payload.freeze(), &mut buf).unwrap();
+        copy_done(&mut buf);
+        copy_fail("bad row", &mut buf).unwrap();
+
+        assert_eq!(buf[0], b'd');
+        assert_eq!(&buf[1..5], &(28_u32).to_be_bytes());
+        assert_eq!(&buf[5..16], b"PGCOPY\n\xff\r\n\0");
+        assert_eq!(&buf[16..20], &[0, 0, 0, 0]);
+        assert_eq!(&buf[20..24], &[0, 0, 0, 0]);
+        assert_eq!(&buf[24..27], b"row");
+        assert_eq!(&buf[27..29], &[0xFF, 0xFF]);
+
+        let copy_done_offset = 29;
+        assert_eq!(
+            &buf[copy_done_offset..copy_done_offset + 5],
+            &[b'c', 0, 0, 0, 4]
+        );
+
+        let copy_fail_offset = copy_done_offset + 5;
+        assert_eq!(buf[copy_fail_offset], b'f');
+        assert_eq!(
+            &buf[copy_fail_offset + 1..copy_fail_offset + 5],
+            &(12_u32).to_be_bytes()
+        );
+        assert_eq!(&buf[copy_fail_offset + 5..], b"bad row\0");
     }
 }

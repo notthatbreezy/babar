@@ -8,6 +8,7 @@ Typed, async PostgreSQL driver for Tokio that speaks the PostgreSQL wire protoco
 
 - direct wire-protocol implementation on Tokio — no `libpq`, no `tokio-postgres`
 - typed `Query`, `Command`, `PreparedQuery`, `PreparedCommand`, `Transaction`/`Savepoint`, and `Pool` APIs
+- typed binary `CopyIn<T>` for `COPY FROM STDIN` bulk ingest from `Vec<T>` / iterators
 - SQL composition with `sql!` and `#[derive(Codec)]`
 - rich errors with SQLSTATE fields plus SQL/caret rendering
 - OpenTelemetry-friendly `tracing` spans: `db.connect`, `db.prepare`, `db.execute`, `db.transaction`
@@ -82,6 +83,61 @@ let _cfg = Config::new("db.example.com", 5432, "app", "app")
 
 When connecting by IP address, set `tls_server_name("db.example.com")` so SNI and hostname verification still use the certificate's DNS name. For self-signed deployments, point `tls_root_cert_path(...)` at the CA PEM file. Over TLS, babar automatically upgrades SCRAM to `SCRAM-SHA-256-PLUS` when PostgreSQL offers channel binding.
 
+## Bulk ingest with COPY
+
+`babar` ships a dedicated typed API for **binary `COPY FROM STDIN`** bulk ingest:
+
+```rust,no_run
+use babar::{CopyIn, Session};
+use babar::query::Query;
+use babar::Config;
+
+#[derive(Clone, Debug, PartialEq, babar::Codec)]
+struct UserRow {
+    #[pg(codec = "int4")]
+    id: i32,
+    #[pg(codec = "text")]
+    email: String,
+    #[pg(codec = "nullable(text)")]
+    note: Option<String>,
+}
+
+# async fn demo() -> babar::Result<()> {
+let session = Session::connect(
+    Config::new("localhost", 5432, "postgres", "postgres").password("secret"),
+)
+.await?;
+
+session
+    .simple_query_raw(
+        "CREATE TEMP TABLE copy_users (id int4 PRIMARY KEY, email text NOT NULL, note text)",
+    )
+    .await?;
+
+let rows = vec![
+    UserRow { id: 1, email: "ada@example.com".into(), note: Some("first".into()) },
+    UserRow { id: 2, email: "bob@example.com".into(), note: None },
+];
+
+let copy = CopyIn::binary(
+    "COPY copy_users (id, email, note) FROM STDIN BINARY",
+    UserRow::CODEC,
+);
+session.copy_in(&copy, rows).await?;
+
+let select: Query<(), UserRow> = Query::raw(
+    "SELECT id, email, note FROM copy_users ORDER BY id",
+    (),
+    UserRow::CODEC,
+);
+assert_eq!(session.query(&select, ()).await?.len(), 2);
+session.close().await?;
+# Ok(())
+# }
+```
+
+The COPY surface is intentionally limited to bulk ingest with binary `COPY FROM STDIN`. `COPY TO`, text COPY, and CSV COPY are not implemented.
+
 ## Examples
 
 Real-world example programs live in `crates/core/examples/`:
@@ -89,6 +145,7 @@ Real-world example programs live in `crates/core/examples/`:
 - `quickstart` — smallest typed end-to-end example
 - `prepared_and_stream` — prepared statements plus streaming
 - `transactions` / `pool` — M4 lifecycle walkthroughs
+- `copy_bulk` — `Vec<Struct>` bulk ingest with `CopyIn<T>`
 - `todo_cli` — CLI app using `clap`
 - `axum_service` — small Axum JSON API backed by `Pool`
 
@@ -126,7 +183,7 @@ What `babar` does better:
 What `tokio-postgres` does better:
 
 - battle-tested stability and wider operational history
-- deeper feature coverage today (notably COPY/cancel/listen-notify style surface)
+- broader feature coverage today (notably `COPY TO`, text/CSV COPY, cancel, and LISTEN/NOTIFY style surface)
 - no need to buy into babar's explicit codec model
 
 ## Status

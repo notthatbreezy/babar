@@ -30,7 +30,10 @@ async fn main() -> ExitCode {
         connect,
         PoolConfig::new()
             .min_idle(1)
-            .max_size(4)
+            // This example uses a TEMP TABLE, which is scoped to one server
+            // session. Keep pool size at 1 so the second checkout reuses the
+            // same physical connection deterministically.
+            .max_size(1)
             .acquire_timeout(Duration::from_secs(2))
             .idle_timeout(Duration::from_secs(30))
             .max_lifetime(Duration::from_secs(300))

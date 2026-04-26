@@ -4,9 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Babar is a typed, async PostgreSQL driver for Rust on Tokio that speaks the Postgres wire protocol directly — no libpq, no JDBC, no `tokio-postgres`. It is currently in the planning phase; PLAN.md, MILESTONES.md, and TESTING.md are the authoritative design documents. No source has been committed yet.
-
-**Crate name is still a placeholder** — must be decided before M0 ships.
+Babar is a typed, async PostgreSQL driver for Rust on Tokio that speaks the Postgres wire protocol directly — no libpq, no JDBC, no `tokio-postgres`. PLAN.md, MILESTONES.md, and TESTING.md remain the authoritative design/reference documents for the current implementation.
 
 ## Commands
 
@@ -61,6 +59,7 @@ benches/
 
 ```rust
 pub struct Session { /* mpsc handle */ }
+pub struct CopyIn<T>  { /* typed binary COPY FROM STDIN bulk ingest */ }
 pub struct Query<A, B>  { /* Fragment<A>, decoder B */ }
 pub struct Command<A>   { /* Fragment<A> */ }
 pub struct Fragment<A>  { /* SQL pieces + encoder A */ }
@@ -88,6 +87,7 @@ pub const text: TextCodec;
 - Message framing via the `postgres-protocol` crate.
 - Authentication: cleartext, MD5, SCRAM-SHA-256 (SCRAM-SHA-256-PLUS deferred post-v0.1).
 - Protocol state machine has four explicit states: Idle, InTransaction, InFailedTransaction, InCopy.
+- COPY support is intentionally limited to typed binary `COPY FROM STDIN` bulk ingest via `CopyIn<T>` / `Session::copy_in`.
 - Internal pipelining (batch multiple round-trips) lands in M2.
 - Pool wraps `deadpool` traits with statement-cache awareness (M4).
 
@@ -127,4 +127,4 @@ pub const text: TextCodec;
 
 ## Deferred post-v0.1
 
-LISTEN/NOTIFY, COPY protocol, out-of-band cancellation, logical replication, compile-time schema verification, SCRAM-SHA-256-PLUS.
+LISTEN/NOTIFY, broader COPY coverage (`COPY TO`, text/CSV COPY, replication-style modes), out-of-band cancellation, logical replication, compile-time schema verification, SCRAM-SHA-256-PLUS.

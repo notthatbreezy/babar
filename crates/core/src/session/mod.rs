@@ -6,14 +6,17 @@ mod prepared;
 mod startup;
 mod stream;
 
+use std::borrow::Borrow;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::Instrument as _;
 
 use crate::codec::Decoder;
 use crate::config::Config;
+use crate::copy::CopyIn;
 use crate::error::{Error, Result};
 use crate::protocol::backend::RowField;
 use crate::query::{Command as QueryCommand, Query};
@@ -100,6 +103,43 @@ impl Session {
                 Err(_) => return Err(Error::closed().with_sql(cmd.sql(), cmd.origin())),
             };
             Ok(parse_affected_rows(outcome.command_tag.as_deref()))
+        }
+        .instrument(span)
+        .await
+    }
+
+    /// Run a typed binary [`CopyIn`] and return the affected-row count.
+    ///
+    /// This is the dedicated bulk-ingest API for babar's limited COPY support:
+    /// binary `COPY ... FROM STDIN` with rows supplied from an in-memory
+    /// `IntoIterator` such as `Vec<T>`. `COPY TO`, text COPY, and CSV COPY are
+    /// intentionally unsupported.
+    pub async fn copy_in<T, I, R>(&self, copy: &CopyIn<T>, rows: I) -> Result<u64>
+    where
+        I: IntoIterator<Item = R>,
+        R: Borrow<T>,
+    {
+        let data = copy.encode_rows(rows)?;
+        self.copy_in_raw(copy.sql(), data).await
+    }
+
+    pub(crate) async fn copy_in_raw(&self, sql: &str, data: Vec<Bytes>) -> Result<u64> {
+        let span = telemetry::execute_span(sql);
+        async {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.tx
+                .send(Command::CopyIn {
+                    sql: sql.to_string(),
+                    data,
+                    reply: reply_tx,
+                })
+                .await
+                .map_err(|_| Error::closed().with_sql(sql, None))?;
+            let outcome = match reply_rx.await {
+                Ok(result) => result.map_err(|err| err.with_sql(sql, None))?,
+                Err(_) => return Err(Error::closed().with_sql(sql, None)),
+            };
+            Ok(parse_affected_rows(Some(outcome.command_tag.as_str())))
         }
         .instrument(span)
         .await

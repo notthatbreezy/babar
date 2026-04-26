@@ -11,12 +11,17 @@
 //!
 //! ## Feature highlights
 //!
-//! - simple-query, extended query, prepared-statement, transaction, and pool APIs
+//! - simple-query, extended query, prepared-statement, transaction, pool, and
+//!   binary `COPY FROM STDIN` bulk-ingest APIs
 //! - text codecs in core plus opt-in `uuid`, `time`, `chrono`, `json`,
 //!   `numeric`, `net`, `interval`, `array`, and `range` modules
 //! - optional TLS via the `rustls` feature (default) or `native-tls`
 //! - OpenTelemetry-friendly `tracing` spans for connect / prepare / execute /
 //!   transaction flows
+//!
+//! COPY support is intentionally narrow in v0.1: babar ships typed binary
+//! `COPY FROM STDIN` bulk ingest via [`CopyIn`], while `COPY TO`, text/CSV
+//! modes, and broader replication-style COPY flows remain out of scope.
 //!
 //! ## Quick start
 //!
@@ -118,6 +123,7 @@ extern crate self as babar;
 pub(crate) mod auth;
 pub mod codec;
 mod config;
+pub mod copy;
 mod error;
 #[cfg(not(loom))]
 pub mod pool;
@@ -178,6 +184,7 @@ pub mod __private {
 mod session;
 
 pub use config::{Config, TlsBackend, TlsMode};
+pub use copy::CopyIn;
 pub use error::{Error, Result};
 #[cfg(not(loom))]
 pub use pool::{

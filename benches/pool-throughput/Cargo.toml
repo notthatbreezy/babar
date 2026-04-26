@@ -11,6 +11,7 @@ babar = { path = "../../crates/core" }
 criterion = { workspace = true, features = ["async_tokio"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tokio-postgres = { workspace = true }
+sqlx = { workspace = true }
 bb8 = "0.8"
 bb8-postgres = "0.8"
 

@@ -418,7 +418,7 @@ Not worked on until v0.1 is shipped and has live users. Each is its own
 future milestone:
 
 - **LISTEN/NOTIFY channels** as a `Stream` of notifications.
-- **COPY protocol** for bulk ingest/export.
+- **Remaining COPY protocol work** beyond the shipped typed binary `COPY FROM STDIN` ingest surface (notably `COPY TO`, text/CSV COPY, and export helpers).
 - **Out-of-band query cancellation** via the side-channel connection.
 - **Logical replication client.**
 - **Richer SQL proc-macro ergonomics** beyond the shipped `$name` placeholder

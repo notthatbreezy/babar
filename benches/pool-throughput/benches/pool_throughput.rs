@@ -8,6 +8,7 @@ use babar::{Config, HealthCheck, Pool, PoolConfig, Session};
 use bb8::Pool as Bb8Pool;
 use bb8_postgres::PostgresConnectionManager;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use tokio::runtime::Builder;
 use tokio_postgres::NoTls;
 
@@ -125,6 +126,16 @@ impl PgContainer {
         cfg
     }
 
+    fn sqlx_connect_options(&self, application_name: &str) -> PgConnectOptions {
+        PgConnectOptions::new()
+            .host("127.0.0.1")
+            .port(self.port)
+            .username(&self.user)
+            .password(&self.password)
+            .database(&self.db)
+            .application_name(application_name)
+    }
+
     async fn wait_ready(&self) {
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut last_err = String::new();
@@ -160,6 +171,7 @@ struct BenchHarness {
     _pg: PgContainer,
     babar: Pool,
     bb8: Bb8Pool<PostgresConnectionManager<NoTls>>,
+    sqlx: PgPool,
 }
 
 impl BenchHarness {
@@ -183,15 +195,24 @@ impl BenchHarness {
             ))
             .await
             .expect("build bb8 pool");
+        let sqlx = PgPoolOptions::new()
+            .min_connections(10)
+            .max_connections(10)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect_with(pg.sqlx_connect_options("pool-throughput-sqlx"))
+            .await
+            .expect("build sqlx pool");
         Self {
             _pg: pg,
             babar,
             bb8,
+            sqlx,
         }
     }
 
     async fn close(self) {
         self.babar.close().await;
+        self.sqlx.close().await;
     }
 }
 
@@ -203,6 +224,7 @@ fn pool_throughput(c: &mut Criterion) {
     let harness = runtime.block_on(BenchHarness::start());
     let babar_counter = AtomicI32::new(0);
     let bb8_counter = AtomicI32::new(0);
+    let sqlx_counter = AtomicI32::new(0);
     let babar_query: Query<(i32,), (i32,)> = Query::raw(SQL, (int4,), (int4,));
 
     let mut group = c.benchmark_group("pool_throughput");
@@ -232,6 +254,19 @@ fn pool_throughput(c: &mut Criterion) {
                 .await
                 .expect("run bb8 query");
             black_box(row.get::<_, i32>(0))
+        });
+    });
+
+    group.bench_function("sqlx_pgpool/acquire_and_query", |b| {
+        let pool = &harness.sqlx;
+        b.to_async(&runtime).iter(|| async {
+            let value = sqlx_counter.fetch_add(1, Ordering::Relaxed);
+            let row: i32 = sqlx::query_scalar(SQL)
+                .bind(black_box(value))
+                .fetch_one(pool)
+                .await
+                .expect("run sqlx query");
+            black_box(row)
         });
     });
 

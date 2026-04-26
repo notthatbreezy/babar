@@ -89,7 +89,15 @@ pub(crate) struct PortalBatch {
 }
 
 type ExtendedReply = oneshot::Sender<Result<ExtendedOutcome>>;
+type CopyInReply = oneshot::Sender<Result<CopyInOutcome>>;
 type PrepareReply = oneshot::Sender<Result<PrepareOutcome>>;
+
+/// Result of a successful `COPY FROM STDIN`.
+#[derive(Debug)]
+pub(crate) struct CopyInOutcome {
+    /// Server `CommandComplete` tag, typically `COPY n`.
+    pub command_tag: String,
+}
 
 /// One unit of work the driver task accepts.
 pub enum Command {
@@ -113,6 +121,13 @@ pub enum Command {
         /// `n` columns. `None`: this is a Command, no rows expected.
         expected_columns: Option<usize>,
         reply: ExtendedReply,
+    },
+    /// Run `COPY ... FROM STDIN`, waiting for `CopyInResponse` before
+    /// streaming the provided COPY payload chunks and `CopyDone`.
+    CopyIn {
+        sql: String,
+        data: Vec<Bytes>,
+        reply: CopyInReply,
     },
     /// Prepare a named statement: `Parse(named) + Describe(statement) + Sync`.
     Prepare {
@@ -182,6 +197,11 @@ impl std::fmt::Debug for Command {
                 .field("params_len", &params.len())
                 .field("param_formats_len", &param_formats.len())
                 .field("expected_columns", expected_columns)
+                .finish(),
+            Self::CopyIn { sql, data, .. } => f
+                .debug_struct("CopyIn")
+                .field("sql", sql)
+                .field("copy_chunks", &data.len())
                 .finish(),
             Self::Prepare { name, sql, .. } => f
                 .debug_struct("Prepare")
@@ -334,6 +354,14 @@ enum Pending {
         command_tag: Option<String>,
         error: Option<Error>,
     },
+    /// Waiting for `CopyInResponse`, then client `CopyData* + CopyDone`,
+    /// then `CommandComplete/ErrorResponse + ReadyForQuery`.
+    CopyIn {
+        reply: CopyInReply,
+        data: Vec<Bytes>,
+        command_tag: Option<String>,
+        error: Option<Error>,
+    },
     /// Waiting for `ParseComplete + ParameterDescription + RowDescription/NoData + ReadyForQuery`.
     Prepare {
         reply: PrepareReply,
@@ -402,7 +430,10 @@ where
                 msg = self.reader.next() => {
                     match msg {
                         Some(Ok(message)) => {
-                            self.on_message(message);
+                            if let Err(e) = self.on_message(message).await {
+                                self.fail_pending(e);
+                                break;
+                            }
                         }
                         Some(Err(e)) => {
                             self.fail_pending(e);
@@ -490,6 +521,24 @@ where
                     reply,
                     expected_columns,
                     rows: Vec::new(),
+                    command_tag: None,
+                    error: None,
+                });
+                Ok(())
+            }
+            Command::CopyIn { sql, data, reply } => {
+                self.write_buf.clear();
+                if let Err(e) = frontend::query(&sql, &mut self.write_buf) {
+                    let _ = reply.send(Err(e));
+                    return Ok(());
+                }
+                if let Err(e) = self.flush().await {
+                    let _ = reply.send(Err(e.clone_for_caller()));
+                    return Err(e);
+                }
+                self.pending = Some(Pending::CopyIn {
+                    reply,
+                    data,
                     command_tag: None,
                     error: None,
                 });
@@ -684,11 +733,52 @@ where
         clippy::match_same_arms,
         reason = "explicit per-state handling reads more clearly than a merged dispatch"
     )]
-    fn on_message(&mut self, msg: BackendMessage) {
+    async fn on_message(&mut self, msg: BackendMessage) -> Result<()> {
         if let BackendMessage::ReadyForQuery { transaction_status } = &msg {
             self.state.set_transaction_status(*transaction_status);
         }
         trace!(?msg, "backend message");
+        if let BackendMessage::CopyInResponse {
+            overall_format,
+            column_formats,
+        } = &msg
+        {
+            enum CopyInAction {
+                Fail,
+                Stream(Vec<Bytes>),
+            }
+
+            let action = match &mut self.pending {
+                Some(Pending::CopyIn { data, error, .. }) => {
+                    if *overall_format != 1 || column_formats.iter().any(|&format| format != 1) {
+                        *error = error.take().or(Some(Error::protocol(format!(
+                            "COPY FROM STDIN requires binary format, got overall_format={overall_format} column_formats={column_formats:?}"
+                        ))));
+                        Some(CopyInAction::Fail)
+                    } else {
+                        Some(CopyInAction::Stream(std::mem::take(data)))
+                    }
+                }
+                _ => None,
+            };
+
+            match action {
+                Some(CopyInAction::Fail) => {
+                    self.write_copy_fail("babar only supports binary COPY FROM STDIN")
+                        .await?;
+                    return Ok(());
+                }
+                Some(CopyInAction::Stream(data)) => {
+                    if let Some(local_error) = self.write_copy_stream(data).await? {
+                        if let Some(Pending::CopyIn { error, .. }) = &mut self.pending {
+                            *error = error.take().or(Some(local_error));
+                        }
+                    }
+                    return Ok(());
+                }
+                None => {}
+            }
+        }
         match (&mut self.pending, msg) {
             (
                 Some(Pending::SimpleQuery { current_fields, .. }),
@@ -807,6 +897,34 @@ where
                 {
                     let outcome =
                         error.map_or_else(|| Ok(ExtendedOutcome { rows, command_tag }), Err);
+                    let _ = reply.send(outcome);
+                }
+            }
+            // ---- CopyIn ---------------------------------------------------
+            (
+                Some(Pending::CopyIn { command_tag, .. }),
+                BackendMessage::CommandComplete { tag },
+            ) => {
+                *command_tag = Some(tag);
+            }
+            (Some(Pending::CopyIn { error, .. }), BackendMessage::ErrorResponse { fields }) => {
+                *error = error.take().or(Some(Error::from_server_fields(fields)));
+            }
+            (Some(Pending::CopyIn { .. }), BackendMessage::ReadyForQuery { .. }) => {
+                if let Some(Pending::CopyIn {
+                    reply,
+                    command_tag,
+                    error,
+                    ..
+                }) = self.pending.take()
+                {
+                    let outcome = match (error, command_tag) {
+                        (Some(err), _) => Err(err),
+                        (None, Some(command_tag)) => Ok(CopyInOutcome { command_tag }),
+                        (None, None) => Err(Error::protocol(
+                            "COPY FROM STDIN completed without CommandComplete",
+                        )),
+                    };
                     let _ = reply.send(outcome);
                 }
             }
@@ -1010,6 +1128,7 @@ where
                 warn!(?other, "unexpected backend message; pending={kind}");
             }
         }
+        Ok(())
     }
 
     async fn flush(&mut self) -> Result<()> {
@@ -1019,6 +1138,26 @@ where
             .map_err(Error::from)?;
         self.write_buf.clear();
         Ok(())
+    }
+
+    async fn write_copy_stream(&mut self, data: Vec<Bytes>) -> Result<Option<Error>> {
+        self.write_buf.clear();
+        for chunk in data {
+            if let Err(err) = frontend::copy_data(chunk, &mut self.write_buf) {
+                self.write_copy_fail("babar failed to encode COPY data")
+                    .await?;
+                return Ok(Some(err));
+            }
+        }
+        frontend::copy_done(&mut self.write_buf);
+        self.flush().await?;
+        Ok(None)
+    }
+
+    async fn write_copy_fail(&mut self, message: &str) -> Result<()> {
+        self.write_buf.clear();
+        frontend::copy_fail(message, &mut self.write_buf)?;
+        self.flush().await
     }
 
     async fn shutdown(&mut self) {
@@ -1035,6 +1174,9 @@ where
                 let _ = reply.send(Err(err));
             }
             Some(Pending::Extended { reply, .. } | Pending::ExecutePrepared { reply, .. }) => {
+                let _ = reply.send(Err(err));
+            }
+            Some(Pending::CopyIn { reply, .. }) => {
                 let _ = reply.send(Err(err));
             }
             Some(Pending::Prepare { reply, .. }) => {
@@ -1073,6 +1215,9 @@ fn fail_command(cmd: Command, err: Error) {
         Command::ExtendedQuery { reply, .. } | Command::ExecutePrepared { reply, .. } => {
             let _ = reply.send(Err(err));
         }
+        Command::CopyIn { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
         Command::Prepare { reply, .. } => {
             let _ = reply.send(Err(err));
         }
@@ -1093,6 +1238,7 @@ fn pending_kind(p: Option<&Pending>) -> &'static str {
         None => "None",
         Some(Pending::SimpleQuery { .. }) => "SimpleQuery",
         Some(Pending::Extended { .. }) => "Extended",
+        Some(Pending::CopyIn { .. }) => "CopyIn",
         Some(Pending::Prepare { .. }) => "Prepare",
         Some(Pending::ExecutePrepared { .. }) => "ExecutePrepared",
         Some(Pending::BindPortal { .. }) => "BindPortal",
@@ -1162,5 +1308,191 @@ impl Error {
                 origin: *origin,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
+
+    async fn read_frontend_message(stream: &mut DuplexStream) -> (u8, Vec<u8>) {
+        let mut header = [0u8; 5];
+        stream.read_exact(&mut header).await.unwrap();
+        let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
+        let mut body = vec![0u8; len - 4];
+        stream.read_exact(&mut body).await.unwrap();
+        (header[0], body)
+    }
+
+    async fn write_backend_message(stream: &mut DuplexStream, tag: u8, body: &[u8]) {
+        let mut frame = Vec::with_capacity(1 + 4 + body.len());
+        frame.push(tag);
+        frame.extend_from_slice(&(u32::try_from(4 + body.len()).unwrap()).to_be_bytes());
+        frame.extend_from_slice(body);
+        stream.write_all(&frame).await.unwrap();
+    }
+
+    fn copy_in_response_body(overall_format: u8, column_formats: &[i16]) -> Vec<u8> {
+        let mut body = Vec::with_capacity(1 + 2 + (column_formats.len() * 2));
+        body.push(overall_format);
+        body.extend_from_slice(&(i16::try_from(column_formats.len()).unwrap()).to_be_bytes());
+        for format in column_formats {
+            body.extend_from_slice(&format.to_be_bytes());
+        }
+        body
+    }
+
+    fn error_response_body(code: &str, message: &str) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.push(b'S');
+        body.extend_from_slice(b"ERROR\0");
+        body.push(b'C');
+        body.extend_from_slice(code.as_bytes());
+        body.push(0);
+        body.push(b'M');
+        body.extend_from_slice(message.as_bytes());
+        body.push(0);
+        body.push(0);
+        body
+    }
+
+    fn row_description_body(name: &str) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&1_i16.to_be_bytes());
+        body.extend_from_slice(name.as_bytes());
+        body.push(0);
+        body.extend_from_slice(&0_u32.to_be_bytes());
+        body.extend_from_slice(&0_i16.to_be_bytes());
+        body.extend_from_slice(&23_u32.to_be_bytes());
+        body.extend_from_slice(&4_i16.to_be_bytes());
+        body.extend_from_slice(&(-1_i32).to_be_bytes());
+        body.extend_from_slice(&0_i16.to_be_bytes());
+        body
+    }
+
+    fn data_row_body(value: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&1_i16.to_be_bytes());
+        body.extend_from_slice(&(i32::try_from(value.len()).unwrap()).to_be_bytes());
+        body.extend_from_slice(value);
+        body
+    }
+
+    fn copy_payloads() -> Vec<Bytes> {
+        let mut header = BytesMut::new();
+        frontend::copy_binary_header(&mut header);
+
+        let mut trailer = BytesMut::new();
+        frontend::copy_binary_trailer(&mut trailer);
+
+        vec![header.freeze(), trailer.freeze()]
+    }
+
+    #[tokio::test]
+    async fn copy_in_round_trip_streams_payload_then_completes() {
+        let (client, mut server) = duplex(4096);
+        let (tx, _, _, state) = spawn(client, HashMap::new(), None, b'I').await.unwrap();
+        let (reply_tx, reply_rx) = oneshot::channel();
+
+        tx.send(Command::CopyIn {
+            sql: "COPY widgets FROM STDIN BINARY".to_string(),
+            data: copy_payloads(),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+
+        let (tag, body) = read_frontend_message(&mut server).await;
+        assert_eq!(tag, b'Q');
+        assert_eq!(body, b"COPY widgets FROM STDIN BINARY\0");
+
+        write_backend_message(&mut server, b'G', &copy_in_response_body(1, &[1])).await;
+
+        let (tag, body) = read_frontend_message(&mut server).await;
+        assert_eq!(tag, b'd');
+        let mut expected = BytesMut::new();
+        frontend::copy_binary_header(&mut expected);
+        assert_eq!(body, expected.to_vec());
+
+        let (tag, body) = read_frontend_message(&mut server).await;
+        assert_eq!(tag, b'd');
+        assert_eq!(body, vec![0xFF, 0xFF]);
+
+        let (tag, body) = read_frontend_message(&mut server).await;
+        assert_eq!(tag, b'c');
+        assert!(body.is_empty());
+
+        write_backend_message(&mut server, b'C', b"COPY 1\0").await;
+        write_backend_message(&mut server, b'Z', b"I").await;
+
+        let outcome = reply_rx.await.unwrap().unwrap();
+        assert_eq!(outcome.command_tag, "COPY 1");
+        assert_eq!(state.transaction_status(), b'I');
+    }
+
+    #[tokio::test]
+    async fn copy_in_format_failure_sends_copy_fail_and_connection_recovers() {
+        let (client, mut server) = duplex(4096);
+        let (tx, _, _, state) = spawn(client, HashMap::new(), None, b'I').await.unwrap();
+        let (reply_tx, reply_rx) = oneshot::channel();
+
+        tx.send(Command::CopyIn {
+            sql: "COPY widgets FROM STDIN".to_string(),
+            data: copy_payloads(),
+            reply: reply_tx,
+        })
+        .await
+        .unwrap();
+
+        let (tag, body) = read_frontend_message(&mut server).await;
+        assert_eq!(tag, b'Q');
+        assert_eq!(body, b"COPY widgets FROM STDIN\0");
+
+        write_backend_message(&mut server, b'G', &copy_in_response_body(0, &[0])).await;
+
+        let (tag, body) = read_frontend_message(&mut server).await;
+        assert_eq!(tag, b'f');
+        assert_eq!(body, b"babar only supports binary COPY FROM STDIN\0");
+
+        write_backend_message(
+            &mut server,
+            b'E',
+            &error_response_body("57014", "COPY cancelled by client"),
+        )
+        .await;
+        write_backend_message(&mut server, b'Z', b"I").await;
+
+        match reply_rx.await.unwrap().unwrap_err() {
+            Error::Protocol(message) => {
+                assert!(message.contains("requires binary format"));
+            }
+            other => panic!("expected protocol error, got {other:?}"),
+        }
+        assert_eq!(state.transaction_status(), b'I');
+
+        let (simple_tx, simple_rx) = oneshot::channel();
+        tx.send(Command::SimpleQuery {
+            sql: "SELECT 1".to_string(),
+            reply: simple_tx,
+        })
+        .await
+        .unwrap();
+
+        let (tag, body) = read_frontend_message(&mut server).await;
+        assert_eq!(tag, b'Q');
+        assert_eq!(body, b"SELECT 1\0");
+        write_backend_message(&mut server, b'T', &row_description_body("?column?")).await;
+        write_backend_message(&mut server, b'D', &data_row_body(b"1")).await;
+        write_backend_message(&mut server, b'C', b"SELECT 1\0").await;
+        write_backend_message(&mut server, b'Z', b"I").await;
+
+        let results = simple_rx.await.unwrap().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].len(), 1);
+        assert_eq!(results[0][0].len(), 1);
+        assert_eq!(results[0][0][0].as_deref(), Some(&b"1"[..]));
+        assert_eq!(state.transaction_status(), b'I');
     }
 }

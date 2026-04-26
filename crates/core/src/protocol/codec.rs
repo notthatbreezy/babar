@@ -28,6 +28,7 @@ const TAG_BACKEND_KEY_DATA: u8 = b'K';
 const TAG_READY_FOR_QUERY: u8 = b'Z';
 const TAG_ROW_DESCRIPTION: u8 = b'T';
 const TAG_DATA_ROW: u8 = b'D';
+const TAG_COPY_IN_RESPONSE: u8 = b'G';
 const TAG_COMMAND_COMPLETE: u8 = b'C';
 const TAG_EMPTY_QUERY_RESPONSE: u8 = b'I';
 const TAG_ERROR_RESPONSE: u8 = b'E';
@@ -72,6 +73,10 @@ impl Decoder for BackendCodec {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "backend message decoding is clearest as one tag dispatch"
+)]
 fn decode_body(tag: u8, mut body: Bytes) -> Result<BackendMessage> {
     match tag {
         TAG_AUTH => {
@@ -139,6 +144,21 @@ fn decode_body(tag: u8, mut body: Bytes) -> Result<BackendMessage> {
                 }
             }
             Ok(BackendMessage::DataRow { columns })
+        }
+        TAG_COPY_IN_RESPONSE => {
+            let overall_format = read_u8(&mut body, "CopyInResponse.overall_format")?;
+            let count = read_i16(&mut body, "CopyInResponse.column_count")?;
+            let count: usize = count
+                .try_into()
+                .map_err(|_| Error::protocol(format!("CopyInResponse column count {count} < 0")))?;
+            let mut column_formats = Vec::with_capacity(count);
+            for _ in 0..count {
+                column_formats.push(read_i16(&mut body, "CopyInResponse.column_format")?);
+            }
+            Ok(BackendMessage::CopyInResponse {
+                overall_format,
+                column_formats,
+            })
         }
         TAG_COMMAND_COMPLETE => {
             let tag = read_cstr(&mut body, "CommandComplete.tag")?;
@@ -360,6 +380,27 @@ mod tests {
                 assert_eq!(columns.len(), 2);
                 assert_eq!(columns[0].as_deref(), Some(&b"X"[..]));
                 assert!(columns[1].is_none());
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decodes_copy_in_response() {
+        let mut payload = Vec::new();
+        payload.push(1);
+        payload.extend_from_slice(&2_i16.to_be_bytes());
+        payload.extend_from_slice(&1_i16.to_be_bytes());
+        payload.extend_from_slice(&1_i16.to_be_bytes());
+        let mut buf = frame(b'G', &payload);
+        let msg = BackendCodec.decode(&mut buf).unwrap().unwrap();
+        match msg {
+            BackendMessage::CopyInResponse {
+                overall_format,
+                column_formats,
+            } => {
+                assert_eq!(overall_format, 1);
+                assert_eq!(column_formats, vec![1, 1]);
             }
             other => panic!("unexpected: {other:?}"),
         }

@@ -32,6 +32,13 @@ pub enum BackendMessage {
     /// `NULL`; `Some` carries the raw column bytes (text or binary, depending
     /// on the format codes set at Bind time).
     DataRow { columns: Vec<Option<Bytes>> },
+    /// `G` — `CopyInResponse { overall_format, column_formats }`.
+    CopyInResponse {
+        /// Overall COPY format: `0 = text`, `1 = binary`.
+        overall_format: u8,
+        /// Per-column COPY format codes.
+        column_formats: Vec<i16>,
+    },
     /// `C` — `CommandComplete { tag }` (e.g. `"SELECT 1"`).
     CommandComplete { tag: String },
     /// `I` — `EmptyQueryResponse`.
@@ -58,8 +65,8 @@ pub enum BackendMessage {
     PortalSuspended,
     /// Any other message identifier we don't yet care about. The byte is the
     /// message tag and the bytes are the remaining body (without the
-    /// 4-byte length prefix). Used for `NotificationResponse`,
-    /// `CopyInResponse`, etc.
+    /// 4-byte length prefix). Used for `NotificationResponse`, replication
+    /// COPY messages, etc.
     Other { tag: u8, body: Bytes },
 }
 
