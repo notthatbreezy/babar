@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use babar::codec::{int4, int8, nullable, text};
 use babar::query::{Command, Query};
-use babar::{Error, Session, Transaction};
+use babar::{Error, Savepoint, Session, Transaction};
 use common::{AuthMode, PgContainer};
 use futures_util::{future, FutureExt};
 
@@ -207,7 +207,7 @@ async fn nested_savepoint_body(tx: Transaction<'_>) -> babar::Result<()> {
     Ok(())
 }
 
-async fn middle_savepoint(tx: Transaction<'_>) -> babar::Result<()> {
+async fn middle_savepoint(tx: Savepoint<'_>) -> babar::Result<()> {
     let insert: Command<(i32, String)> = Command::raw(
         "INSERT INTO savepoint_demo (id, note) VALUES ($1, $2)",
         (int4, text),
@@ -218,7 +218,7 @@ async fn middle_savepoint(tx: Transaction<'_>) -> babar::Result<()> {
     Err(Error::Config("rollback middle".into()))
 }
 
-async fn inner_savepoint(tx: Transaction<'_>) -> babar::Result<()> {
+async fn inner_savepoint(tx: Savepoint<'_>) -> babar::Result<()> {
     let insert: Command<(i32, String)> = Command::raw(
         "INSERT INTO savepoint_demo (id, note) VALUES ($1, $2)",
         (int4, text),

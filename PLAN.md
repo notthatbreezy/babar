@@ -153,10 +153,15 @@ pub const text: TextCodec;    // Codec<String>
 
 // Transactions
 pub struct Transaction<'s> { /* borrows &'s Session */ }
+pub struct Savepoint<'s> { /* borrows &'s Session */ }
 impl Transaction<'_> {
     pub async fn execute<A>(&self, cmd: &Command<A>, args: A) -> Result<u64>;
-    pub async fn savepoint<T, F>(&self, f: F) -> Result<T> where /* ... */;
+    pub async fn savepoint<T, F>(&self, f: F) -> Result<T> where /* passes Savepoint<'_> */;
     // commit/rollback driven by transaction() closure's Result
+}
+impl Savepoint<'_> {
+    pub async fn execute<A>(&self, cmd: &Command<A>, args: A) -> Result<u64>;
+    pub async fn savepoint<T, F>(&self, f: F) -> Result<T> where /* passes Savepoint<'_> */;
 }
 ```
 

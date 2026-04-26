@@ -7,7 +7,7 @@ Typed, async PostgreSQL driver for Tokio that speaks the PostgreSQL wire protoco
 ## Highlights
 
 - direct wire-protocol implementation on Tokio — no `libpq`, no `tokio-postgres`
-- typed `Query`, `Command`, `PreparedQuery`, `PreparedCommand`, `Transaction`, and `Pool` APIs
+- typed `Query`, `Command`, `PreparedQuery`, `PreparedCommand`, `Transaction`/`Savepoint`, and `Pool` APIs
 - SQL composition with `sql!` and `#[derive(Codec)]`
 - rich errors with SQLSTATE fields plus SQL/caret rendering
 - OpenTelemetry-friendly `tracing` spans: `db.connect`, `db.prepare`, `db.execute`, `db.transaction`

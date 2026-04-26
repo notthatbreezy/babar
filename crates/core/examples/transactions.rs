@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use babar::codec::{int4, text};
 use babar::query::{Command, Query};
-use babar::{Config, Error, Session, Transaction};
+use babar::{Config, Error, Savepoint, Session, Transaction};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -81,7 +81,7 @@ async fn transaction_body(tx: Transaction<'_>) -> babar::Result<()> {
     Ok(())
 }
 
-async fn rollbacking_savepoint(sp: Transaction<'_>) -> babar::Result<()> {
+async fn rollbacking_savepoint(sp: Savepoint<'_>) -> babar::Result<()> {
     let insert: Command<(i32, String)> = Command::raw(
         "INSERT INTO tx_example (id, note) VALUES ($1, $2)",
         (int4, text),

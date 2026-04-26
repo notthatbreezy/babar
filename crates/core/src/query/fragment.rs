@@ -1,14 +1,15 @@
 //! `Fragment<A>`: SQL pieces + encoder for the parameter tuple.
 //!
-//! See [`super`] for the high-level mental model. Each `bind` extends
-//! the parameter tuple by appending a new element on the right, in
-//! Skunk-style left-leaning pairs.
+//! See [`super`] for the high-level mental model. `Fragment` is the reusable
+//! builder; call [`Fragment::query`] or [`Fragment::command`] when you want the
+//! final typed statement wrapper.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
 
 use bytes::Bytes;
 
+use super::{Command, Query};
 use crate::codec::{Decoder, Encoder};
 use crate::error::Result;
 use crate::types::Oid;
@@ -52,6 +53,17 @@ pub struct Fragment<A> {
     pub(crate) origin: Option<Origin>,
 }
 
+impl<A> Clone for Fragment<A> {
+    fn clone(&self) -> Self {
+        Self {
+            sql: self.sql.clone(),
+            encoder: Arc::clone(&self.encoder),
+            n_params: self.n_params,
+            origin: self.origin,
+        }
+    }
+}
+
 impl Fragment<()> {
     /// Start a fragment from a literal SQL string. The string is sent to
     /// the server unchanged; do not embed `$N` placeholders here — use
@@ -66,10 +78,7 @@ impl Fragment<()> {
     }
 }
 
-impl<A> Fragment<A>
-where
-    A: Send + Sync + 'static,
-{
+impl<A> Fragment<A> {
     /// Append literal SQL to the fragment without consuming it. Useful
     /// between `bind` calls when you need text in the middle.
     ///
@@ -87,20 +96,28 @@ where
         self.sql.push_str(sql);
         self
     }
+}
 
+impl<A: 'static> Fragment<A> {
     /// Append a parameter placeholder backed by `codec`. The new
     /// fragment's parameter type is the previous parameter tuple paired
     /// with the codec's value type — i.e., a left-leaning pair.
+    ///
+    /// Most callers should let type inference carry this builder type and
+    /// finish with [`Fragment::query`] or [`Fragment::command`]. The
+    /// [`crate::sql!`] macro builds fragments with flatter tuple types.
     ///
     /// ```
     /// use babar::codec::{int4, text};
     /// use babar::query::Fragment;
     ///
-    /// // Fragment<((((), i32), String))> — three nested pairs.
-    /// let _ = Fragment::lit("SELECT ")
+    /// let q = Fragment::lit("SELECT ")
     ///     .bind(int4)
     ///     .append_lit(" || ")
-    ///     .bind(text);
+    ///     .bind(text)
+    ///     .query((text,));
+    ///
+    /// assert_eq!(q.sql(), "SELECT $1 || $2");
     /// ```
     #[must_use]
     pub fn bind<C, X>(mut self, codec: C) -> Fragment<(A, X)>
@@ -127,8 +144,8 @@ where
     /// its encoder is paired with the left's.
     ///
     /// The resulting parameter tuple is `(A, B)` — Skunk-style nesting.
-    /// If you want a flat tuple of all participants, build it via
-    /// repeated `bind` instead, or wait for the M3 `sql!` macro.
+    /// Most callers should keep building with type inference and only name
+    /// the final [`Query`] or [`Command`] type.
     #[must_use]
     pub fn plus<B>(self, other: Fragment<B>) -> Fragment<(A, B)>
     where
@@ -146,6 +163,21 @@ where
             n_params: self.n_params + other.n_params,
             origin: self.origin.or(other.origin),
         }
+    }
+}
+
+impl<A> Fragment<A> {
+    /// Finish building a row-returning statement.
+    pub fn query<B, D>(self, decoder: D) -> Query<A, B>
+    where
+        D: Decoder<B> + Send + Sync + 'static,
+    {
+        Query::new(self, decoder)
+    }
+
+    /// Finish building a command that returns only an affected-row count.
+    pub fn command(self) -> Command<A> {
+        Command::new(self)
     }
 
     /// SQL exactly as it will be sent.
@@ -336,6 +368,19 @@ mod tests {
         f.encoder.encode(&((), 7_i32), &mut params).unwrap();
         // int4 binary: 4 bytes big-endian.
         assert_eq!(params, vec![Some(7_i32.to_be_bytes().to_vec())]);
+    }
+
+    #[test]
+    fn query_and_command_wrap_fragment() {
+        let fragment = Fragment::lit("SELECT * FROM t WHERE id = ")
+            .bind(int4)
+            .with_origin(Origin::new("demo.rs", 1, 1));
+        let query: Query<((), i32), (i32,)> = fragment.clone().query((int4,));
+        let command: Command<((), i32)> = fragment.command();
+        assert_eq!(query.sql(), "SELECT * FROM t WHERE id = $1");
+        assert_eq!(command.sql(), "SELECT * FROM t WHERE id = $1");
+        assert_eq!(query.origin(), Some(Origin::new("demo.rs", 1, 1)));
+        assert_eq!(command.origin(), Some(Origin::new("demo.rs", 1, 1)));
     }
 
     #[test]

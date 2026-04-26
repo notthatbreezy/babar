@@ -8,8 +8,8 @@
 //! ```
 //!
 //! `Fragment` holds SQL pieces and the encoder for the parameter tuple `A`.
-//! `Command` and `Query` are user-facing values you hand to `Session::execute`
-//! or `Session::query`.
+//! `Command` and `Query` wrap a fragment with the statement shape you hand to
+//! `Session::execute`, `Session::query`, or `Session::prepare_*`.
 
 mod fragment;
 
@@ -23,10 +23,8 @@ use crate::types::Oid;
 /// A statement that returns rows. `A` is the parameter tuple, `B` is the
 /// per-row output type produced by the decoder.
 pub struct Query<A, B> {
-    pub(crate) sql: String,
-    pub(crate) encoder: Arc<dyn Encoder<A> + Send + Sync>,
+    pub(crate) fragment: Fragment<A>,
     pub(crate) decoder: Arc<dyn Decoder<B> + Send + Sync>,
-    pub(crate) origin: Option<Origin>,
 }
 
 impl<A, B> Query<A, B> {
@@ -41,11 +39,21 @@ impl<A, B> Query<A, B> {
         E: Encoder<A> + Send + Sync + 'static,
         D: Decoder<B> + Send + Sync + 'static,
     {
+        let n_params = encoder.oids().len();
+        Self::new(
+            Fragment::__from_parts(sql, encoder, n_params, None),
+            decoder,
+        )
+    }
+
+    /// Build from a [`Fragment`] plus a decoder.
+    pub fn new<D>(fragment: Fragment<A>, decoder: D) -> Self
+    where
+        D: Decoder<B> + Send + Sync + 'static,
+    {
         Self {
-            sql: sql.into(),
-            encoder: Arc::new(encoder),
+            fragment,
             decoder: Arc::new(decoder),
-            origin: None,
         }
     }
 
@@ -54,27 +62,22 @@ impl<A, B> Query<A, B> {
     where
         D: Decoder<B> + Send + Sync + 'static,
     {
-        Self {
-            sql: fragment.sql,
-            encoder: fragment.encoder,
-            decoder: Arc::new(decoder),
-            origin: fragment.origin,
-        }
+        Self::new(fragment, decoder)
     }
 
     /// SQL text exactly as it will be sent to the server.
     pub fn sql(&self) -> &str {
-        &self.sql
+        self.fragment.sql()
     }
 
     /// Macro callsite captured by [`crate::sql!`], when available.
     pub fn origin(&self) -> Option<Origin> {
-        self.origin
+        self.fragment.origin()
     }
 
     /// Postgres OIDs the encoder declares, in placeholder order.
     pub fn param_oids(&self) -> &'static [Oid] {
-        self.encoder.oids()
+        self.fragment.param_oids()
     }
 
     /// Postgres OIDs the decoder expects, in column order.
@@ -86,14 +89,17 @@ impl<A, B> Query<A, B> {
     pub fn n_columns(&self) -> usize {
         self.decoder.n_columns()
     }
+
+    /// The underlying SQL fragment and parameter codec.
+    pub fn fragment(&self) -> &Fragment<A> {
+        &self.fragment
+    }
 }
 
 /// A statement that does not produce rows (DDL, `INSERT`/`UPDATE`/`DELETE`
 /// without `RETURNING`). `A` is the parameter tuple.
 pub struct Command<A> {
-    pub(crate) sql: String,
-    pub(crate) encoder: Arc<dyn Encoder<A> + Send + Sync>,
-    pub(crate) origin: Option<Origin>,
+    pub(crate) fragment: Fragment<A>,
 }
 
 impl<A> Command<A> {
@@ -102,35 +108,38 @@ impl<A> Command<A> {
     where
         E: Encoder<A> + Send + Sync + 'static,
     {
-        Self {
-            sql: sql.into(),
-            encoder: Arc::new(encoder),
-            origin: None,
-        }
+        let n_params = encoder.oids().len();
+        Self::new(Fragment::__from_parts(sql, encoder, n_params, None))
+    }
+
+    /// Build from a [`Fragment`].
+    pub fn new(fragment: Fragment<A>) -> Self {
+        Self { fragment }
     }
 
     /// Build from a [`Fragment`].
     pub fn from_fragment(fragment: Fragment<A>) -> Self {
-        Self {
-            sql: fragment.sql,
-            encoder: fragment.encoder,
-            origin: fragment.origin,
-        }
+        Self::new(fragment)
     }
 
     /// SQL text exactly as it will be sent to the server.
     pub fn sql(&self) -> &str {
-        &self.sql
+        self.fragment.sql()
     }
 
     /// Macro callsite captured by [`crate::sql!`], when available.
     pub fn origin(&self) -> Option<Origin> {
-        self.origin
+        self.fragment.origin()
     }
 
     /// Postgres OIDs the encoder declares, in placeholder order.
     pub fn param_oids(&self) -> &'static [Oid] {
-        self.encoder.oids()
+        self.fragment.param_oids()
+    }
+
+    /// The underlying SQL fragment and parameter codec.
+    pub fn fragment(&self) -> &Fragment<A> {
+        &self.fragment
     }
 }
 
@@ -163,14 +172,26 @@ mod tests {
     }
 
     #[test]
-    fn query_from_fragment_uses_fragment_sql_and_encoder() {
-        let f = Fragment::lit("SELECT id, name FROM t WHERE id = ")
-            .bind(int4)
-            .with_origin(Origin::new("demo.rs", 1, 1));
-        let q: Query<((), i32), (i32, String)> = Query::from_fragment(f, (int4, text));
+    fn query_new_uses_fragment_sql_and_encoder() {
+        let q: Query<((), i32), (i32, String)> =
+            Fragment::lit("SELECT id, name FROM t WHERE id = ")
+                .bind(int4)
+                .with_origin(Origin::new("demo.rs", 1, 1))
+                .query((int4, text));
         assert_eq!(q.sql(), "SELECT id, name FROM t WHERE id = $1");
         assert_eq!(q.param_oids(), &[types::INT4][..]);
         assert_eq!(q.output_oids(), &[types::INT4, types::TEXT][..]);
         assert_eq!(q.origin(), Some(Origin::new("demo.rs", 1, 1)));
+    }
+
+    #[test]
+    fn command_new_wraps_fragment() {
+        let cmd: Command<((), i32)> = Fragment::lit("DELETE FROM t WHERE id = ")
+            .bind(int4)
+            .with_origin(Origin::new("demo.rs", 2, 4))
+            .command();
+        assert_eq!(cmd.sql(), "DELETE FROM t WHERE id = $1");
+        assert_eq!(cmd.param_oids(), &[types::INT4][..]);
+        assert_eq!(cmd.origin(), Some(Origin::new("demo.rs", 2, 4)));
     }
 }

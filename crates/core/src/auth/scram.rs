@@ -3,11 +3,12 @@
 //! The flow used by the driver:
 //!
 //! 1. Construct a [`ScramClient`] with the password.
-//! 2. Call [`ScramClient::client_first`] to get the bytes to send in
-//!    `SASLInitialResponse`.
-//! 3. On `SASLContinue`, call [`ScramClient::client_final`] which returns
-//!    the bytes to send in the next `SASLResponse`.
-//! 4. On `SASLFinal`, call [`ScramClient::verify_server_final`].
+//! 2. Call [`ScramClient::start`] to get the [`ClientFirst`] stage.
+//! 3. Send [`ClientFirst::message`] in `SASLInitialResponse`.
+//! 4. On `SASLContinue`, call [`ClientFirst::handle_server_first`] to get the
+//!    [`ClientFinal`] stage.
+//! 5. Send [`ClientFinal::message`] in the next `SASLResponse`.
+//! 6. On `SASLFinal`, call [`ClientFinal::verify_server_final`].
 
 use base64::engine::{general_purpose::STANDARD, Engine};
 use hmac::{Hmac, Mac};
@@ -27,12 +28,30 @@ pub const SCRAM_SHA_256_PLUS: &str = "SCRAM-SHA-256-PLUS";
 /// don't constrain this — 18 raw bytes -> 24 base64 chars is comfortable.
 const NONCE_LEN: usize = 18;
 
-/// Iterator-driven SCRAM-SHA-256 client.
+/// Initial SCRAM-SHA-256 client configuration.
 #[derive(Debug)]
 pub struct ScramClient {
     password: String,
     channel_binding: Option<ChannelBinding>,
-    state: State,
+}
+
+/// SCRAM stage after generating `client-first-message`.
+#[derive(Debug)]
+pub struct ClientFirst {
+    mechanism_name: &'static str,
+    message: Vec<u8>,
+    password: String,
+    channel_binding: Option<ChannelBinding>,
+    first_bare_message: String,
+    client_nonce: String,
+}
+
+/// SCRAM stage after generating `client-final-message`.
+#[derive(Debug)]
+pub struct ClientFinal {
+    message: Vec<u8>,
+    server_key: [u8; 32],
+    auth_message: String,
 }
 
 /// SCRAM channel binding data to embed in the GS2 header and `c=` attribute.
@@ -45,28 +64,6 @@ pub struct ChannelBinding {
 #[derive(Debug, Clone, Copy)]
 enum ChannelBindingKind {
     TlsServerEndPoint,
-}
-
-#[derive(Debug)]
-enum State {
-    /// Haven't sent client-first yet.
-    Initial,
-    /// Sent client-first; waiting for server-first.
-    ClientFirstSent {
-        /// The exact bytes of the client-first-bare we sent (used in auth message).
-        client_first_bare: String,
-        /// The client nonce we generated (base64 form, also embedded in `client_first_bare`).
-        client_nonce: String,
-    },
-    /// Sent client-final; waiting for server-final.
-    ClientFinalSent {
-        /// `ServerKey` derived from password+salt+iters; needed to verify server signature.
-        server_key: [u8; 32],
-        /// The full auth message used in HMAC; needed for verification.
-        auth_message: String,
-    },
-    /// Server signature verified; auth complete.
-    Done,
 }
 
 impl ScramClient {
@@ -86,64 +83,64 @@ impl ScramClient {
         Self {
             password: password.into(),
             channel_binding,
-            state: State::Initial,
         }
     }
 
     /// SCRAM mechanism name to advertise in `SASLInitialResponse`.
     pub fn mechanism_name(&self) -> &'static str {
-        if self.channel_binding.is_some() {
-            SCRAM_SHA_256_PLUS
-        } else {
-            SCRAM_SHA_256
-        }
+        mechanism_name(self.channel_binding.as_ref())
     }
 
-    /// Produce the client-first message to send in `SASLInitialResponse`.
-    ///
-    /// Form: `n,,n=<user>,r=<nonce>` — but we send an empty `user` because
-    /// the username travels in the `StartupMessage` and Postgres ignores
-    /// the SCRAM `n=` field.
-    pub fn client_first(&mut self) -> Result<Vec<u8>> {
+    /// Produce the client-first stage using a freshly generated nonce.
+    pub fn start(self) -> ClientFirst {
         let mut nonce_bytes = [0u8; NONCE_LEN];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        self.client_first_with_nonce(&nonce_bytes)
+        self.start_with_nonce(&nonce_bytes)
     }
 
-    /// Like [`Self::client_first`] but with a caller-supplied nonce. Used
-    /// in tests to compare against fixed RFC vectors.
-    pub fn client_first_with_nonce(&mut self, nonce_bytes: &[u8]) -> Result<Vec<u8>> {
-        if !matches!(self.state, State::Initial) {
-            return Err(Error::protocol("SCRAM: client_first called twice"));
-        }
+    /// Like [`Self::start`] but with a caller-supplied nonce. Used in tests to
+    /// compare against fixed RFC vectors.
+    pub fn start_with_nonce(self, nonce_bytes: &[u8]) -> ClientFirst {
         let client_nonce = STANDARD.encode(nonce_bytes);
-        let client_first_bare = format!("n=,r={client_nonce}");
-        let client_first = format!("{}{client_first_bare}", self.gs2_header());
+        let first_bare_message = format!("n=,r={client_nonce}");
+        let mechanism_name = self.mechanism_name();
+        let message = format!(
+            "{}{first_bare_message}",
+            gs2_header(self.channel_binding.as_ref())
+        )
+        .into_bytes();
 
-        self.state = State::ClientFirstSent {
-            client_first_bare,
+        ClientFirst {
+            mechanism_name,
+            message,
+            password: self.password,
+            channel_binding: self.channel_binding,
+            first_bare_message,
             client_nonce,
-        };
-        Ok(client_first.into_bytes())
+        }
+    }
+}
+
+impl ClientFirst {
+    /// SCRAM mechanism name advertised in `SASLInitialResponse`.
+    pub fn mechanism_name(&self) -> &'static str {
+        self.mechanism_name
     }
 
-    /// Process `server-first-message` and produce the `client-final-message`.
-    pub fn client_final(&mut self, server_first: &[u8]) -> Result<Vec<u8>> {
-        let State::ClientFirstSent {
-            client_first_bare,
-            client_nonce,
-        } = std::mem::replace(&mut self.state, State::Initial)
-        else {
-            return Err(Error::protocol("SCRAM: client_final out of order"));
-        };
+    /// The encoded `client-first-message` to send in `SASLInitialResponse`.
+    pub fn message(&self) -> &[u8] {
+        &self.message
+    }
 
+    /// Process `server-first-message` and produce the client-final stage.
+    pub fn handle_server_first(self, server_first: &[u8]) -> Result<ClientFinal> {
         let server_first_str = str::from_utf8(server_first)
             .map_err(|_| Error::Auth("SCRAM server-first not UTF-8".into()))?;
 
         let parsed = parse_server_first(server_first_str)
             .map_err(|e| Error::Auth(format!("SCRAM server-first malformed: {e}")))?;
 
-        if !parsed.nonce.starts_with(&client_nonce) {
+        if !parsed.nonce.starts_with(&self.client_nonce) {
             return Err(Error::Auth(
                 "SCRAM server nonce does not extend client nonce".into(),
             ));
@@ -161,37 +158,39 @@ impl ScramClient {
         let stored_key = sha256(&client_key);
         let server_key = hmac_sha256(&salted_password, b"Server Key");
 
-        let channel_binding_b64 = STANDARD.encode(self.encoded_channel_binding());
+        let channel_binding_b64 =
+            STANDARD.encode(encoded_channel_binding(self.channel_binding.as_ref()));
         let server_nonce = parsed.nonce;
         let client_final_without_proof = format!("c={channel_binding_b64},r={server_nonce}");
-        let auth_message =
-            format!("{client_first_bare},{server_first_str},{client_final_without_proof}");
+        let auth_message = format!(
+            "{},{server_first_str},{client_final_without_proof}",
+            self.first_bare_message
+        );
         let client_signature = hmac_sha256(&stored_key, auth_message.as_bytes());
         let mut client_proof = client_key;
         for (a, b) in client_proof.iter_mut().zip(client_signature.iter()) {
             *a ^= b;
         }
         let proof = STANDARD.encode(client_proof);
-        let client_final = format!("{client_final_without_proof},p={proof}");
+        let message = format!("{client_final_without_proof},p={proof}").into_bytes();
 
-        self.state = State::ClientFinalSent {
+        Ok(ClientFinal {
+            message,
             server_key,
             auth_message,
-        };
-        Ok(client_final.into_bytes())
+        })
+    }
+}
+
+impl ClientFinal {
+    /// The encoded `client-final-message` to send in `SASLResponse`.
+    pub fn message(&self) -> &[u8] {
+        &self.message
     }
 
     /// Process `server-final-message`. Returns `Ok(())` if the server
     /// signature matches; otherwise [`Error::Auth`].
-    pub fn verify_server_final(&mut self, server_final: &[u8]) -> Result<()> {
-        let State::ClientFinalSent {
-            server_key,
-            auth_message,
-        } = std::mem::replace(&mut self.state, State::Initial)
-        else {
-            return Err(Error::protocol("SCRAM: verify_server_final out of order"));
-        };
-
+    pub fn verify_server_final(self, server_final: &[u8]) -> Result<()> {
         let s = str::from_utf8(server_final)
             .map_err(|_| Error::Auth("SCRAM server-final not UTF-8".into()))?;
         let parsed = parse_server_final(s)
@@ -201,11 +200,10 @@ impl ScramClient {
                 let claimed = STANDARD
                     .decode(b64)
                     .map_err(|_| Error::Auth("SCRAM verifier not base64".into()))?;
-                let expected = hmac_sha256(&server_key, auth_message.as_bytes());
+                let expected = hmac_sha256(&self.server_key, self.auth_message.as_bytes());
                 if !constant_time_eq(&claimed, &expected) {
                     return Err(Error::Auth("SCRAM server signature mismatch".into()));
                 }
-                self.state = State::Done;
                 Ok(())
             }
             ServerFinal::Error(e) => Err(Error::Auth(format!("SCRAM server reported error: {e}"))),
@@ -229,20 +227,24 @@ impl ChannelBinding {
     }
 }
 
-impl ScramClient {
-    fn gs2_header(&self) -> &str {
-        self.channel_binding
-            .as_ref()
-            .map_or("n,,", ChannelBinding::gs2_header)
+fn mechanism_name(channel_binding: Option<&ChannelBinding>) -> &'static str {
+    if channel_binding.is_some() {
+        SCRAM_SHA_256_PLUS
+    } else {
+        SCRAM_SHA_256
     }
+}
 
-    fn encoded_channel_binding(&self) -> Vec<u8> {
-        let mut out = self.gs2_header().as_bytes().to_vec();
-        if let Some(binding) = &self.channel_binding {
-            out.extend_from_slice(&binding.data);
-        }
-        out
+fn gs2_header(channel_binding: Option<&ChannelBinding>) -> &str {
+    channel_binding.map_or("n,,", ChannelBinding::gs2_header)
+}
+
+fn encoded_channel_binding(channel_binding: Option<&ChannelBinding>) -> Vec<u8> {
+    let mut out = gs2_header(channel_binding).as_bytes().to_vec();
+    if let Some(binding) = channel_binding {
+        out.extend_from_slice(&binding.data);
     }
+    out
 }
 
 #[derive(Debug)]
@@ -354,22 +356,23 @@ mod tests {
     #[test]
     fn scram_rfc7677_client_proof_postgres_style() {
         let nonce_b64 = "rOprNGfwEbeRWgbNEkqO";
-        // Decode the b64 nonce so we can pass it to client_first_with_nonce.
+        // Decode the b64 nonce so we can pass it to start_with_nonce.
         // Anything that re-encodes back to the same string works.
         let nonce_bytes = STANDARD.decode(nonce_b64).unwrap();
 
-        let mut client = ScramClient::new("pencil");
-        let cfirst = client.client_first_with_nonce(&nonce_bytes).unwrap();
+        let client_first = ScramClient::new("pencil").start_with_nonce(&nonce_bytes);
         assert_eq!(
-            std::str::from_utf8(&cfirst).unwrap(),
+            std::str::from_utf8(client_first.message()).unwrap(),
             "n,,n=,r=rOprNGfwEbeRWgbNEkqO"
         );
 
         // Build a server-first using the RFC nonce extension.
         let server_first =
             "r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096";
-        let cfinal = client.client_final(server_first.as_bytes()).unwrap();
-        let cfinal_str = std::str::from_utf8(&cfinal).unwrap();
+        let client_final = client_first
+            .handle_server_first(server_first.as_bytes())
+            .unwrap();
+        let cfinal_str = std::str::from_utf8(client_final.message()).unwrap();
 
         // We can't byte-compare the whole client-final because the standard's
         // exact string used `n=user`; Postgres-style is `n=`. So instead, we
@@ -428,11 +431,12 @@ mod tests {
 
     #[test]
     fn server_nonce_must_extend_client_nonce() {
-        let mut client = ScramClient::new("p");
-        client.client_first_with_nonce(&[0u8; 18]).unwrap();
+        let client_first = ScramClient::new("p").start_with_nonce(&[0u8; 18]);
         // Server returns a nonce that doesn't start with our client nonce -> Auth error.
         let bogus = "r=different,s=Zm9v,i=1";
-        let err = client.client_final(bogus.as_bytes()).unwrap_err();
+        let err = client_first
+            .handle_server_first(bogus.as_bytes())
+            .unwrap_err();
         assert!(matches!(err, Error::Auth(_)), "got {err:?}");
     }
 
@@ -442,22 +446,24 @@ mod tests {
         let nonce_bytes = STANDARD.decode(nonce_b64).unwrap();
         let binding_data = vec![0xde, 0xad, 0xbe, 0xef];
 
-        let mut client = ScramClient::with_channel_binding(
+        let client_first = ScramClient::with_channel_binding(
             "pencil",
             Some(ChannelBinding::tls_server_end_point(binding_data.clone())),
-        );
-        assert_eq!(client.mechanism_name(), SCRAM_SHA_256_PLUS);
+        )
+        .start_with_nonce(&nonce_bytes);
+        assert_eq!(client_first.mechanism_name(), SCRAM_SHA_256_PLUS);
 
-        let cfirst = client.client_first_with_nonce(&nonce_bytes).unwrap();
         assert_eq!(
-            std::str::from_utf8(&cfirst).unwrap(),
+            std::str::from_utf8(client_first.message()).unwrap(),
             "p=tls-server-end-point,,n=,r=rOprNGfwEbeRWgbNEkqO"
         );
 
         let server_first =
             "r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096";
-        let cfinal = client.client_final(server_first.as_bytes()).unwrap();
-        let cfinal_str = std::str::from_utf8(&cfinal).unwrap();
+        let client_final = client_first
+            .handle_server_first(server_first.as_bytes())
+            .unwrap();
+        let cfinal_str = std::str::from_utf8(client_final.message()).unwrap();
 
         let channel_binding = STANDARD.encode(
             [

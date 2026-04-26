@@ -1,6 +1,5 @@
 //! Scoped transaction and savepoint support.
 
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_fn_traits::AsyncFnOnce1;
@@ -13,11 +12,17 @@ use crate::telemetry;
 
 static SAVEPOINT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// A scoped transaction handle borrowed from [`Session::transaction`].
+/// A scoped top-level transaction handle borrowed from [`Session::transaction`].
 #[derive(Debug)]
 pub struct Transaction<'a> {
     session: &'a Session,
-    _marker: PhantomData<&'a Session>,
+}
+
+/// A scoped savepoint handle borrowed from [`Transaction::savepoint`] or
+/// [`Savepoint::savepoint`].
+#[derive(Debug)]
+pub struct Savepoint<'a> {
+    session: &'a Session,
 }
 
 impl Session {
@@ -51,100 +56,97 @@ impl Session {
     }
 }
 
-impl<'a> Transaction<'a> {
-    pub(crate) fn new(session: &'a Session) -> Self {
-        Self {
-            session,
-            _marker: PhantomData,
+macro_rules! impl_scope_methods {
+    ($ty:ident) => {
+        impl<'a> $ty<'a> {
+            fn new(session: &'a Session) -> Self {
+                Self { session }
+            }
+
+            /// Run raw SQL through the simple-query protocol.
+            pub async fn simple_query_raw(
+                &self,
+                sql: &str,
+            ) -> Result<Vec<crate::session::RawRows>> {
+                self.session.simple_query_raw(sql).await
+            }
+
+            /// Execute a typed command inside this scope.
+            pub async fn execute<A>(&self, cmd: &Command<A>, args: A) -> Result<u64> {
+                self.session.execute(cmd, args).await
+            }
+
+            /// Execute a typed query inside this scope and collect all rows.
+            pub async fn query<A, B>(&self, query: &Query<A, B>, args: A) -> Result<Vec<B>> {
+                self.session.query(query, args).await
+            }
+
+            /// Stream rows inside this scope using the default batch size.
+            pub async fn stream<A, B>(&self, query: &Query<A, B>, args: A) -> Result<RowStream<B>>
+            where
+                B: Send + 'static,
+            {
+                self.session.stream(query, args).await
+            }
+
+            /// Stream rows inside this scope with an explicit batch size.
+            pub async fn stream_with_batch_size<A, B>(
+                &self,
+                query: &Query<A, B>,
+                args: A,
+                batch_rows: usize,
+            ) -> Result<RowStream<B>>
+            where
+                B: Send + 'static,
+            {
+                self.session
+                    .stream_with_batch_size(query, args, batch_rows)
+                    .await
+            }
+
+            /// Prepare a query on the underlying connection.
+            pub async fn prepare_query<A, B>(
+                &self,
+                query: &Query<A, B>,
+            ) -> Result<PreparedQuery<A, B>>
+            where
+                A: 'static,
+                B: 'static,
+            {
+                self.session.prepare_query(query).await
+            }
+
+            /// Prepare a command on the underlying connection.
+            pub async fn prepare_command<A>(&self, cmd: &Command<A>) -> Result<PreparedCommand<A>>
+            where
+                A: 'static,
+            {
+                self.session.prepare_command(cmd).await
+            }
         }
-    }
+    };
+}
 
-    /// Run raw SQL through the simple-query protocol.
-    pub async fn simple_query_raw(&self, sql: &str) -> Result<Vec<crate::session::RawRows>> {
-        self.session.simple_query_raw(sql).await
-    }
+impl_scope_methods!(Transaction);
+impl_scope_methods!(Savepoint);
 
-    /// Execute a typed command inside this transaction.
-    pub async fn execute<A>(&self, cmd: &Command<A>, args: A) -> Result<u64> {
-        self.session.execute(cmd, args).await
-    }
-
-    /// Execute a typed query inside this transaction and collect all rows.
-    pub async fn query<A, B>(&self, query: &Query<A, B>, args: A) -> Result<Vec<B>> {
-        self.session.query(query, args).await
-    }
-
-    /// Stream rows inside this transaction using the default batch size.
-    pub async fn stream<A, B>(&self, query: &Query<A, B>, args: A) -> Result<RowStream<B>>
-    where
-        B: Send + 'static,
-    {
-        self.session.stream(query, args).await
-    }
-
-    /// Stream rows inside this transaction with an explicit batch size.
-    pub async fn stream_with_batch_size<A, B>(
-        &self,
-        query: &Query<A, B>,
-        args: A,
-        batch_rows: usize,
-    ) -> Result<RowStream<B>>
-    where
-        B: Send + 'static,
-    {
-        self.session
-            .stream_with_batch_size(query, args, batch_rows)
-            .await
-    }
-
-    /// Prepare a query on the underlying connection.
-    pub async fn prepare_query<A, B>(&self, query: &Query<A, B>) -> Result<PreparedQuery<A, B>>
-    where
-        A: 'static,
-        B: 'static,
-    {
-        self.session.prepare_query(query).await
-    }
-
-    /// Prepare a command on the underlying connection.
-    pub async fn prepare_command<A>(&self, cmd: &Command<A>) -> Result<PreparedCommand<A>>
-    where
-        A: 'static,
-    {
-        self.session.prepare_command(cmd).await
-    }
-
+impl Transaction<'_> {
     /// Run `f` inside a savepoint nested under this transaction.
     pub async fn savepoint<T>(
         &self,
-        f: impl for<'sp> AsyncFnOnce1<Transaction<'sp>, Output = Result<T>>,
+        f: impl for<'sp> AsyncFnOnce1<Savepoint<'sp>, Output = Result<T>>,
     ) -> Result<T> {
-        let span = telemetry::transaction_span("savepoint");
-        async {
-            let name = next_savepoint_name();
-            let mut guard = ScopeGuard::savepoint(self.session, name.clone());
-            self.session
-                .run_control_command(&format!("SAVEPOINT {name}"))
-                .await?;
+        run_savepoint(self.session, f).await
+    }
+}
 
-            let savepoint = Transaction::new(self.session);
-            match f(savepoint).await {
-                Ok(value) => {
-                    self.session
-                        .run_control_command(&format!("RELEASE SAVEPOINT {name}"))
-                        .await?;
-                    guard.disarm();
-                    Ok(value)
-                }
-                Err(err) => {
-                    rollback_savepoint(self.session, &name).await?;
-                    guard.disarm();
-                    Err(err)
-                }
-            }
-        }
-        .instrument(span)
-        .await
+impl Savepoint<'_> {
+    /// Run `f` inside a savepoint nested under this savepoint.
+    pub async fn savepoint<T>(
+        &self,
+        f: impl for<'sp> AsyncFnOnce1<Savepoint<'sp>, Output = Result<T>>,
+    ) -> Result<T> {
+        run_savepoint(self.session, f).await
     }
 }
 
@@ -213,6 +215,38 @@ impl Drop for ScopeGuard {
             }
         });
     }
+}
+
+async fn run_savepoint<T>(
+    session: &Session,
+    f: impl for<'sp> AsyncFnOnce1<Savepoint<'sp>, Output = Result<T>>,
+) -> Result<T> {
+    let span = telemetry::transaction_span("savepoint");
+    async {
+        let name = next_savepoint_name();
+        let mut guard = ScopeGuard::savepoint(session, name.clone());
+        session
+            .run_control_command(&format!("SAVEPOINT {name}"))
+            .await?;
+
+        let savepoint = Savepoint::new(session);
+        match f(savepoint).await {
+            Ok(value) => {
+                session
+                    .run_control_command(&format!("RELEASE SAVEPOINT {name}"))
+                    .await?;
+                guard.disarm();
+                Ok(value)
+            }
+            Err(err) => {
+                rollback_savepoint(session, &name).await?;
+                guard.disarm();
+                Err(err)
+            }
+        }
+    }
+    .instrument(span)
+    .await
 }
 
 async fn rollback_savepoint(session: &Session, name: &str) -> Result<()> {

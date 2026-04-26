@@ -95,14 +95,12 @@ fn nested_sql_fragments_flatten_parameter_order() {
 
 #[test]
 fn sql_macro_query_and_command_match_raw_builders() {
-    let macro_query: Query<(i32, bool), (i32, String)> = Query::from_fragment(
-        sql!(
-            "SELECT id, name FROM users WHERE id = $id AND active = $active",
-            id = int4,
-            active = bool,
-        ),
-        (int4, text),
-    );
+    let macro_query: Query<(i32, bool), (i32, String)> = sql!(
+        "SELECT id, name FROM users WHERE id = $id AND active = $active",
+        id = int4,
+        active = bool,
+    )
+    .query((int4, text));
     let raw_query: Query<(i32, bool), (i32, String)> = Query::raw(
         "SELECT id, name FROM users WHERE id = $1 AND active = $2",
         (int4, bool),
@@ -112,11 +110,12 @@ fn sql_macro_query_and_command_match_raw_builders() {
     assert_eq!(macro_query.param_oids(), raw_query.param_oids());
     assert_eq!(macro_query.output_oids(), raw_query.output_oids());
 
-    let macro_command: Command<(i32, String)> = Command::from_fragment(sql!(
+    let macro_command: Command<(i32, String)> = sql!(
         "INSERT INTO users (id, name) VALUES ($id, $name)",
         id = int4,
         name = text,
-    ));
+    )
+    .command();
     let raw_command: Command<(i32, String)> =
         Command::raw("INSERT INTO users (id, name) VALUES ($1, $2)", (int4, text));
     assert_eq!(macro_command.sql(), raw_command.sql());
@@ -141,14 +140,15 @@ async fn sql_macro_fragments_execute_against_postgres() {
         .await
         .expect("create table");
 
-    let insert: Command<(i32, i32, String, bool)> = Command::from_fragment(sql!(
+    let insert: Command<(i32, i32, String, bool)> = sql!(
         "INSERT INTO sql_macro_users (id, owner_id, name, active) \
          VALUES ($id, $owner_id, $name, $active)",
         id = int4,
         owner_id = int4,
         name = text,
         active = bool,
-    ));
+    )
+    .command();
     for row in [
         (1, 9, "alice".to_string(), true),
         (2, 1, "bob".to_string(), false),
@@ -158,16 +158,14 @@ async fn sql_macro_fragments_execute_against_postgres() {
         assert_eq!(affected, 1);
     }
 
-    let select: Query<(i32, bool), (String,)> = Query::from_fragment(
-        sql!(
-            "SELECT name FROM sql_macro_users \
+    let select: Query<(i32, bool), (String,)> = sql!(
+        "SELECT name FROM sql_macro_users \
              WHERE ($predicate) AND active = $active \
              ORDER BY id",
-            predicate = sql!("id = $id OR owner_id = $id", id = int4),
-            active = bool,
-        ),
-        (text,),
-    );
+        predicate = sql!("id = $id OR owner_id = $id", id = int4),
+        active = bool,
+    )
+    .query((text,));
     let rows = session
         .query(&select, (1_i32, true))
         .await

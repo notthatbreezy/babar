@@ -68,14 +68,12 @@
 //! use babar::query::Query;
 //! use babar::sql;
 //!
-//! let q: Query<(i32, String), (i32, String)> = Query::from_fragment(
-//!     sql!(
-//!         "SELECT id, name FROM users WHERE id = $id OR owner = $name OR name = $name",
-//!         id = int4,
-//!         name = text,
-//!     ),
-//!     (int4, text),
-//! );
+//! let q: Query<(i32, String), (i32, String)> = sql!(
+//!     "SELECT id, name FROM users WHERE id = $id OR owner = $name OR name = $name",
+//!     id = int4,
+//!     name = text,
+//! )
+//! .query((int4, text));
 //!
 //! assert_eq!(
 //!     q.sql(),
@@ -147,24 +145,23 @@ pub mod types;
 /// use babar::codec::{bool, int4, text};
 /// use babar::query::{Command, Query};
 ///
-/// let query: Query<(i32, bool), (String,)> = Query::from_fragment(
-///     babar::sql!(
-///         "SELECT name FROM users WHERE ($filter) AND active = $active",
-///         filter = babar::sql!("id = $id OR owner_id = $id", id = int4),
-///         active = bool,
-///     ),
-///     (text,),
-/// );
+/// let query: Query<(i32, bool), (String,)> = babar::sql!(
+///     "SELECT name FROM users WHERE ($filter) AND active = $active",
+///     filter = babar::sql!("id = $id OR owner_id = $id", id = int4),
+///     active = bool,
+/// )
+/// .query((text,));
 /// assert_eq!(
 ///     query.sql(),
 ///     "SELECT name FROM users WHERE (id = $1 OR owner_id = $1) AND active = $2"
 /// );
 ///
-/// let command: Command<(i32, String)> = Command::from_fragment(babar::sql!(
+/// let command: Command<(i32, String)> = babar::sql!(
 ///     "INSERT INTO users (id, name) VALUES ($id, $name)",
 ///     id = int4,
 ///     name = text,
-/// ));
+/// )
+/// .command();
 /// assert_eq!(
 ///     command.sql(),
 ///     "INSERT INTO users (id, name) VALUES ($1, $2)"
@@ -185,9 +182,9 @@ pub use error::{Error, Result};
 #[cfg(not(loom))]
 pub use pool::{
     HealthCheck, Pool, PoolConfig, PoolConnection, PoolError, PooledPreparedCommand,
-    PooledPreparedQuery, PooledRowStream, PooledTransaction,
+    PooledPreparedQuery, PooledRowStream, PooledSavepoint, PooledTransaction,
 };
 #[cfg(not(loom))]
 pub use session::{PreparedCommand, PreparedQuery, RawRows, RowStream, ServerParams, Session};
 #[cfg(not(loom))]
-pub use transaction::Transaction;
+pub use transaction::{Savepoint, Transaction};

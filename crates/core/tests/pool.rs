@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use babar::codec::{bool, int4, int8, nullable, text};
 use babar::query::{Command, Query};
-use babar::{Error, HealthCheck, Pool, PoolConfig, PooledTransaction, Session};
+use babar::{Error, HealthCheck, Pool, PoolConfig, PooledSavepoint, PooledTransaction, Session};
 use common::{AuthMode, PgContainer};
 use futures_util::FutureExt;
 
@@ -255,7 +255,7 @@ async fn pooled_savepoint_body(tx: PooledTransaction<'_>) -> babar::Result<()> {
     Ok(())
 }
 
-async fn pooled_rollback_savepoint(tx: PooledTransaction<'_>) -> babar::Result<()> {
+async fn pooled_rollback_savepoint(tx: PooledSavepoint<'_>) -> babar::Result<()> {
     let insert: Command<(i32, String)> = Command::raw(
         "INSERT INTO pool_prepare_demo (id, note) VALUES ($1, $2)",
         (int4, text),

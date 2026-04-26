@@ -76,15 +76,17 @@ impl Session {
     pub async fn execute<A>(&self, cmd: &QueryCommand<A>, args: A) -> Result<u64> {
         let span = telemetry::execute_span(cmd.sql());
         async {
-            let mut params: Vec<Option<Vec<u8>>> = Vec::with_capacity(cmd.encoder.oids().len());
-            cmd.encoder
+            let mut params: Vec<Option<Vec<u8>>> =
+                Vec::with_capacity(cmd.fragment.encoder.oids().len());
+            cmd.fragment
+                .encoder
                 .encode(&args, &mut params)
                 .map_err(|err| err.with_sql(cmd.sql(), cmd.origin()))?;
-            let param_formats = cmd.encoder.format_codes().to_vec();
+            let param_formats = cmd.fragment.encoder.format_codes().to_vec();
             let (reply_tx, reply_rx) = oneshot::channel();
             self.tx
                 .send(Command::ExtendedQuery {
-                    sql: cmd.sql.clone(),
+                    sql: cmd.sql().to_string(),
                     params,
                     param_formats,
                     result_formats: Vec::new(),
@@ -107,17 +109,19 @@ impl Session {
     pub async fn query<A, B>(&self, query: &Query<A, B>, args: A) -> Result<Vec<B>> {
         let span = telemetry::execute_span(query.sql());
         async {
-            let mut params: Vec<Option<Vec<u8>>> = Vec::with_capacity(query.encoder.oids().len());
+            let mut params: Vec<Option<Vec<u8>>> =
+                Vec::with_capacity(query.fragment.encoder.oids().len());
             query
+                .fragment
                 .encoder
                 .encode(&args, &mut params)
                 .map_err(|err| err.with_sql(query.sql(), query.origin()))?;
-            let param_formats = query.encoder.format_codes().to_vec();
+            let param_formats = query.fragment.encoder.format_codes().to_vec();
             let result_formats = query.decoder.format_codes().to_vec();
             let (reply_tx, reply_rx) = oneshot::channel();
             self.tx
                 .send(Command::ExtendedQuery {
-                    sql: query.sql.clone(),
+                    sql: query.sql().to_string(),
                     params,
                     param_formats,
                     result_formats,
@@ -167,19 +171,21 @@ impl Session {
     {
         let span = telemetry::execute_span(query.sql());
         async {
-            let mut params: Vec<Option<Vec<u8>>> = Vec::with_capacity(query.encoder.oids().len());
+            let mut params: Vec<Option<Vec<u8>>> =
+                Vec::with_capacity(query.fragment.encoder.oids().len());
             query
+                .fragment
                 .encoder
                 .encode(&args, &mut params)
                 .map_err(|err| err.with_sql(query.sql(), query.origin()))?;
-            let param_formats = query.encoder.format_codes().to_vec();
+            let param_formats = query.fragment.encoder.format_codes().to_vec();
             let stmt_name = next_name("babar_stream_stmt");
             let (reply_tx, reply_rx) = oneshot::channel();
             self.tx
                 .send(Command::Prepare {
                     name: stmt_name.clone(),
                     sql: query.sql().to_string(),
-                    param_oids: query.encoder.oids().to_vec(),
+                    param_oids: query.fragment.encoder.oids().to_vec(),
                     reply: reply_tx,
                 })
                 .await
@@ -226,7 +232,7 @@ impl Session {
     {
         let span = telemetry::prepare_span(query.sql());
         async {
-            let param_oids = query.encoder.oids();
+            let param_oids = query.fragment.encoder.oids();
             let key = CacheKey::new(query.sql(), param_oids);
 
             {
@@ -289,7 +295,7 @@ impl Session {
     {
         let span = telemetry::prepare_span(cmd.sql());
         async {
-            let param_oids = cmd.encoder.oids();
+            let param_oids = cmd.fragment.encoder.oids();
             let key = CacheKey::new(cmd.sql(), param_oids);
 
             {

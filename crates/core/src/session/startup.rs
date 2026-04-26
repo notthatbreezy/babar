@@ -119,18 +119,13 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
                 let password = config.password_str().ok_or_else(|| {
                     Error::Auth("server requested SCRAM auth but no password configured".into())
                 })?;
-                let mut scram =
-                    match select_scram_client(&mechanisms, io.stream.scram_channel_binding())? {
-                        SelectedScram::Plain => ScramClient::new(password),
-                        SelectedScram::Plus(binding) => {
-                            ScramClient::with_channel_binding(password, Some(binding.clone()))
-                        }
-                    };
-                let client_first = scram.client_first()?;
+                let scram =
+                    select_scram_client(&mechanisms, io.stream.scram_channel_binding(), password)?;
+                let client_first = scram.start();
                 io.tx_buf.clear();
                 frontend::sasl_initial_response(
-                    scram.mechanism_name(),
-                    &client_first,
+                    client_first.mechanism_name(),
+                    client_first.message(),
                     &mut io.tx_buf,
                 )?;
                 io.flush().await?;
@@ -147,9 +142,9 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
                     }
                 };
 
-                let client_final = scram.client_final(&server_first)?;
+                let client_final = client_first.handle_server_first(&server_first)?;
                 io.tx_buf.clear();
-                frontend::sasl_response(&client_final, &mut io.tx_buf)?;
+                frontend::sasl_response(client_final.message(), &mut io.tx_buf)?;
                 io.flush().await?;
 
                 let server_final = match io.read_message().await? {
@@ -163,7 +158,7 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
                         )));
                     }
                 };
-                scram.verify_server_final(&server_final)?;
+                client_final.verify_server_final(&server_final)?;
             }
             BackendMessage::Authentication(AuthRequest::Unsupported { code }) => {
                 return Err(Error::UnsupportedAuth(format!("auth code {code}")));
@@ -188,22 +183,20 @@ async fn authenticate(io: &mut StartupIo<'_>, config: &Config) -> Result<()> {
     }
 }
 
-#[derive(Debug)]
-enum SelectedScram<'a> {
-    Plain,
-    Plus(&'a crate::auth::scram::ChannelBinding),
-}
-
-fn select_scram_client<'a>(
+fn select_scram_client(
     mechanisms: &[String],
-    channel_binding: &'a ChannelBindingState,
-) -> Result<SelectedScram<'a>> {
+    channel_binding: &ChannelBindingState,
+    password: &str,
+) -> Result<ScramClient> {
     if mechanisms
         .iter()
         .any(|mechanism| mechanism == SCRAM_SHA_256_PLUS)
     {
         return match channel_binding {
-            ChannelBindingState::Available(binding) => Ok(SelectedScram::Plus(binding)),
+            ChannelBindingState::Available(binding) => Ok(ScramClient::with_channel_binding(
+                password,
+                Some(binding.clone()),
+            )),
             ChannelBindingState::Unavailable => Err(Error::UnsupportedAuth(
                 "server offered SCRAM-SHA-256-PLUS but TLS channel binding data is unavailable"
                     .into(),
@@ -218,7 +211,7 @@ fn select_scram_client<'a>(
         .iter()
         .any(|mechanism| mechanism == SCRAM_SHA_256)
     {
-        return Ok(SelectedScram::Plain);
+        return Ok(ScramClient::new(password));
     }
 
     Err(Error::UnsupportedAuth(format!(
@@ -271,14 +264,15 @@ mod tests {
         let mechanisms = vec![SCRAM_SHA_256.to_string(), SCRAM_SHA_256_PLUS.to_string()];
         let binding = ChannelBinding::tls_server_end_point(vec![1, 2, 3]);
         let binding = ChannelBindingState::Available(binding);
-        let selected = select_scram_client(&mechanisms, &binding).unwrap();
-        assert!(matches!(selected, SelectedScram::Plus(_)));
+        let selected = select_scram_client(&mechanisms, &binding, "secret").unwrap();
+        assert_eq!(selected.mechanism_name(), SCRAM_SHA_256_PLUS);
     }
 
     #[test]
     fn rejects_scram_plus_when_channel_binding_is_missing() {
         let mechanisms = vec![SCRAM_SHA_256_PLUS.to_string()];
-        let err = select_scram_client(&mechanisms, &ChannelBindingState::Unavailable).unwrap_err();
+        let err = select_scram_client(&mechanisms, &ChannelBindingState::Unavailable, "secret")
+            .unwrap_err();
         assert!(matches!(err, Error::UnsupportedAuth(_)));
     }
 }

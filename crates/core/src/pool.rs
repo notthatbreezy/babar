@@ -210,9 +210,18 @@ pub struct PooledRowStream<'a, B> {
     _lifetime: PhantomData<&'a ()>,
 }
 
-/// Transaction wrapper used by [`PoolConnection::transaction`].
+/// A scoped top-level transaction handle borrowed from
+/// [`PoolConnection::transaction`].
 #[derive(Debug)]
 pub struct PooledTransaction<'a> {
+    session: &'a Session,
+    broken: Arc<AtomicBool>,
+}
+
+/// A scoped savepoint handle borrowed from [`PooledTransaction::savepoint`] or
+/// [`PooledSavepoint::savepoint`].
+#[derive(Debug)]
+pub struct PooledSavepoint<'a> {
     session: &'a Session,
     broken: Arc<AtomicBool>,
 }
@@ -744,156 +753,185 @@ impl<B> Stream for PooledRowStream<'_, B> {
     }
 }
 
+macro_rules! impl_pooled_scope_methods {
+    ($ty:ident) => {
+        impl $ty<'_> {
+            /// Run raw SQL through the simple-query protocol.
+            pub async fn simple_query_raw(
+                &self,
+                sql: &str,
+            ) -> Result<Vec<crate::session::RawRows>> {
+                let result = self.session.simple_query_raw(sql).await;
+                if let Err(err) = &result {
+                    mark_broken(&self.broken, err);
+                }
+                result
+            }
+
+            /// Execute a typed command.
+            pub async fn execute<A>(&self, cmd: &Command<A>, args: A) -> Result<u64> {
+                let result = self.session.execute(cmd, args).await;
+                if let Err(err) = &result {
+                    mark_broken(&self.broken, err);
+                }
+                result
+            }
+
+            /// Execute a typed query.
+            pub async fn query<A, B>(&self, query: &Query<A, B>, args: A) -> Result<Vec<B>> {
+                let result = self.session.query(query, args).await;
+                if let Err(err) = &result {
+                    mark_broken(&self.broken, err);
+                }
+                result
+            }
+
+            /// Stream rows using the default batch size.
+            pub async fn stream<'a, A, B>(
+                &'a self,
+                query: &Query<A, B>,
+                args: A,
+            ) -> Result<PooledRowStream<'a, B>>
+            where
+                B: Send + 'static,
+            {
+                match self.session.stream(query, args).await {
+                    Ok(inner) => Ok(PooledRowStream {
+                        inner,
+                        broken: Arc::clone(&self.broken),
+                        _lifetime: PhantomData,
+                    }),
+                    Err(err) => {
+                        mark_broken(&self.broken, &err);
+                        Err(err)
+                    }
+                }
+            }
+
+            /// Stream rows with an explicit batch size.
+            pub async fn stream_with_batch_size<'a, A, B>(
+                &'a self,
+                query: &Query<A, B>,
+                args: A,
+                batch_rows: usize,
+            ) -> Result<PooledRowStream<'a, B>>
+            where
+                B: Send + 'static,
+            {
+                match self
+                    .session
+                    .stream_with_batch_size(query, args, batch_rows)
+                    .await
+                {
+                    Ok(inner) => Ok(PooledRowStream {
+                        inner,
+                        broken: Arc::clone(&self.broken),
+                        _lifetime: PhantomData,
+                    }),
+                    Err(err) => {
+                        mark_broken(&self.broken, &err);
+                        Err(err)
+                    }
+                }
+            }
+
+            /// Prepare a query within this scope.
+            pub async fn prepare_query<'a, A, B>(
+                &'a self,
+                query: &Query<A, B>,
+            ) -> Result<PooledPreparedQuery<'a, A, B>>
+            where
+                A: 'static,
+                B: 'static,
+            {
+                match self.session.prepare_query(query).await {
+                    Ok(inner) => Ok(PooledPreparedQuery {
+                        inner,
+                        broken: Arc::clone(&self.broken),
+                        _lifetime: PhantomData,
+                    }),
+                    Err(err) => {
+                        mark_broken(&self.broken, &err);
+                        Err(err)
+                    }
+                }
+            }
+
+            /// Prepare a command within this scope.
+            pub async fn prepare_command<'a, A>(
+                &'a self,
+                cmd: &Command<A>,
+            ) -> Result<PooledPreparedCommand<'a, A>>
+            where
+                A: 'static,
+            {
+                match self.session.prepare_command(cmd).await {
+                    Ok(inner) => Ok(PooledPreparedCommand {
+                        inner,
+                        broken: Arc::clone(&self.broken),
+                        _lifetime: PhantomData,
+                    }),
+                    Err(err) => {
+                        mark_broken(&self.broken, &err);
+                        Err(err)
+                    }
+                }
+            }
+        }
+    };
+}
+
+impl_pooled_scope_methods!(PooledTransaction);
+impl_pooled_scope_methods!(PooledSavepoint);
+
 impl PooledTransaction<'_> {
-    /// Run raw SQL through the simple-query protocol.
-    pub async fn simple_query_raw(&self, sql: &str) -> Result<Vec<crate::session::RawRows>> {
-        let result = self.session.simple_query_raw(sql).await;
-        if let Err(err) = &result {
-            mark_broken(&self.broken, err);
-        }
-        result
-    }
-
-    /// Execute a typed command.
-    pub async fn execute<A>(&self, cmd: &Command<A>, args: A) -> Result<u64> {
-        let result = self.session.execute(cmd, args).await;
-        if let Err(err) = &result {
-            mark_broken(&self.broken, err);
-        }
-        result
-    }
-
-    /// Execute a typed query.
-    pub async fn query<A, B>(&self, query: &Query<A, B>, args: A) -> Result<Vec<B>> {
-        let result = self.session.query(query, args).await;
-        if let Err(err) = &result {
-            mark_broken(&self.broken, err);
-        }
-        result
-    }
-
-    /// Stream rows using the default batch size.
-    pub async fn stream<'b, A, B>(
-        &'b self,
-        query: &Query<A, B>,
-        args: A,
-    ) -> Result<PooledRowStream<'b, B>>
-    where
-        B: Send + 'static,
-    {
-        match self.session.stream(query, args).await {
-            Ok(inner) => Ok(PooledRowStream {
-                inner,
-                broken: Arc::clone(&self.broken),
-                _lifetime: PhantomData,
-            }),
-            Err(err) => {
-                mark_broken(&self.broken, &err);
-                Err(err)
-            }
-        }
-    }
-
-    /// Stream rows with an explicit batch size.
-    pub async fn stream_with_batch_size<'b, A, B>(
-        &'b self,
-        query: &Query<A, B>,
-        args: A,
-        batch_rows: usize,
-    ) -> Result<PooledRowStream<'b, B>>
-    where
-        B: Send + 'static,
-    {
-        match self
-            .session
-            .stream_with_batch_size(query, args, batch_rows)
-            .await
-        {
-            Ok(inner) => Ok(PooledRowStream {
-                inner,
-                broken: Arc::clone(&self.broken),
-                _lifetime: PhantomData,
-            }),
-            Err(err) => {
-                mark_broken(&self.broken, &err);
-                Err(err)
-            }
-        }
-    }
-
-    /// Prepare a query within this transaction.
-    pub async fn prepare_query<'b, A, B>(
-        &'b self,
-        query: &Query<A, B>,
-    ) -> Result<PooledPreparedQuery<'b, A, B>>
-    where
-        A: 'static,
-        B: 'static,
-    {
-        match self.session.prepare_query(query).await {
-            Ok(inner) => Ok(PooledPreparedQuery {
-                inner,
-                broken: Arc::clone(&self.broken),
-                _lifetime: PhantomData,
-            }),
-            Err(err) => {
-                mark_broken(&self.broken, &err);
-                Err(err)
-            }
-        }
-    }
-
-    /// Prepare a command within this transaction.
-    pub async fn prepare_command<'b, A>(
-        &'b self,
-        cmd: &Command<A>,
-    ) -> Result<PooledPreparedCommand<'b, A>>
-    where
-        A: 'static,
-    {
-        match self.session.prepare_command(cmd).await {
-            Ok(inner) => Ok(PooledPreparedCommand {
-                inner,
-                broken: Arc::clone(&self.broken),
-                _lifetime: PhantomData,
-            }),
-            Err(err) => {
-                mark_broken(&self.broken, &err);
-                Err(err)
-            }
-        }
-    }
-
     /// Nest another savepoint under this transaction.
     pub async fn savepoint<T>(
         &self,
-        f: impl for<'sp> AsyncFnOnce1<PooledTransaction<'sp>, Output = Result<T>>,
+        f: impl for<'sp> AsyncFnOnce1<PooledSavepoint<'sp>, Output = Result<T>>,
     ) -> Result<T> {
-        let name = next_savepoint_name();
-        let mut guard =
-            PooledScopeGuard::savepoint(self.session, Arc::clone(&self.broken), name.clone());
-        self.session
-            .run_control_command(&format!("SAVEPOINT {name}"))
-            .await?;
-        let savepoint = PooledTransaction {
-            session: self.session,
-            broken: Arc::clone(&self.broken),
-        };
-        let result = f(savepoint).await;
-        match result {
-            Ok(value) => {
-                self.session
-                    .run_control_command(&format!("RELEASE SAVEPOINT {name}"))
-                    .await?;
-                guard.disarm();
-                Ok(value)
-            }
-            Err(err) => {
-                rollback_savepoint(self.session, &name).await?;
-                guard.disarm();
-                mark_broken(&self.broken, &err);
-                Err(err)
-            }
+        run_pooled_savepoint(self.session, &self.broken, f).await
+    }
+}
+
+impl PooledSavepoint<'_> {
+    /// Nest another savepoint under this savepoint.
+    pub async fn savepoint<T>(
+        &self,
+        f: impl for<'sp> AsyncFnOnce1<PooledSavepoint<'sp>, Output = Result<T>>,
+    ) -> Result<T> {
+        run_pooled_savepoint(self.session, &self.broken, f).await
+    }
+}
+
+async fn run_pooled_savepoint<T>(
+    session: &Session,
+    broken: &Arc<AtomicBool>,
+    f: impl for<'sp> AsyncFnOnce1<PooledSavepoint<'sp>, Output = Result<T>>,
+) -> Result<T> {
+    let name = next_savepoint_name();
+    let mut guard = PooledScopeGuard::savepoint(session, Arc::clone(broken), name.clone());
+    session
+        .run_control_command(&format!("SAVEPOINT {name}"))
+        .await?;
+    let savepoint = PooledSavepoint {
+        session,
+        broken: Arc::clone(broken),
+    };
+    let result = f(savepoint).await;
+    match result {
+        Ok(value) => {
+            session
+                .run_control_command(&format!("RELEASE SAVEPOINT {name}"))
+                .await?;
+            guard.disarm();
+            Ok(value)
+        }
+        Err(err) => {
+            rollback_savepoint(session, &name).await?;
+            guard.disarm();
+            mark_broken(broken, &err);
+            Err(err)
         }
     }
 }
