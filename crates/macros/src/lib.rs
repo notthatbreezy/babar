@@ -1,14 +1,17 @@
 //! Procedural macros for the `babar` PostgreSQL driver.
 //!
-//! The main entry point is the [`sql!`](macro@sql) macro, re-exported as
-//! `babar::sql!` for end users.
+//! The main entry points are [`sql!`](macro@sql) and the `#[derive(Codec)]`
+//! derive, both re-exported from the `babar` crate.
 
 use proc_macro::TokenStream;
 use std::collections::{HashMap, HashSet};
 
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::{parse_macro_input, Expr, ExprMacro, Ident, LitStr, Result, Token};
+use syn::{
+    parse_macro_input, Attribute, Data, DeriveInput, Expr, ExprMacro, Field, Fields, Generics,
+    Ident, LitStr, Result, Token,
+};
 
 struct SqlInput {
     sql: LitStr,
@@ -51,18 +54,6 @@ impl Parse for SqlInput {
 }
 
 /// Build a `babar::query::Fragment` from SQL that uses named placeholders.
-///
-/// The accepted placeholder syntax is `$name`, chosen for babar v0.1. Bindings
-/// are supplied as `name = codec` pairs after the SQL string:
-///
-/// - every placeholder must have a matching binding,
-/// - every binding must be used,
-/// - repeating the same placeholder reuses one parameter slot, and
-/// - nested `sql!(...)` calls flatten into one fragment in left-to-right order.
-///
-/// The macro does not validate SQL against a live database, infer codecs, or
-/// interpolate identifiers. It only rewrites placeholders, builds the fragment
-/// encoder, and captures the callsite for origin tracking.
 #[proc_macro]
 pub fn sql(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as SqlInput);
@@ -85,6 +76,21 @@ pub fn sql(input: TokenStream) -> TokenStream {
             }}
             .into()
         }
+        Err(err) => err.into_compile_error().into(),
+    }
+}
+
+/// Derive a `CODEC` associated constant for a named struct.
+///
+/// Each field must declare its codec with `#[pg(codec = "...")]`. The string
+/// is parsed as a Rust expression in a scope that brings `babar::codec::*`
+/// into scope, so values like `"int4"`, `"nullable(text)"`, or
+/// `"typed_json::<MyType>()"` all work.
+#[proc_macro_derive(Codec, attributes(pg))]
+pub fn derive_codec(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match compile_codec_derive(&input) {
+        Ok(tokens) => tokens.into(),
         Err(err) => err.into_compile_error().into(),
     }
 }
@@ -158,6 +164,183 @@ fn compile_input(input: &SqlInput) -> Result<CompiledSql> {
     }
 
     Ok(CompiledSql { sql, codecs })
+}
+
+fn compile_codec_derive(input: &DeriveInput) -> Result<proc_macro2::TokenStream> {
+    reject_generics(&input.generics)?;
+
+    let ident = &input.ident;
+    let data = match &input.data {
+        Data::Struct(data) => data,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                input,
+                "Codec can only be derived for structs",
+            ))
+        }
+    };
+    let fields = match &data.fields {
+        Fields::Named(fields) => &fields.named,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                data.fields.clone(),
+                "Codec requires a struct with named fields",
+            ))
+        }
+    };
+
+    let codec_ident = format_ident!("__Babar{}Codec", ident);
+    let assert_ident = format_ident!("__babar_assert_field_codecs_for_{}", ident);
+    let mut field_idents = Vec::new();
+    let mut field_types = Vec::new();
+    let mut codec_exprs = Vec::new();
+    let mut decoded_idents = Vec::new();
+    let mut assert_blocks = Vec::new();
+
+    for (index, field) in fields.iter().enumerate() {
+        let field_ident = field.ident.clone().expect("named field");
+        let field_ty = field.ty.clone();
+        let codec_expr = parse_codec_attr(field)?;
+        let decoded_ident = format_ident!("__babar_field_{index}");
+
+        let assert_block = quote! {
+            {
+                fn assert_codec<C>(_: &C)
+                where
+                    C: ::babar::codec::Encoder<#field_ty> + ::babar::codec::Decoder<#field_ty>,
+                {}
+                assert_codec(&{ use ::babar::codec::*; #codec_expr });
+            }
+        };
+
+        field_idents.push(field_ident);
+        field_types.push(field_ty);
+        codec_exprs.push(codec_expr);
+        decoded_idents.push(decoded_ident);
+        assert_blocks.push(assert_block);
+    }
+
+    let tuple_type = quote! { (#(#field_types,)*) };
+    let tuple_codec = quote! { (#({ use ::babar::codec::*; #codec_exprs },)*) };
+    let encode_fields =
+        field_idents
+            .iter()
+            .zip(codec_exprs.iter())
+            .map(|(field_ident, codec_expr)| {
+                quote! {
+                    ::babar::codec::Encoder::encode(
+                        &{ use ::babar::codec::*; #codec_expr },
+                        &value.#field_ident,
+                        params,
+                    )?;
+                }
+            });
+
+    let expanded = quote! {
+        #[doc(hidden)]
+        #[derive(Clone, Copy, Debug)]
+        pub struct #codec_ident;
+
+        #[doc(hidden)]
+        #[allow(non_snake_case)]
+        fn #assert_ident() {
+            #(#assert_blocks)*
+        }
+
+        impl #ident {
+            /// Codec generated by `#[derive(Codec)]` for this struct.
+            pub const CODEC: #codec_ident = #codec_ident;
+        }
+
+        impl ::babar::codec::Encoder<#ident> for #codec_ident {
+            fn encode(
+                &self,
+                value: &#ident,
+                params: &mut ::std::vec::Vec<::core::option::Option<::std::vec::Vec<u8>>>,
+            ) -> ::babar::Result<()> {
+                #assert_ident();
+                #(#encode_fields)*
+                ::core::result::Result::Ok(())
+            }
+
+            fn oids(&self) -> &'static [::babar::types::Oid] {
+                #assert_ident();
+                let codec = #tuple_codec;
+                <_ as ::babar::codec::Encoder<#tuple_type>>::oids(&codec)
+            }
+
+            fn format_codes(&self) -> &'static [i16] {
+                #assert_ident();
+                let codec = #tuple_codec;
+                <_ as ::babar::codec::Encoder<#tuple_type>>::format_codes(&codec)
+            }
+        }
+
+        impl ::babar::codec::Decoder<#ident> for #codec_ident {
+            fn decode(&self, columns: &[::core::option::Option<::babar::__private::Bytes>]) -> ::babar::Result<#ident> {
+                #assert_ident();
+                let codec = #tuple_codec;
+                let (#(#decoded_idents,)*) = <_ as ::babar::codec::Decoder<#tuple_type>>::decode(&codec, columns)?;
+                ::core::result::Result::Ok(#ident { #(#field_idents: #decoded_idents,)* })
+            }
+
+            fn n_columns(&self) -> usize {
+                #assert_ident();
+                let codec = #tuple_codec;
+                <_ as ::babar::codec::Decoder<#tuple_type>>::n_columns(&codec)
+            }
+
+            fn oids(&self) -> &'static [::babar::types::Oid] {
+                #assert_ident();
+                let codec = #tuple_codec;
+                <_ as ::babar::codec::Decoder<#tuple_type>>::oids(&codec)
+            }
+
+            fn format_codes(&self) -> &'static [i16] {
+                #assert_ident();
+                let codec = #tuple_codec;
+                <_ as ::babar::codec::Decoder<#tuple_type>>::format_codes(&codec)
+            }
+        }
+    };
+
+    Ok(expanded)
+}
+
+fn reject_generics(generics: &Generics) -> Result<()> {
+    if generics.params.is_empty() {
+        return Ok(());
+    }
+    Err(syn::Error::new_spanned(
+        generics,
+        "Codec derive does not support generic structs yet",
+    ))
+}
+
+fn parse_codec_attr(field: &Field) -> Result<Expr> {
+    let mut codec = None;
+    for attr in &field.attrs {
+        if !attr.path().is_ident("pg") {
+            continue;
+        }
+        parse_pg_attr(attr, &mut codec)?;
+    }
+
+    codec.ok_or_else(|| syn::Error::new_spanned(field, "missing #[pg(codec = \"...\")] attribute"))
+}
+
+fn parse_pg_attr(attr: &Attribute, codec: &mut Option<Expr>) -> Result<()> {
+    attr.parse_nested_meta(|meta| {
+        if !meta.path.is_ident("codec") {
+            return Err(meta.error("unsupported #[pg(...)] attribute; expected codec = \"...\""));
+        }
+        if codec.is_some() {
+            return Err(meta.error("duplicate codec attribute"));
+        }
+        let lit: LitStr = meta.value()?.parse()?;
+        *codec = Some(lit.parse()?);
+        Ok(())
+    })
 }
 
 fn nested_sql(expr: &Expr) -> Result<Option<SqlInput>> {
