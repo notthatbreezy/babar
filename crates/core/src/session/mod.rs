@@ -9,19 +9,25 @@
 //! continues to drive the protocol to completion regardless of what the
 //! caller does.
 
+pub(crate) mod cache;
 mod driver;
+mod prepared;
 mod startup;
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::query::{Command as QueryCommand, Query};
 
+use self::cache::{CacheKey, CachedStatement, StatementCache};
+
 pub(crate) use driver::Command;
 pub use driver::{RawRows, ServerParams};
+pub use prepared::{PreparedCommand, PreparedQuery};
 
 /// Channel buffer between user code and the driver. Backpressure here just
 /// rate-limits how fast users can enqueue commands; the driver handles
@@ -42,6 +48,8 @@ pub struct Session {
     /// Server's `BackendKeyData`. Used by out-of-band cancellation in a
     /// future milestone; stored now so we can document its presence.
     key_data: Option<driver::BackendKeyData>,
+    /// Per-session prepared statement cache.
+    cache: Arc<Mutex<StatementCache>>,
     /// Set on a clean shutdown to suppress the background reaper.
     closed: bool,
 }
@@ -98,11 +106,14 @@ impl Session {
     pub async fn execute<A>(&self, cmd: &QueryCommand<A>, args: A) -> Result<u64> {
         let mut params: Vec<Option<Vec<u8>>> = Vec::with_capacity(cmd.encoder.oids().len());
         cmd.encoder.encode(&args, &mut params)?;
+        let param_formats = cmd.encoder.format_codes().to_vec();
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(Command::ExtendedQuery {
                 sql: cmd.sql.clone(),
                 params,
+                param_formats,
+                result_formats: Vec::new(),
                 expected_columns: None,
                 reply: reply_tx,
             })
@@ -122,19 +133,23 @@ impl Session {
     /// matches `query.n_columns()` and surfaces a mismatch as
     /// [`Error::ColumnAlignment`] before any rows are decoded.
     ///
-    /// Returns all rows in a `Vec`. True row-by-row streaming arrives with
-    /// pipelining in M2.
+    /// Returns all rows in a `Vec`. For row-by-row streaming with
+    /// backpressure, see [`Session::stream`].
     ///
     /// Cancellation-safe: dropping the future leaves the in-flight query
     /// to run to completion on the driver task.
     pub async fn query<A, B>(&self, query: &Query<A, B>, args: A) -> Result<Vec<B>> {
         let mut params: Vec<Option<Vec<u8>>> = Vec::with_capacity(query.encoder.oids().len());
         query.encoder.encode(&args, &mut params)?;
+        let param_formats = query.encoder.format_codes().to_vec();
+        let result_formats = query.decoder.format_codes().to_vec();
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .send(Command::ExtendedQuery {
                 sql: query.sql.clone(),
                 params,
+                param_formats,
+                result_formats,
                 expected_columns: Some(query.decoder.n_columns()),
                 reply: reply_tx,
             })
@@ -149,6 +164,151 @@ impl Session {
             rows.push(query.decoder.decode(&cols)?);
         }
         Ok(rows)
+    }
+
+    /// Prepare a [`Query`] as a named server-side statement.
+    ///
+    /// Returns a [`PreparedQuery`] that can be executed multiple times
+    /// without re-parsing. The statement is cached by SQL text + parameter
+    /// OIDs, so calling `prepare` a second time with the same query
+    /// returns immediately from the cache.
+    ///
+    /// The server validates the SQL and reports parameter/column metadata
+    /// at prepare time — schema mismatches surface here rather than at
+    /// execute time.
+    pub async fn prepare_query<A, B>(&self, query: &Query<A, B>) -> Result<PreparedQuery<A, B>>
+    where
+        A: 'static,
+        B: 'static,
+    {
+        let param_oids = query.encoder.oids();
+        let key = CacheKey::new(query.sql(), param_oids);
+
+        // Fast path: cache hit.
+        {
+            let mut cache = self.cache.lock().await;
+            if let Some(cached) = cache.checkout(&key) {
+                return Ok(PreparedQuery::new(
+                    cached.name.clone(),
+                    query,
+                    self.tx.clone(),
+                    Arc::clone(&self.cache),
+                    key,
+                ));
+            }
+        }
+
+        // Slow path: prepare on server.
+        let name = self.cache.lock().await.next_name();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Command::Prepare {
+                name: name.clone(),
+                sql: query.sql().to_string(),
+                param_oids: param_oids.to_vec(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| Error::Closed)?;
+        let outcome = match reply_rx.await {
+            Ok(result) => result?,
+            Err(_) => return Err(Error::Closed),
+        };
+
+        // Schema validation: check column count and OIDs.
+        let decoder_oids = query.decoder.oids();
+        let server_fields = &outcome.row_fields;
+        if server_fields.len() != query.decoder.n_columns() {
+            return Err(Error::ColumnAlignment {
+                expected: query.decoder.n_columns(),
+                actual: server_fields.len(),
+            });
+        }
+        if !decoder_oids.is_empty() {
+            for (i, (expected, field)) in decoder_oids.iter().zip(server_fields.iter()).enumerate()
+            {
+                if *expected != field.type_oid {
+                    return Err(Error::SchemaMismatch {
+                        position: i,
+                        expected_oid: *expected,
+                        actual_oid: field.type_oid,
+                        column_name: field.name.clone(),
+                    });
+                }
+            }
+        }
+
+        // Cache the result.
+        let cached = CachedStatement {
+            name: name.clone(),
+            param_oids: outcome.param_oids,
+            row_fields: outcome.row_fields,
+        };
+        self.cache.lock().await.insert(key.clone(), cached);
+
+        Ok(PreparedQuery::new(
+            name,
+            query,
+            self.tx.clone(),
+            Arc::clone(&self.cache),
+            key,
+        ))
+    }
+
+    /// Prepare a [`Command`](QueryCommand) as a named server-side statement.
+    ///
+    /// Similar to [`Session::prepare_query`] but for statements that don't
+    /// return rows.
+    pub async fn prepare_command<A>(&self, cmd: &QueryCommand<A>) -> Result<PreparedCommand<A>>
+    where
+        A: 'static,
+    {
+        let param_oids = cmd.encoder.oids();
+        let key = CacheKey::new(cmd.sql(), param_oids);
+
+        {
+            let mut cache = self.cache.lock().await;
+            if let Some(cached) = cache.checkout(&key) {
+                return Ok(PreparedCommand::new(
+                    cached.name.clone(),
+                    cmd,
+                    self.tx.clone(),
+                    Arc::clone(&self.cache),
+                    key,
+                ));
+            }
+        }
+
+        let name = self.cache.lock().await.next_name();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Command::Prepare {
+                name: name.clone(),
+                sql: cmd.sql().to_string(),
+                param_oids: param_oids.to_vec(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| Error::Closed)?;
+        let outcome = match reply_rx.await {
+            Ok(result) => result?,
+            Err(_) => return Err(Error::Closed),
+        };
+
+        let cached = CachedStatement {
+            name: name.clone(),
+            param_oids: outcome.param_oids,
+            row_fields: outcome.row_fields,
+        };
+        self.cache.lock().await.insert(key.clone(), cached);
+
+        Ok(PreparedCommand::new(
+            name,
+            cmd,
+            self.tx.clone(),
+            Arc::clone(&self.cache),
+            key,
+        ))
     }
 
     /// Send a `Terminate` and wait for the driver task to exit.
@@ -210,6 +370,7 @@ pub(crate) fn new_session(
         tx,
         params,
         key_data,
+        cache: Arc::new(Mutex::new(StatementCache::new())),
         closed: false,
     }
 }

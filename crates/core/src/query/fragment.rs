@@ -144,13 +144,13 @@ where
         self.tail.encode(&value.1, params)
     }
     fn oids(&self) -> &'static [Oid] {
-        // We don't cache here because each AppendOne is a unique type
-        // and the OnceLock would be useless cross-instance. Instead the
-        // outer Fragment-as-encoder asks each level. This is a hot-ish
-        // path but the call only happens at execute prep, not per row.
-        // For now, leak a fresh static; if perf bites we revisit.
         let mut all: Vec<Oid> = self.head.oids().to_vec();
         all.extend_from_slice(self.tail.oids());
+        Box::leak(all.into_boxed_slice())
+    }
+    fn format_codes(&self) -> &'static [i16] {
+        let mut all: Vec<i16> = self.head.format_codes().to_vec();
+        all.extend_from_slice(self.tail.format_codes());
         Box::leak(all.into_boxed_slice())
     }
 }
@@ -176,6 +176,11 @@ where
         all.extend_from_slice(self.tail.oids());
         Box::leak(all.into_boxed_slice())
     }
+    fn format_codes(&self) -> &'static [i16] {
+        let mut all: Vec<i16> = self.head.format_codes().to_vec();
+        all.extend_from_slice(self.tail.format_codes());
+        Box::leak(all.into_boxed_slice())
+    }
 }
 
 /// `Arc<dyn Encoder<A>>` is itself an `Encoder<A>` via deref.
@@ -185,6 +190,9 @@ impl<A, T: Encoder<A> + ?Sized> Encoder<A> for Arc<T> {
     }
     fn oids(&self) -> &'static [Oid] {
         (**self).oids()
+    }
+    fn format_codes(&self) -> &'static [i16] {
+        (**self).format_codes()
     }
 }
 
@@ -198,6 +206,9 @@ impl<A, T: Decoder<A> + ?Sized> Decoder<A> for Arc<T> {
     }
     fn oids(&self) -> &'static [Oid] {
         (**self).oids()
+    }
+    fn format_codes(&self) -> &'static [i16] {
+        (**self).format_codes()
     }
 }
 
@@ -252,7 +263,8 @@ mod tests {
         assert_eq!(f.n_params(), 1);
         let mut params = Vec::new();
         f.encoder.encode(&((), 7_i32), &mut params).unwrap();
-        assert_eq!(params, vec![Some(b"7".to_vec())]);
+        // int4 binary: 4 bytes big-endian.
+        assert_eq!(params, vec![Some(7_i32.to_be_bytes().to_vec())]);
     }
 
     #[test]
@@ -273,9 +285,9 @@ mod tests {
         assert_eq!(
             params,
             vec![
-                Some(b"1".to_vec()),
+                Some(1_i32.to_be_bytes().to_vec()),
                 Some(b"two".to_vec()),
-                Some(b"t".to_vec()),
+                Some(vec![1_u8]), // bool binary: 0x01
             ]
         );
     }

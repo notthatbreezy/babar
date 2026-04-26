@@ -48,6 +48,9 @@ where
     fn oids(&self) -> &'static [Oid] {
         self.0.oids()
     }
+    fn format_codes(&self) -> &'static [i16] {
+        self.0.format_codes()
+    }
 }
 
 impl<C, A> Decoder<Option<A>> for Nullable<C>
@@ -72,6 +75,9 @@ where
     fn oids(&self) -> &'static [Oid] {
         self.0.oids()
     }
+    fn format_codes(&self) -> &'static [i16] {
+        self.0.format_codes()
+    }
 }
 
 #[cfg(test)]
@@ -84,7 +90,8 @@ mod tests {
         let codec = nullable(int4);
         let mut params = Vec::new();
         codec.encode(&Some(42_i32), &mut params).unwrap();
-        assert_eq!(params, vec![Some(b"42".to_vec())]);
+        // Binary format: 4 bytes big-endian.
+        assert_eq!(params, vec![Some(42_i32.to_be_bytes().to_vec())]);
     }
 
     #[test]

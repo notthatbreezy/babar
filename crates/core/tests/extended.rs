@@ -166,28 +166,42 @@ async fn column_alignment_mismatch_surfaces_as_error() {
 
     // Server returns 2 columns but the decoder only consumes 1 — surface
     // the mismatch before any decode runs.
+    // With binary format codes the server itself may reject the Bind message
+    // ("bind message has N result formats but query has M columns"), which is
+    // equally valid.
     let q: Query<(), (i32,)> = Query::raw("SELECT 1::int4, 2::int4", (), (int4,));
     let err = session.query(&q, ()).await.expect_err("must mismatch");
-    match err {
+    match &err {
         Error::ColumnAlignment { expected, actual } => {
-            assert_eq!(expected, 1);
-            assert_eq!(actual, 2);
+            assert_eq!(*expected, 1);
+            assert_eq!(*actual, 2);
         }
-        other => panic!("expected ColumnAlignment, got {other:?}"),
+        Error::Server { code, .. } => {
+            // 08P01 = protocol_violation — server caught format count mismatch
+            assert_eq!(code, "08P01");
+        }
+        other => panic!("expected ColumnAlignment or Server protocol error, got {other:?}"),
     }
 
-    // Same in the other direction.
+    // Same in the other direction — need a fresh session since server error
+    // may have poisoned the connection state.
+    let Some((_pg2, session2)) = fresh_session().await else {
+        return;
+    };
     let q: Query<(), (i32, i32)> = Query::raw("SELECT 1::int4", (), (int4, int4));
-    let err = session.query(&q, ()).await.expect_err("must mismatch");
-    match err {
+    let err = session2.query(&q, ()).await.expect_err("must mismatch");
+    match &err {
         Error::ColumnAlignment { expected, actual } => {
-            assert_eq!(expected, 2);
-            assert_eq!(actual, 1);
+            assert_eq!(*expected, 2);
+            assert_eq!(*actual, 1);
         }
-        other => panic!("expected ColumnAlignment, got {other:?}"),
+        Error::Server { code, .. } => {
+            assert_eq!(code, "08P01");
+        }
+        other => panic!("expected ColumnAlignment or Server protocol error, got {other:?}"),
     }
 
-    session.close().await.expect("close");
+    session2.close().await.expect("close");
 }
 
 #[tokio::test]

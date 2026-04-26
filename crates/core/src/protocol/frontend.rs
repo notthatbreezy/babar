@@ -59,7 +59,7 @@ pub fn terminate(buf: &mut BytesMut) {
 /// Write a `Parse` message announcing a prepared statement under
 /// `stmt_name` (use `""` for unnamed). `param_oids` is the OID list the
 /// driver claims for the placeholders; the server will accept `0` for
-/// "let the server infer", which is what M1 does for now.
+/// "let the server infer".
 pub fn parse(
     stmt_name: &str,
     sql: &str,
@@ -69,30 +69,24 @@ pub fn parse(
     frontend::parse(stmt_name, sql, param_oids, buf).map_err(map_io_to_protocol)
 }
 
-/// Write a `Bind` message attaching parameters to portal `portal_name`,
-/// referencing prepared statement `stmt_name`. M1 always uses text
-/// format (`format = 0`) for both parameters and results — binary lands
-/// in M2.
+/// Write a `Bind` message with explicit format codes for both parameters
+/// and results.
 ///
-/// `params` is a list of optional pre-encoded parameter bytes; `None`
-/// means SQL `NULL`. Each `Some(bytes)` is sent verbatim — the codec
-/// has already produced the right text representation.
-pub fn bind_text(
+/// `param_formats`: one `i16` per parameter (0 = text, 1 = binary).
+/// `result_formats`: one `i16` per result column (0 = text, 1 = binary).
+/// `params`: pre-encoded parameter bytes; `None` is SQL `NULL`.
+pub fn bind(
     portal_name: &str,
     stmt_name: &str,
+    param_formats: &[i16],
     params: &[Option<Vec<u8>>],
+    result_formats: &[i16],
     buf: &mut BytesMut,
 ) -> Result<()> {
-    // Empty `formats` iterator means "all parameters use text format" —
-    // exactly the M1 default.
-    let no_param_formats = std::iter::empty::<i16>();
-    // For results, sending an empty list also means "all results in
-    // text format".
-    let no_result_formats = std::iter::empty::<i16>();
     frontend::bind(
         portal_name,
         stmt_name,
-        no_param_formats,
+        param_formats.iter().copied(),
         params.iter(),
         |slot: &Option<Vec<u8>>, out: &mut BytesMut| match slot {
             Some(bytes) => {
@@ -101,23 +95,60 @@ pub fn bind_text(
             }
             None => Ok(IsNull::Yes),
         },
-        no_result_formats,
+        result_formats.iter().copied(),
         buf,
     )
-    .map_err(|e| match e {
-        postgres_protocol::message::frontend::BindError::Conversion(inner) => {
-            Error::Codec(format!("Bind: parameter conversion failed: {inner}"))
-        }
-        postgres_protocol::message::frontend::BindError::Serialization(io_err) => {
-            Error::Protocol(format!("Bind: serialization failed: {io_err}"))
-        }
-    })
+    .map_err(map_bind_error)
+}
+
+/// Write a `Bind` message using text format for all parameters and results.
+/// Convenience wrapper for the simple-query upgrade path.
+#[allow(dead_code)]
+pub fn bind_text(
+    portal_name: &str,
+    stmt_name: &str,
+    params: &[Option<Vec<u8>>],
+    buf: &mut BytesMut,
+) -> Result<()> {
+    frontend::bind(
+        portal_name,
+        stmt_name,
+        std::iter::empty::<i16>(),
+        params.iter(),
+        |slot: &Option<Vec<u8>>, out: &mut BytesMut| match slot {
+            Some(bytes) => {
+                out.extend_from_slice(bytes);
+                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(IsNull::No)
+            }
+            None => Ok(IsNull::Yes),
+        },
+        std::iter::empty::<i16>(),
+        buf,
+    )
+    .map_err(map_bind_error)
 }
 
 /// `Describe` for a portal (name; `""` for unnamed). Asks the server
 /// for the resulting `RowDescription`.
 pub fn describe_portal(name: &str, buf: &mut BytesMut) -> Result<()> {
     frontend::describe(b'P', name, buf).map_err(map_io_to_protocol)
+}
+
+/// `Describe` for a prepared statement. Returns `ParameterDescription`
+/// followed by `RowDescription` (or `NoData`).
+pub fn describe_statement(name: &str, buf: &mut BytesMut) -> Result<()> {
+    frontend::describe(b'S', name, buf).map_err(map_io_to_protocol)
+}
+
+/// `Close` a prepared statement. The server responds with `CloseComplete`.
+pub fn close_statement(name: &str, buf: &mut BytesMut) -> Result<()> {
+    frontend::close(b'S', name, buf).map_err(map_io_to_protocol)
+}
+
+/// `Close` a portal. The server responds with `CloseComplete`.
+#[allow(dead_code)]
+pub fn close_portal(name: &str, buf: &mut BytesMut) -> Result<()> {
+    frontend::close(b'P', name, buf).map_err(map_io_to_protocol)
 }
 
 /// `Execute` a portal up to `max_rows` rows; `0` means "no limit".
@@ -137,6 +168,17 @@ pub fn sync(buf: &mut BytesMut) {
 #[allow(clippy::needless_pass_by_value)] // passed to `map_err` which moves the error in
 fn map_io_to_protocol(e: std::io::Error) -> Error {
     Error::Protocol(format!("frontend message encode failed: {e}"))
+}
+
+fn map_bind_error(e: postgres_protocol::message::frontend::BindError) -> Error {
+    match e {
+        postgres_protocol::message::frontend::BindError::Conversion(inner) => {
+            Error::Codec(format!("Bind: parameter conversion failed: {inner}"))
+        }
+        postgres_protocol::message::frontend::BindError::Serialization(io_err) => {
+            Error::Protocol(format!("Bind: serialization failed: {io_err}"))
+        }
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-//! Encoder, Decoder, Codec traits and the M1 primitive codecs.
+//! Encoder, Decoder, Codec traits and primitive codecs.
 //!
 //! ## Mental model
 //!
@@ -24,10 +24,10 @@
 //!
 //! ## Format
 //!
-//! M1 ships text format only. Every encoded parameter is the UTF-8
-//! string Postgres would print for that value; every decoded column is
-//! parsed from the UTF-8 bytes the server returned. M2 will add binary
-//! format and let codecs advertise which formats they support.
+//! Codecs advertise which wire formats they support via
+//! [`Encoder::format_code`] and [`Decoder::format_code`]. The driver
+//! negotiates binary format when both the encoder and decoder support it.
+//! Postgres format codes: `0` = text, `1` = binary.
 
 #![allow(non_upper_case_globals)] // codec consts (`int4`, `text`, ...) are lowercase to match Skunk
 
@@ -48,16 +48,29 @@ use bytes::Bytes;
 use crate::error::Result;
 use crate::types::Oid;
 
+/// Postgres wire format code: `0` = text, `1` = binary.
+pub const FORMAT_TEXT: i16 = 0;
+/// Postgres wire format code: `0` = text, `1` = binary.
+pub const FORMAT_BINARY: i16 = 1;
+
 /// Encode a value into one or more Postgres parameter slots.
 ///
 /// Implementors push exactly `oids().len()` entries onto `params`. Each
-/// entry is the parameter's text-format bytes; `None` is SQL `NULL`.
+/// entry is the parameter's encoded bytes; `None` is SQL `NULL`.
 pub trait Encoder<A>: Send + Sync {
     /// Append parameter slots for `value` onto `params`.
     fn encode(&self, value: &A, params: &mut Vec<Option<Vec<u8>>>) -> Result<()>;
 
     /// OIDs of the parameter slots this encoder produces, in order.
     fn oids(&self) -> &'static [Oid];
+
+    /// Postgres format codes for parameter slots, in order. Each element
+    /// is `0` (text) or `1` (binary). Default: text for all.
+    fn format_codes(&self) -> &'static [i16] {
+        // Default: text for all slots. Codecs that support binary
+        // override this.
+        &[]
+    }
 }
 
 /// Decode a value from one or more `RowDescription` columns.
@@ -77,6 +90,12 @@ pub trait Decoder<A>: Send + Sync {
 
     /// OIDs of consumed columns, in order. `oids().len() == n_columns()`.
     fn oids(&self) -> &'static [Oid];
+
+    /// Postgres format codes for result columns, in order. Each element
+    /// is `0` (text) or `1` (binary). Default: text for all.
+    fn format_codes(&self) -> &'static [i16] {
+        &[]
+    }
 }
 
 /// A codec is anything that's both an [`Encoder`] and [`Decoder`] for the

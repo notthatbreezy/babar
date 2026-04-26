@@ -44,4 +44,4 @@ mod session;
 pub use config::Config;
 pub use error::{Error, Result};
 #[cfg(not(loom))]
-pub use session::{RawRows, ServerParams, Session};
+pub use session::{PreparedCommand, PreparedQuery, RawRows, ServerParams, Session};

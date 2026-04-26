@@ -71,6 +71,21 @@ pub enum Error {
         /// Columns the server reported in `RowDescription`.
         actual: usize,
     },
+
+    /// The server's column types don't match the decoder's expected OIDs.
+    /// Detected at prepare time so the caller knows about the mismatch
+    /// before any rows are fetched.
+    #[error("schema mismatch at column {position}: expected OID {expected_oid}, server has OID {actual_oid} (column \"{column_name}\")")]
+    SchemaMismatch {
+        /// 0-based column position of the first mismatch.
+        position: usize,
+        /// OID the decoder expected.
+        expected_oid: u32,
+        /// OID the server reported.
+        actual_oid: u32,
+        /// Column name from the server's `RowDescription`.
+        column_name: String,
+    },
 }
 
 impl Error {

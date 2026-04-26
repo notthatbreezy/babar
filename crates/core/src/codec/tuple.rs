@@ -34,6 +34,16 @@ fn concat_static_oids(parts: &[&[Oid]]) -> &'static [Oid] {
     Box::leak(all.into_boxed_slice())
 }
 
+/// Same as `concat_static_oids` but for format codes (`i16`).
+fn concat_static_formats(parts: &[&[i16]]) -> &'static [i16] {
+    let total: usize = parts.iter().map(|p| p.len()).sum();
+    let mut all: Vec<i16> = Vec::with_capacity(total);
+    for p in parts {
+        all.extend_from_slice(p);
+    }
+    Box::leak(all.into_boxed_slice())
+}
+
 /// Helper used by the tuple macro: bounds-check that the column slice is
 /// at least `expected` long, returning a clear error otherwise.
 fn need_columns(columns: &[Option<Bytes>], expected: usize) -> Result<()> {
@@ -69,6 +79,9 @@ macro_rules! tuple_codec {
             fn oids(&self) -> &'static [Oid] {
                 concat_static_oids(&[ $( self.$idx.oids() ),+ ])
             }
+            fn format_codes(&self) -> &'static [i16] {
+                concat_static_formats(&[ $( self.$idx.format_codes() ),+ ])
+            }
         }
 
         impl<$($C, $T),+> Decoder<($($T,)+)> for ($($C,)+)
@@ -91,6 +104,9 @@ macro_rules! tuple_codec {
             }
             fn oids(&self) -> &'static [Oid] {
                 concat_static_oids(&[ $( self.$idx.oids() ),+ ])
+            }
+            fn format_codes(&self) -> &'static [i16] {
+                concat_static_formats(&[ $( self.$idx.format_codes() ),+ ])
             }
         }
     };
@@ -149,7 +165,11 @@ mod tests {
         codec
             .encode(&(7_i32, "hi".to_string()), &mut params)
             .unwrap();
-        assert_eq!(params, vec![Some(b"7".to_vec()), Some(b"hi".to_vec())]);
+        // int4 encodes as 4-byte big-endian; text as raw UTF-8.
+        assert_eq!(
+            params,
+            vec![Some(7_i32.to_be_bytes().to_vec()), Some(b"hi".to_vec())]
+        );
     }
 
     #[test]

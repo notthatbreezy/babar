@@ -67,7 +67,28 @@ pub(crate) struct ExtendedOutcome {
     pub command_tag: Option<String>,
 }
 
+/// Result of a `Prepare` round-trip: server-confirmed parameter OIDs +
+/// row metadata.
+#[derive(Debug, Clone)]
+pub(crate) struct PrepareOutcome {
+    /// Parameter OIDs the server inferred (from `ParameterDescription`).
+    pub param_oids: Vec<u32>,
+    /// Column metadata (from `RowDescription`), empty if no rows.
+    pub row_fields: Vec<RowField>,
+}
+
+/// Result of a portal `Execute` batch.
+#[derive(Debug)]
+pub(crate) struct PortalBatch {
+    /// Rows returned in this batch.
+    pub rows: RawRows,
+    /// `true` if the portal still has rows (server sent `PortalSuspended`).
+    /// `false` if the portal is exhausted (`CommandComplete`).
+    pub has_more: bool,
+}
+
 type ExtendedReply = oneshot::Sender<Result<ExtendedOutcome>>;
+type PrepareReply = oneshot::Sender<Result<PrepareOutcome>>;
 
 /// One unit of work the driver task accepts.
 pub enum Command {
@@ -78,16 +99,64 @@ pub enum Command {
         reply: SimpleQueryReply,
     },
     /// Run `sql` through the extended protocol with pre-encoded params.
-    /// All slots are sent in text format; results are requested in text
-    /// format. The driver validates `expected_columns` against the
-    /// server's `RowDescription`.
+    /// The driver validates `expected_columns` against the server's
+    /// `RowDescription`.
     ExtendedQuery {
         sql: String,
         params: Vec<Option<Vec<u8>>>,
+        /// Format codes for parameters (0 = text, 1 = binary).
+        param_formats: Vec<i16>,
+        /// Format codes for result columns (0 = text, 1 = binary).
+        result_formats: Vec<i16>,
         /// `Some(n)`: this is a Query, expect `RowDescription` with
         /// `n` columns. `None`: this is a Command, no rows expected.
         expected_columns: Option<usize>,
         reply: ExtendedReply,
+    },
+    /// Prepare a named statement: `Parse(named) + Describe(statement) + Sync`.
+    Prepare {
+        name: String,
+        sql: String,
+        param_oids: Vec<u32>,
+        reply: PrepareReply,
+    },
+    /// Execute an already-prepared statement:
+    /// `Bind(named) + Execute + Sync`.
+    ExecutePrepared {
+        stmt_name: String,
+        params: Vec<Option<Vec<u8>>>,
+        param_formats: Vec<i16>,
+        result_formats: Vec<i16>,
+        expected_columns: Option<usize>,
+        reply: ExtendedReply,
+    },
+    /// Bind a named statement to a named portal:
+    /// `Bind(portal, stmt) + Sync`.
+    BindPortal {
+        portal_name: String,
+        stmt_name: String,
+        params: Vec<Option<Vec<u8>>>,
+        param_formats: Vec<i16>,
+        result_formats: Vec<i16>,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// Execute a portal with a row limit:
+    /// `Execute(portal, max_rows) + Sync`.
+    /// Returns rows and whether more rows remain.
+    ExecutePortal {
+        portal_name: String,
+        max_rows: i32,
+        reply: oneshot::Sender<Result<PortalBatch>>,
+    },
+    /// Close a named portal: `Close(portal) + Sync`.
+    ClosePortal {
+        name: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    /// Close a named prepared statement: `Close(statement) + Sync`.
+    CloseStatement {
+        name: String,
+        reply: oneshot::Sender<Result<()>>,
     },
     /// Send `Terminate` and exit the loop. The reply fires once the socket
     /// is closed.
@@ -104,12 +173,55 @@ impl std::fmt::Debug for Command {
                 sql,
                 params,
                 expected_columns,
+                param_formats,
                 ..
             } => f
                 .debug_struct("ExtendedQuery")
                 .field("sql", sql)
                 .field("params_len", &params.len())
+                .field("param_formats_len", &param_formats.len())
                 .field("expected_columns", expected_columns)
+                .finish(),
+            Self::Prepare { name, sql, .. } => f
+                .debug_struct("Prepare")
+                .field("name", name)
+                .field("sql", sql)
+                .finish(),
+            Self::ExecutePrepared {
+                stmt_name,
+                params,
+                expected_columns,
+                ..
+            } => f
+                .debug_struct("ExecutePrepared")
+                .field("stmt_name", stmt_name)
+                .field("params_len", &params.len())
+                .field("expected_columns", expected_columns)
+                .finish(),
+            Self::BindPortal {
+                portal_name,
+                stmt_name,
+                ..
+            } => f
+                .debug_struct("BindPortal")
+                .field("portal_name", portal_name)
+                .field("stmt_name", stmt_name)
+                .finish(),
+            Self::ExecutePortal {
+                portal_name,
+                max_rows,
+                ..
+            } => f
+                .debug_struct("ExecutePortal")
+                .field("portal_name", portal_name)
+                .field("max_rows", max_rows)
+                .finish(),
+            Self::ClosePortal { name, .. } => {
+                f.debug_struct("ClosePortal").field("name", name).finish()
+            }
+            Self::CloseStatement { name, .. } => f
+                .debug_struct("CloseStatement")
+                .field("name", name)
                 .finish(),
             Self::Close { .. } => f.debug_struct("Close").finish(),
         }
@@ -187,6 +299,45 @@ enum Pending {
         command_tag: Option<String>,
         error: Option<Error>,
     },
+    /// Waiting for `ParseComplete + ParameterDescription + RowDescription/NoData + ReadyForQuery`.
+    Prepare {
+        reply: PrepareReply,
+        param_oids: Option<Vec<u32>>,
+        row_fields: Option<Vec<RowField>>,
+        error: Option<Error>,
+    },
+    /// Same as Extended but for a pre-prepared statement.
+    ExecutePrepared {
+        reply: ExtendedReply,
+        /// `Some(n)` means a prepared query expecting `n` columns; `None`
+        /// means a prepared command.
+        expected_columns: Option<usize>,
+        rows: RawRows,
+        command_tag: Option<String>,
+        error: Option<Error>,
+    },
+    /// Waiting for `BindComplete + ReadyForQuery`.
+    BindPortal {
+        reply: oneshot::Sender<Result<()>>,
+        error: Option<Error>,
+    },
+    /// Waiting for `DataRow`* + (`CommandComplete` | `PortalSuspended`) + `ReadyForQuery`.
+    ExecutePortal {
+        reply: oneshot::Sender<Result<PortalBatch>>,
+        rows: RawRows,
+        has_more: bool,
+        error: Option<Error>,
+    },
+    /// Waiting for `CloseComplete + ReadyForQuery`.
+    ClosePortal {
+        reply: oneshot::Sender<Result<()>>,
+        error: Option<Error>,
+    },
+    /// Waiting for `CloseComplete + ReadyForQuery`.
+    CloseStatement {
+        reply: oneshot::Sender<Result<()>>,
+        error: Option<Error>,
+    },
     Close {
         reply: oneshot::Sender<Result<()>>,
     },
@@ -240,6 +391,7 @@ impl Driver {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn start(&mut self, cmd: Command) -> Result<()> {
         match cmd {
             Command::SimpleQuery { sql, reply } => {
@@ -264,15 +416,23 @@ impl Driver {
             Command::ExtendedQuery {
                 sql,
                 params,
+                param_formats,
+                result_formats,
                 expected_columns,
                 reply,
             } => {
                 self.write_buf.clear();
                 let mut build = || -> Result<()> {
-                    // Unnamed prepared statement and unnamed portal:
-                    // M1 doesn't cache statements yet (M2's job).
+                    // Unnamed prepared statement and unnamed portal.
                     frontend::parse("", &sql, std::iter::empty(), &mut self.write_buf)?;
-                    frontend::bind_text("", "", &params, &mut self.write_buf)?;
+                    frontend::bind(
+                        "",
+                        "",
+                        &param_formats,
+                        &params,
+                        &result_formats,
+                        &mut self.write_buf,
+                    )?;
                     frontend::describe_portal("", &mut self.write_buf)?;
                     frontend::execute("", 0, &mut self.write_buf)?;
                     frontend::sync(&mut self.write_buf);
@@ -293,6 +453,169 @@ impl Driver {
                     command_tag: None,
                     error: None,
                 });
+                Ok(())
+            }
+            Command::Prepare {
+                name,
+                sql,
+                param_oids,
+                reply,
+            } => {
+                self.write_buf.clear();
+                let mut build = || -> Result<()> {
+                    frontend::parse(&name, &sql, param_oids.iter().copied(), &mut self.write_buf)?;
+                    frontend::describe_statement(&name, &mut self.write_buf)?;
+                    frontend::sync(&mut self.write_buf);
+                    Ok(())
+                };
+                if let Err(e) = build() {
+                    let _ = reply.send(Err(e));
+                    return Ok(());
+                }
+                if let Err(e) = self.flush().await {
+                    let _ = reply.send(Err(e.clone_for_caller()));
+                    return Err(e);
+                }
+                self.pending = Some(Pending::Prepare {
+                    reply,
+                    param_oids: None,
+                    row_fields: None,
+                    error: None,
+                });
+                Ok(())
+            }
+            Command::ExecutePrepared {
+                stmt_name,
+                params,
+                param_formats,
+                result_formats,
+                expected_columns,
+                reply,
+            } => {
+                self.write_buf.clear();
+                let mut build = || -> Result<()> {
+                    frontend::bind(
+                        "",
+                        &stmt_name,
+                        &param_formats,
+                        &params,
+                        &result_formats,
+                        &mut self.write_buf,
+                    )?;
+                    frontend::execute("", 0, &mut self.write_buf)?;
+                    frontend::sync(&mut self.write_buf);
+                    Ok(())
+                };
+                if let Err(e) = build() {
+                    let _ = reply.send(Err(e));
+                    return Ok(());
+                }
+                if let Err(e) = self.flush().await {
+                    let _ = reply.send(Err(e.clone_for_caller()));
+                    return Err(e);
+                }
+                self.pending = Some(Pending::ExecutePrepared {
+                    reply,
+                    expected_columns,
+                    rows: Vec::new(),
+                    command_tag: None,
+                    error: None,
+                });
+                Ok(())
+            }
+            Command::BindPortal {
+                portal_name,
+                stmt_name,
+                params,
+                param_formats,
+                result_formats,
+                reply,
+            } => {
+                self.write_buf.clear();
+                let mut build = || -> Result<()> {
+                    frontend::bind(
+                        &portal_name,
+                        &stmt_name,
+                        &param_formats,
+                        &params,
+                        &result_formats,
+                        &mut self.write_buf,
+                    )?;
+                    frontend::sync(&mut self.write_buf);
+                    Ok(())
+                };
+                if let Err(e) = build() {
+                    let _ = reply.send(Err(e));
+                    return Ok(());
+                }
+                if let Err(e) = self.flush().await {
+                    let _ = reply.send(Err(e.clone_for_caller()));
+                    return Err(e);
+                }
+                self.pending = Some(Pending::BindPortal { reply, error: None });
+                Ok(())
+            }
+            Command::ExecutePortal {
+                portal_name,
+                max_rows,
+                reply,
+            } => {
+                self.write_buf.clear();
+                let mut build = || -> Result<()> {
+                    frontend::execute(&portal_name, max_rows, &mut self.write_buf)?;
+                    frontend::sync(&mut self.write_buf);
+                    Ok(())
+                };
+                if let Err(e) = build() {
+                    let _ = reply.send(Err(e));
+                    return Ok(());
+                }
+                if let Err(e) = self.flush().await {
+                    let _ = reply.send(Err(e.clone_for_caller()));
+                    return Err(e);
+                }
+                self.pending = Some(Pending::ExecutePortal {
+                    reply,
+                    rows: Vec::new(),
+                    has_more: false,
+                    error: None,
+                });
+                Ok(())
+            }
+            Command::ClosePortal { name, reply } => {
+                self.write_buf.clear();
+                let mut build = || -> Result<()> {
+                    frontend::close_portal(&name, &mut self.write_buf)?;
+                    frontend::sync(&mut self.write_buf);
+                    Ok(())
+                };
+                if let Err(e) = build() {
+                    let _ = reply.send(Err(e));
+                    return Ok(());
+                }
+                if let Err(e) = self.flush().await {
+                    let _ = reply.send(Err(e.clone_for_caller()));
+                    return Err(e);
+                }
+                self.pending = Some(Pending::ClosePortal { reply, error: None });
+                Ok(())
+            }
+            Command::CloseStatement { name, reply } => {
+                self.write_buf.clear();
+                let mut build = || -> Result<()> {
+                    frontend::close_statement(&name, &mut self.write_buf)?;
+                    frontend::sync(&mut self.write_buf);
+                    Ok(())
+                };
+                if let Err(e) = build() {
+                    let _ = reply.send(Err(e));
+                    return Ok(());
+                }
+                if let Err(e) = self.flush().await {
+                    let _ = reply.send(Err(e.clone_for_caller()));
+                    return Err(e);
+                }
+                self.pending = Some(Pending::CloseStatement { reply, error: None });
                 Ok(())
             }
             Command::Close { reply } => {
@@ -440,6 +763,187 @@ impl Driver {
                     let _ = reply.send(outcome);
                 }
             }
+            // ---- Prepare (named statement) ------------------------------
+            (Some(Pending::Prepare { .. }), BackendMessage::ParseComplete) => {}
+            (
+                Some(Pending::Prepare {
+                    param_oids: slot, ..
+                }),
+                BackendMessage::ParameterDescription { type_oids },
+            ) => {
+                *slot = Some(type_oids);
+            }
+            (
+                Some(Pending::Prepare {
+                    row_fields: slot, ..
+                }),
+                BackendMessage::RowDescription { fields },
+            ) => {
+                *slot = Some(fields);
+            }
+            (
+                Some(Pending::Prepare {
+                    row_fields: slot, ..
+                }),
+                BackendMessage::NoData,
+            ) => {
+                *slot = Some(Vec::new());
+            }
+            (Some(Pending::Prepare { error, .. }), BackendMessage::ErrorResponse { fields }) => {
+                *error = error.take().or(Some(server_error(fields)));
+            }
+            (Some(Pending::Prepare { .. }), BackendMessage::ReadyForQuery { .. }) => {
+                if let Some(Pending::Prepare {
+                    reply,
+                    param_oids,
+                    row_fields,
+                    error,
+                }) = self.pending.take()
+                {
+                    let outcome = if let Some(e) = error {
+                        Err(e)
+                    } else {
+                        Ok(PrepareOutcome {
+                            param_oids: param_oids.unwrap_or_default(),
+                            row_fields: row_fields.unwrap_or_default(),
+                        })
+                    };
+                    let _ = reply.send(outcome);
+                }
+            }
+            // ---- ExecutePrepared ----------------------------------------
+            (Some(Pending::ExecutePrepared { .. }), BackendMessage::BindComplete) => {}
+            (Some(Pending::ExecutePrepared { rows, .. }), BackendMessage::DataRow { columns }) => {
+                rows.push(columns);
+            }
+            (
+                Some(Pending::ExecutePrepared {
+                    expected_columns,
+                    error,
+                    ..
+                }),
+                BackendMessage::RowDescription { fields },
+            ) => {
+                if let Some(expected) = *expected_columns {
+                    if fields.len() != expected {
+                        *error = error.take().or(Some(Error::ColumnAlignment {
+                            expected,
+                            actual: fields.len(),
+                        }));
+                    }
+                }
+            }
+            (
+                Some(Pending::ExecutePrepared {
+                    expected_columns,
+                    error,
+                    ..
+                }),
+                BackendMessage::NoData,
+            ) => {
+                if let Some(expected) = *expected_columns {
+                    if expected != 0 {
+                        *error = error.take().or(Some(Error::ColumnAlignment {
+                            expected,
+                            actual: 0,
+                        }));
+                    }
+                }
+            }
+            (
+                Some(Pending::ExecutePrepared { command_tag, .. }),
+                BackendMessage::CommandComplete { tag },
+            ) => {
+                *command_tag = Some(tag);
+            }
+            (Some(Pending::ExecutePrepared { .. }), BackendMessage::EmptyQueryResponse) => {}
+            (
+                Some(Pending::ExecutePrepared { error, .. }),
+                BackendMessage::ErrorResponse { fields },
+            ) => {
+                *error = error.take().or(Some(server_error(fields)));
+            }
+            (Some(Pending::ExecutePrepared { .. }), BackendMessage::ReadyForQuery { .. }) => {
+                if let Some(Pending::ExecutePrepared {
+                    reply,
+                    rows,
+                    command_tag,
+                    error,
+                    ..
+                }) = self.pending.take()
+                {
+                    let outcome =
+                        error.map_or_else(|| Ok(ExtendedOutcome { rows, command_tag }), Err);
+                    let _ = reply.send(outcome);
+                }
+            }
+            // ---- BindPortal ----------------------------------------------
+            (Some(Pending::BindPortal { .. }), BackendMessage::BindComplete) => {}
+            (Some(Pending::BindPortal { error, .. }), BackendMessage::ErrorResponse { fields }) => {
+                *error = error.take().or(Some(server_error(fields)));
+            }
+            (Some(Pending::BindPortal { .. }), BackendMessage::ReadyForQuery { .. }) => {
+                if let Some(Pending::BindPortal { reply, error }) = self.pending.take() {
+                    let outcome = error.map_or(Ok(()), Err);
+                    let _ = reply.send(outcome);
+                }
+            }
+            // ---- ExecutePortal ------------------------------------------
+            (Some(Pending::ExecutePortal { rows, .. }), BackendMessage::DataRow { columns }) => {
+                rows.push(columns);
+            }
+            (Some(Pending::ExecutePortal { .. }), BackendMessage::CommandComplete { .. }) => {
+                // Portal exhausted — has_more stays false.
+            }
+            (Some(Pending::ExecutePortal { has_more, .. }), BackendMessage::PortalSuspended) => {
+                *has_more = true;
+            }
+            (
+                Some(Pending::ExecutePortal { error, .. }),
+                BackendMessage::ErrorResponse { fields },
+            ) => {
+                *error = error.take().or(Some(server_error(fields)));
+            }
+            (Some(Pending::ExecutePortal { .. }), BackendMessage::ReadyForQuery { .. }) => {
+                if let Some(Pending::ExecutePortal {
+                    reply,
+                    rows,
+                    has_more,
+                    error,
+                }) = self.pending.take()
+                {
+                    let outcome = error.map_or_else(|| Ok(PortalBatch { rows, has_more }), Err);
+                    let _ = reply.send(outcome);
+                }
+            }
+            // ---- ClosePortal --------------------------------------------
+            (Some(Pending::ClosePortal { .. }), BackendMessage::CloseComplete) => {}
+            (
+                Some(Pending::ClosePortal { error, .. }),
+                BackendMessage::ErrorResponse { fields },
+            ) => {
+                *error = error.take().or(Some(server_error(fields)));
+            }
+            (Some(Pending::ClosePortal { .. }), BackendMessage::ReadyForQuery { .. }) => {
+                if let Some(Pending::ClosePortal { reply, error }) = self.pending.take() {
+                    let outcome = error.map_or(Ok(()), Err);
+                    let _ = reply.send(outcome);
+                }
+            }
+            // ---- CloseStatement -----------------------------------------
+            (Some(Pending::CloseStatement { .. }), BackendMessage::CloseComplete) => {}
+            (
+                Some(Pending::CloseStatement { error, .. }),
+                BackendMessage::ErrorResponse { fields },
+            ) => {
+                *error = error.take().or(Some(server_error(fields)));
+            }
+            (Some(Pending::CloseStatement { .. }), BackendMessage::ReadyForQuery { .. }) => {
+                if let Some(Pending::CloseStatement { reply, error }) = self.pending.take() {
+                    let outcome = error.map_or(Ok(()), Err);
+                    let _ = reply.send(outcome);
+                }
+            }
             (
                 _,
                 BackendMessage::ParameterStatus { .. }
@@ -479,10 +983,21 @@ impl Driver {
             Some(Pending::SimpleQuery { reply, .. }) => {
                 let _ = reply.send(Err(err));
             }
-            Some(Pending::Extended { reply, .. }) => {
+            Some(Pending::Extended { reply, .. } | Pending::ExecutePrepared { reply, .. }) => {
                 let _ = reply.send(Err(err));
             }
-            Some(Pending::Close { reply }) => {
+            Some(Pending::Prepare { reply, .. }) => {
+                let _ = reply.send(Err(err));
+            }
+            Some(Pending::ExecutePortal { reply, .. }) => {
+                let _ = reply.send(Err(err));
+            }
+            Some(
+                Pending::BindPortal { reply, .. }
+                | Pending::ClosePortal { reply, .. }
+                | Pending::CloseStatement { reply, .. }
+                | Pending::Close { reply },
+            ) => {
                 let _ = reply.send(Err(err));
             }
             None => {}
@@ -504,10 +1019,19 @@ fn fail_command(cmd: Command, err: Error) {
         Command::SimpleQuery { reply, .. } => {
             let _ = reply.send(Err(err));
         }
-        Command::ExtendedQuery { reply, .. } => {
+        Command::ExtendedQuery { reply, .. } | Command::ExecutePrepared { reply, .. } => {
             let _ = reply.send(Err(err));
         }
-        Command::Close { reply } => {
+        Command::Prepare { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        Command::ExecutePortal { reply, .. } => {
+            let _ = reply.send(Err(err));
+        }
+        Command::BindPortal { reply, .. }
+        | Command::ClosePortal { reply, .. }
+        | Command::CloseStatement { reply, .. }
+        | Command::Close { reply } => {
             let _ = reply.send(Err(err));
         }
     }
@@ -537,6 +1061,12 @@ fn pending_kind(p: Option<&Pending>) -> &'static str {
         None => "None",
         Some(Pending::SimpleQuery { .. }) => "SimpleQuery",
         Some(Pending::Extended { .. }) => "Extended",
+        Some(Pending::Prepare { .. }) => "Prepare",
+        Some(Pending::ExecutePrepared { .. }) => "ExecutePrepared",
+        Some(Pending::BindPortal { .. }) => "BindPortal",
+        Some(Pending::ExecutePortal { .. }) => "ExecutePortal",
+        Some(Pending::ClosePortal { .. }) => "ClosePortal",
+        Some(Pending::CloseStatement { .. }) => "CloseStatement",
         Some(Pending::Close { .. }) => "Close",
     }
 }
@@ -566,6 +1096,17 @@ impl Error {
             Error::ColumnAlignment { expected, actual } => Error::ColumnAlignment {
                 expected: *expected,
                 actual: *actual,
+            },
+            Error::SchemaMismatch {
+                position,
+                expected_oid,
+                actual_oid,
+                ref column_name,
+            } => Error::SchemaMismatch {
+                position: *position,
+                expected_oid: *expected_oid,
+                actual_oid: *actual_oid,
+                column_name: column_name.clone(),
             },
         }
     }
