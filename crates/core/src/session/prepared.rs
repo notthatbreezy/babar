@@ -16,9 +16,16 @@ use crate::query::{Command as QueryCommand, Query};
 /// [`Session::prepare_query`](super::Session::prepare_query).
 ///
 /// Holds an `Arc` reference to the encoder and decoder from the original
-/// `Query`, plus the server-side statement name. On `Drop`, sends a
-/// `CloseStatement` command to the driver to free the server-side
-/// resources (best-effort, non-blocking).
+/// `Query`, plus the server-side statement name.
+///
+/// Each handle participates in the session's prepared-statement cache. If the
+/// same query is prepared again, the cache returns another `PreparedQuery`
+/// pointing at the same server-side statement. The statement stays alive until
+/// the last handle closes or drops.
+///
+/// Call [`PreparedQuery::close`] when you need confirmation that the server has
+/// released the statement. Dropping the last live handle triggers best-effort,
+/// non-blocking cleanup in the background.
 pub struct PreparedQuery<A, B> {
     name: String,
     encoder: Arc<dyn Encoder<A> + Send + Sync>,
@@ -48,8 +55,10 @@ impl<A, B> PreparedQuery<A, B> {
         }
     }
 
-    /// Execute the prepared query with the given arguments and decode all
-    /// rows.
+    /// Execute the prepared query with the given arguments and decode all rows.
+    ///
+    /// Reuses the already-prepared server-side statement, so repeated calls
+    /// avoid another parse/describe roundtrip.
     pub async fn query(&self, args: A) -> Result<Vec<B>> {
         let mut params: Vec<Option<Vec<u8>>> = Vec::with_capacity(self.encoder.oids().len());
         self.encoder.encode(&args, &mut params)?;
@@ -140,6 +149,8 @@ impl<A, B> std::fmt::Debug for PreparedQuery<A, B> {
 
 /// A prepared statement that does not return rows. Created by
 /// [`Session::prepare_command`](super::Session::prepare_command).
+///
+/// Shares the same cache and close/drop lifecycle as [`PreparedQuery`].
 pub struct PreparedCommand<A> {
     name: String,
     encoder: Arc<dyn Encoder<A> + Send + Sync>,

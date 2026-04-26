@@ -25,7 +25,7 @@
 //! ## Format
 //!
 //! Codecs advertise which wire formats they support via
-//! [`Encoder::format_code`] and [`Decoder::format_code`]. The driver
+//! [`Encoder::format_codes`] and [`Decoder::format_codes`]. The driver
 //! negotiates binary format when both the encoder and decoder support it.
 //! Postgres format codes: `0` = text, `1` = binary.
 

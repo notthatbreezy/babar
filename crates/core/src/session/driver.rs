@@ -11,8 +11,9 @@
 //! - Exactly one task reads the socket; exactly one task writes to it
 //!   (the same one). No interleaving.
 //! - A command is acknowledged on its `oneshot` only after a
-//!   `ReadyForQuery` is observed. This serializes the protocol — M0 does
-//!   not pipeline. (Pipelining lands in M2.)
+//!   `ReadyForQuery` is observed. Commands still execute one-at-a-time, but
+//!   each command may batch multiple frontend messages into one flush
+//!   (`Parse + Describe + Sync`, `Bind + Execute + Sync`, etc.).
 //! - If the socket dies, every pending reply channel is dropped
 //!   (`Err(RecvError)`), which surfaces to callers as [`Error::Closed`].
 //! - When the [`Session`] handle is dropped, the command channel closes,
@@ -276,7 +277,8 @@ struct Driver {
     reader: FramedRead<OwnedReadHalf, BackendCodec>,
     writer: OwnedWriteHalf,
     inbox: mpsc::Receiver<Command>,
-    /// Pending command in flight. M0 is non-pipelined: at most one.
+    /// Pending command in flight. The driver still serializes commands:
+    /// at most one round-trip is active at a time.
     pending: Option<Pending>,
     write_buf: BytesMut,
 }

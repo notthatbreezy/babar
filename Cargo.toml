@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "benches/prepared-throughput",
     "crates/core",
     "crates/macros",
 ]
@@ -40,6 +41,8 @@ hex-literal = "0.4"
 loom = "0.7"
 testcontainers = "0.15"
 dial9-tokio-telemetry = "0.3"
+criterion = "0.5"
+tokio-postgres = "0.7"
 
 [profile.release]
 lto = "thin"

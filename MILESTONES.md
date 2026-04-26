@@ -187,8 +187,8 @@ for all primitive codecs, and ship cursor/portal streaming.
       assumed — add an integration test with a memory ceiling assertion).
 - [ ] Benchmark vs `tokio-postgres` for prepared-statement throughput: our
       numbers are within 20% either way (either is acceptable; we want to know).
-- [ ] `examples/prepared_and_stream.rs` demonstrates both.
-- [ ] Public docs cover the prepared-statement lifecycle clearly.
+- [ ] `crates/core/examples/prepared_and_stream.rs` demonstrates prepared statements and streaming together.
+- [ ] Public rustdoc explains the prepared-statement lifecycle and portal streaming usage clearly.
 
 ---
 

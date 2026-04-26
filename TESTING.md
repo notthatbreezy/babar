@@ -101,6 +101,10 @@ Nightly-only jobs (run on schedule, not every push):
 - `proptest` with bumped case counts.
 - `miri` over the unit test suite (should be zero unsafe; this enforces that).
 - Benchmarks vs `tokio-postgres`, with regression alert on 10%+ degradation.
+  Run locally with
+  `cargo bench -p prepared-throughput-bench --bench prepared_throughput`.
+  The current M2 benchmark starts its own Dockerized Postgres and respects
+  `BABAR_PG_IMAGE` if you want a different server version.
 
 ## Benchmark discipline
 

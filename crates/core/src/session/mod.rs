@@ -13,21 +13,26 @@ pub(crate) mod cache;
 mod driver;
 mod prepared;
 mod startup;
+mod stream;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+use crate::codec::Decoder;
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::protocol::backend::RowField;
 use crate::query::{Command as QueryCommand, Query};
 
 use self::cache::{CacheKey, CachedStatement, StatementCache};
+use self::stream::{begin_transaction, close_statement_best_effort, next_name, StreamConfig};
 
 pub(crate) use driver::Command;
 pub use driver::{RawRows, ServerParams};
 pub use prepared::{PreparedCommand, PreparedQuery};
+pub use stream::RowStream;
 
 /// Channel buffer between user code and the driver. Backpressure here just
 /// rate-limits how fast users can enqueue commands; the driver handles
@@ -77,7 +82,8 @@ impl Session {
     /// # Note
     ///
     /// This is an internal/raw API in M0; the typed
-    /// `Session::execute`/`Session::stream` surface arrives in M1.
+    /// `Session::execute`/`Session::query`/`Session::stream` surface sits
+    /// alongside this raw escape hatch.
     pub async fn simple_query_raw(&self, sql: &str) -> Result<Vec<RawRows>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
@@ -166,16 +172,102 @@ impl Session {
         Ok(rows)
     }
 
+    /// Run a [`Query`] over a server-side portal and stream decoded rows.
+    ///
+    /// Rows are fetched in bounded `Execute(max_rows)` batches. If the
+    /// consumer is slow, the background fetch task naturally backpressures
+    /// before requesting the next batch.
+    ///
+    /// This prepares a temporary server-side statement for the stream, binds a
+    /// portal, and drives repeated `Execute` calls until the result set is
+    /// exhausted. If you want to control how many rows each fetch requests, use
+    /// [`Session::stream_with_batch_size`].
+    ///
+    /// Dropping the returned [`RowStream`] stops future batch fetches and
+    /// best-effort closes the portal and temporary prepared statement.
+    pub async fn stream<A, B>(&self, query: &Query<A, B>, args: A) -> Result<RowStream<B>>
+    where
+        B: Send + 'static,
+    {
+        self.stream_with_batch_size(query, args, stream::DEFAULT_BATCH_ROWS)
+            .await
+    }
+
+    /// Like [`Session::stream`], but lets the caller choose the portal batch
+    /// size.
+    ///
+    /// `batch_rows` must be greater than zero.
+    pub async fn stream_with_batch_size<A, B>(
+        &self,
+        query: &Query<A, B>,
+        args: A,
+        batch_rows: usize,
+    ) -> Result<RowStream<B>>
+    where
+        B: Send + 'static,
+    {
+        let mut params: Vec<Option<Vec<u8>>> = Vec::with_capacity(query.encoder.oids().len());
+        query.encoder.encode(&args, &mut params)?;
+        let param_formats = query.encoder.format_codes().to_vec();
+        let stmt_name = next_name("babar_stream_stmt");
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Command::Prepare {
+                name: stmt_name.clone(),
+                sql: query.sql().to_string(),
+                param_oids: query.encoder.oids().to_vec(),
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| Error::Closed)?;
+        let outcome = match reply_rx.await {
+            Ok(result) => result?,
+            Err(_) => return Err(Error::Closed),
+        };
+
+        if let Err(err) = validate_row_description(&query.decoder, &outcome.row_fields) {
+            close_statement_best_effort(&self.tx, stmt_name).await;
+            return Err(err);
+        }
+
+        if let Err(err) = begin_transaction(&self.tx).await {
+            close_statement_best_effort(&self.tx, stmt_name).await;
+            return Err(err);
+        }
+
+        RowStream::start(
+            self.tx.clone(),
+            StreamConfig {
+                stmt_name,
+                params,
+                param_formats,
+                decoder: Arc::clone(&query.decoder),
+                batch_rows,
+                close_statement_on_finish: true,
+                close_transaction_on_finish: true,
+            },
+        )
+        .await
+    }
+
     /// Prepare a [`Query`] as a named server-side statement.
     ///
-    /// Returns a [`PreparedQuery`] that can be executed multiple times
-    /// without re-parsing. The statement is cached by SQL text + parameter
-    /// OIDs, so calling `prepare` a second time with the same query
-    /// returns immediately from the cache.
+    /// Returns a [`PreparedQuery`] that can be executed multiple times without
+    /// re-parsing. The statement is cached by SQL text + parameter OIDs, so
+    /// calling `prepare_query` again with the same query returns another handle
+    /// to the cached server-side statement.
     ///
     /// The server validates the SQL and reports parameter/column metadata
     /// at prepare time — schema mismatches surface here rather than at
     /// execute time.
+    ///
+    /// Lifecycle:
+    ///
+    /// 1. Prepare once with [`Session::prepare_query`].
+    /// 2. Execute repeatedly with [`PreparedQuery::query`](super::PreparedQuery::query).
+    /// 3. Close explicitly with [`PreparedQuery::close`](super::PreparedQuery::close)
+    ///    when you need confirmation, or let the last handle drop for
+    ///    best-effort cleanup.
     pub async fn prepare_query<A, B>(&self, query: &Query<A, B>) -> Result<PreparedQuery<A, B>>
     where
         A: 'static,
@@ -216,26 +308,9 @@ impl Session {
         };
 
         // Schema validation: check column count and OIDs.
-        let decoder_oids = query.decoder.oids();
-        let server_fields = &outcome.row_fields;
-        if server_fields.len() != query.decoder.n_columns() {
-            return Err(Error::ColumnAlignment {
-                expected: query.decoder.n_columns(),
-                actual: server_fields.len(),
-            });
-        }
-        if !decoder_oids.is_empty() {
-            for (i, (expected, field)) in decoder_oids.iter().zip(server_fields.iter()).enumerate()
-            {
-                if *expected != field.type_oid {
-                    return Err(Error::SchemaMismatch {
-                        position: i,
-                        expected_oid: *expected,
-                        actual_oid: field.type_oid,
-                        column_name: field.name.clone(),
-                    });
-                }
-            }
+        if let Err(err) = validate_row_description(&query.decoder, &outcome.row_fields) {
+            close_statement_best_effort(&self.tx, name).await;
+            return Err(err);
         }
 
         // Cache the result.
@@ -258,7 +333,7 @@ impl Session {
     /// Prepare a [`Command`](QueryCommand) as a named server-side statement.
     ///
     /// Similar to [`Session::prepare_query`] but for statements that don't
-    /// return rows.
+    /// return rows. The same cache and close/drop lifecycle rules apply.
     pub async fn prepare_command<A>(&self, cmd: &QueryCommand<A>) -> Result<PreparedCommand<A>>
     where
         A: 'static,
@@ -392,6 +467,36 @@ fn parse_affected_rows(tag: Option<&str>) -> u64 {
         .next_back()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(0)
+}
+
+fn validate_row_description<B>(
+    decoder: &Arc<dyn Decoder<B> + Send + Sync>,
+    row_fields: &[RowField],
+) -> Result<()> {
+    if row_fields.len() != decoder.n_columns() {
+        return Err(Error::ColumnAlignment {
+            expected: decoder.n_columns(),
+            actual: row_fields.len(),
+        });
+    }
+
+    let decoder_oids = decoder.oids();
+    if !decoder_oids.is_empty() {
+        for (position, (expected_oid, field)) in
+            decoder_oids.iter().zip(row_fields.iter()).enumerate()
+        {
+            if *expected_oid != field.type_oid {
+                return Err(Error::SchemaMismatch {
+                    position,
+                    expected_oid: *expected_oid,
+                    actual_oid: field.type_oid,
+                    column_name: field.name.clone(),
+                });
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
