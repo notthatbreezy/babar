@@ -201,17 +201,16 @@ for all primitive codecs, and ship cursor/portal streaming.
 
 A declarative-style `sql!` macro that produces a `Fragment` with the correct
 inferred parameter type, delegating to the M1 builder API under the hood.
-Form is open (open decision D) — likely `sql!("SELECT ... WHERE x = {}", int4)`
-for v0.1, with a potential `$name` proc-macro variant deferred.
+For v0.1 this milestone adopts named placeholders: `sql!("SELECT ... WHERE x = $x", x = int4)`.
 
 ### Deliverables
 
 - `macros/` crate exports `sql!`.
-- `sql!(literal, codec_expr, ...)` produces `Fragment<A>` where `A` is the
-  tuple type of the codecs' value types.
+- `sql!(literal, name = codec_expr, ...)` produces `Fragment<A>` where `A` is
+  the flat tuple type of the bound codecs' value types.
 - Source-span preservation: compile errors in the macro point at the user's
   call site, not inside macro internals.
-- Nested fragments: `sql!("... {}", existing_fragment)` composes.
+- Nested fragments: `sql!("... ($filter)", filter = existing_fragment)` composes.
 - Origin tracking: each `Fragment` carries a `(file, line, column)` captured
   at macro-expansion time, used by error-rendering in M6.
 
@@ -220,16 +219,17 @@ for v0.1, with a potential `$name` proc-macro variant deferred.
 **Unit tests:**
 
 - `trybuild` UI tests:
-    - wrong number of codecs vs `{}` placeholders → compile error pointing at
+    - missing / duplicate / unused `$name` bindings → compile error pointing at
       user's call.
-    - codec expression that isn't `Codec` → compile error.
+    - codec expression that doesn't satisfy the fragment/codec requirements →
+      compile error.
     - correct usage compiles and produces a `Fragment<T>` of the expected type.
 - Doc tests on every macro invocation example.
 
 **Integration tests:**
 
-- `sql!("SELECT $1::int4")` roundtrip matches the builder-API equivalent byte
-  for byte.
+- `sql!("SELECT $id::int4", id = int4)` roundtrip matches the builder-API
+  equivalent byte for byte.
 - A fragment built with `sql!` composes with a builder-built fragment.
 - Macro-built query executes correctly against a real database.
 
@@ -421,7 +421,7 @@ future milestone:
 - **COPY protocol** for bulk ingest/export.
 - **Out-of-band query cancellation** via the side-channel connection.
 - **Logical replication client.**
-- **SQL-literal proc macro** parsing `$name` interpolation in a string
-  literal (the full Skunk style).
+- **Richer SQL proc-macro ergonomics** beyond the shipped `$name` placeholder
+  syntax (for example, more Skunk-like interpolation forms).
 - **Compile-time schema verification** (sqlx-macro style) — remains out of
   scope per the project's stated philosophy, but could be a companion crate.

@@ -106,6 +106,7 @@ pub const text: TextCodec;
 ## Resolved decisions
 
 - **A** (M0): Crate name — `babar`.
+- **D** (M3): `sql!` placeholder syntax — named `$name` placeholders.
 - **E** (M1): Zero-param type — Rust's unit type `()`. `Query<(), B>` reads
   as "no parameters"; no new public vocabulary to teach. Skunk's `Void`
   exists to dodge Scala's bulky `Unit`; Rust doesn't have that problem.
@@ -115,7 +116,6 @@ pub const text: TextCodec;
 
 - **B** (M5): `#[derive(Codec)]` shape — attribute-per-field vs column-order matching?
 - **C** (M4): Pool implementation — custom vs deadpool?
-- **D** (M3): `sql!` placeholder syntax — positional `{}` vs named `$name`?
 
 ## Testing policy
 

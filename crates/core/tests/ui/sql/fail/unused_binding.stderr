@@ -1,0 +1,5 @@
+error: sql! binding `name` is unused
+ --> tests/ui/sql/fail/unused_binding.rs:7:9
+  |
+7 |         name = babar::codec::text,
+  |         ^^^^

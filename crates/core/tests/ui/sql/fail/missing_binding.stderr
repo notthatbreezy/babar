@@ -1,0 +1,5 @@
+error: sql! placeholder `$name` has no binding
+ --> tests/ui/sql/fail/missing_binding.rs:4:18
+  |
+4 |     let _ = sql!("SELECT $id, $name", id = babar::codec::int4);
+  |                  ^^^^^^^^^^^^^^^^^^^

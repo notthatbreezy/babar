@@ -62,7 +62,7 @@ Out of scope for the project's identity:
 | A | Crate name | Everything | Pick before M0 publishes |
 | B | Derive-macro shape for `#[derive(Codec)]` | M5 | Attribute to specify column codec per field? Order matches struct declaration? |
 | C | Pool implementation: custom vs `deadpool` | M4 | `deadpool` is fine for most, but we want statement-cache awareness |
-| D | `sql!` macro form: positional `{}` vs named `$name` | M3 | Named is more Skunk-like; positional is simpler to implement |
+| D | `sql!` macro form: positional `{}` vs named `$name` | M3 | **Resolved:** named `$name` placeholders shipped in M3 |
 | E | Public name for `Void` | M1 | `Void`, `NoParams`, `()`? |
 | F | MSRV | M6 | Probably Rust 1.75+ for async-trait-in-trait |
 
@@ -190,4 +190,4 @@ Detail and acceptance criteria in `MILESTONES.md`.
 | M6 | TLS, observability, error rendering polish, v0.1 release | 16–17 |
 
 Deferred past v0.1: LISTEN/NOTIFY channels, COPY protocol, out-of-band
-cancellation, logical replication, SQL-literal proc macro with `$name` parsing.
+cancellation, logical replication.

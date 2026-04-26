@@ -16,19 +16,19 @@
 //! `Fragment<()>::bind(codec)` produces `Fragment<((), T)>` — a
 //! left-leaning chain of pairs. After three binds you have
 //! `Fragment<((((), T0), T1), T2)>`. The shape mirrors Skunk's
-//! `~` operator. It is intentional but ugly to read; the `sql!` macro
-//! arriving in M3 will hide it behind a flat-tuple syntax.
+//! `~` operator. It is intentional but ugly to read; [`crate::sql!`]
+//! hides it behind a flat-tuple syntax with named placeholders.
 //!
-//! For now, callers either:
+//! Callers can either:
 //!
 //! - tolerate the nested tuples in their `args`, or
-//! - skip `Fragment` entirely and build a `Query` / `Command` directly
-//!   from a SQL string and a flat tuple of codecs (see
-//!   [`Query::raw`] / [`Command::raw`]).
+//! - use [`crate::sql!`] or build a `Query` / `Command` directly from a SQL
+//!   string and a flat tuple of codecs (see [`Query::raw`] /
+//!   [`Command::raw`]).
 
 mod fragment;
 
-pub use fragment::Fragment;
+pub use fragment::{Fragment, Origin};
 
 use std::sync::Arc;
 

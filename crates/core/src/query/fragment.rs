@@ -13,12 +13,43 @@ use crate::codec::{Decoder, Encoder};
 use crate::error::Result;
 use crate::types::Oid;
 
+/// Source location captured for a macro-built fragment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Origin {
+    file: &'static str,
+    line: u32,
+    column: u32,
+}
+
+impl Origin {
+    /// Create a new source origin.
+    pub const fn new(file: &'static str, line: u32, column: u32) -> Self {
+        Self { file, line, column }
+    }
+
+    /// Source file path.
+    pub const fn file(self) -> &'static str {
+        self.file
+    }
+
+    /// 1-based source line.
+    pub const fn line(self) -> u32 {
+        self.line
+    }
+
+    /// 1-based source column.
+    pub const fn column(self) -> u32 {
+        self.column
+    }
+}
+
 /// SQL with embedded parameter placeholders, parameterized by the tuple
 /// of parameter values it expects.
 pub struct Fragment<A> {
     pub(crate) sql: String,
     pub(crate) encoder: Arc<dyn Encoder<A> + Send + Sync>,
     pub(crate) n_params: usize,
+    pub(crate) origin: Option<Origin>,
 }
 
 impl Fragment<()> {
@@ -30,6 +61,7 @@ impl Fragment<()> {
             sql: sql.into(),
             encoder: Arc::new(()),
             n_params: 0,
+            origin: None,
         }
     }
 }
@@ -86,6 +118,7 @@ where
             sql: self.sql,
             encoder: Arc::new(new_encoder),
             n_params: self.n_params,
+            origin: self.origin,
         }
     }
 
@@ -111,6 +144,7 @@ where
             sql: combined_sql,
             encoder: Arc::new(combined),
             n_params: self.n_params + other.n_params,
+            origin: self.origin.or(other.origin),
         }
     }
 
@@ -119,9 +153,45 @@ where
         &self.sql
     }
 
+    /// Postgres OIDs the encoder declares, in placeholder order.
+    pub fn param_oids(&self) -> &'static [Oid] {
+        self.encoder.oids()
+    }
+
     /// Number of parameter placeholders this fragment carries.
     pub fn n_params(&self) -> usize {
         self.n_params
+    }
+
+    /// Source location captured when the fragment was macro-expanded.
+    pub fn origin(&self) -> Option<Origin> {
+        self.origin
+    }
+
+    /// Set or replace the fragment's source origin.
+    #[must_use]
+    pub fn with_origin(mut self, origin: Origin) -> Self {
+        self.origin = Some(origin);
+        self
+    }
+
+    /// Construct a fragment from already-numbered SQL and an encoder.
+    #[doc(hidden)]
+    pub fn __from_parts<E>(
+        sql: impl Into<String>,
+        encoder: E,
+        n_params: usize,
+        origin: Option<Origin>,
+    ) -> Self
+    where
+        E: Encoder<A> + Send + Sync + 'static,
+    {
+        Self {
+            sql: sql.into(),
+            encoder: Arc::new(encoder),
+            n_params,
+            origin,
+        }
     }
 }
 
@@ -254,6 +324,7 @@ mod tests {
         let f = Fragment::lit("SELECT 1");
         assert_eq!(f.sql(), "SELECT 1");
         assert_eq!(f.n_params(), 0);
+        assert!(f.origin().is_none());
     }
 
     #[test]
@@ -299,6 +370,18 @@ mod tests {
         let combined = left.plus(right);
         assert_eq!(combined.sql(), "SELECT $1 WHERE x = $2");
         assert_eq!(combined.n_params(), 2);
+    }
+
+    #[test]
+    fn origin_survives_bind_and_prefers_left_on_plus() {
+        let left = Fragment::lit("SELECT ")
+            .bind(int4)
+            .with_origin(Origin::new("left.rs", 10, 2));
+        let right = Fragment::lit(" WHERE x = ")
+            .bind(int4)
+            .with_origin(Origin::new("right.rs", 20, 4));
+        let combined = left.plus(right);
+        assert_eq!(combined.origin(), Some(Origin::new("left.rs", 10, 2)));
     }
 
     #[test]

@@ -1,0 +1,5 @@
+error: duplicate sql! binding `id`
+ --> tests/ui/sql/fail/duplicate_binding.rs:7:9
+  |
+7 |         id = babar::codec::text,
+  |         ^^

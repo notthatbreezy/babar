@@ -19,6 +19,7 @@ default = []
 dial9 = ["dep:dial9-tokio-telemetry"]
 
 [dependencies]
+babar-macros = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "macros", "time"] }
 dial9-tokio-telemetry = { workspace = true, optional = true }
 tokio-util = { workspace = true, features = ["codec"] }
@@ -44,6 +45,7 @@ hex = { workspace = true }
 hex-literal = { workspace = true }
 rand = { workspace = true }
 futures-util = { workspace = true, features = ["std"] }
+trybuild = "1"
 
 [target.'cfg(loom)'.dev-dependencies]
 loom = { workspace = true }

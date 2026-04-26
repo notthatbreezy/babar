@@ -5,6 +5,46 @@
 //! prepared statements, and portal-backed row streaming on top of a
 //! cancellation-safe background driver task.
 //!
+//! ## `sql!` macro
+//!
+//! [`sql!`] is the preferred way to build SQL fragments in babar. It takes a
+//! SQL string that uses named placeholders like `$id` or `$name`, plus an
+//! explicit codec for each placeholder, and returns a [`query::Fragment`] with
+//! a flat Rust tuple parameter type.
+//!
+//! The macro renumbers placeholders to Postgres' native `$1`, `$2`, ...
+//! protocol form, reuses the same slot when the same named placeholder appears
+//! multiple times, and records the callsite in [`query::Origin`] for error
+//! reporting.
+//!
+//! ```
+//! use babar::codec::{int4, text};
+//! use babar::query::Query;
+//! use babar::sql;
+//!
+//! let q: Query<(i32, String), (i32, String)> = Query::from_fragment(
+//!     sql!(
+//!         "SELECT id, name FROM users WHERE id = $id OR owner = $name OR name = $name",
+//!         id = int4,
+//!         name = text,
+//!     ),
+//!     (int4, text),
+//! );
+//!
+//! assert_eq!(
+//!     q.sql(),
+//!     "SELECT id, name FROM users WHERE id = $1 OR owner = $2 OR name = $2"
+//! );
+//! ```
+//!
+//! `sql!` does **not** talk to a database at compile time, infer codecs, or
+//! validate result-column schemas. It only rewrites placeholders, checks that
+//! every `$name` has exactly one binding, and builds the fragment. Server-side
+//! validation still happens when you prepare or execute the statement. The
+//! macro also does not interpolate identifiers or arbitrary SQL text: values
+//! must stay parameterized, and dynamic SQL structure should be assembled from
+//! trusted fragments in Rust.
+//!
 //! ## Architecture
 //!
 //! Every connection is owned by a background driver task. The user holds a
@@ -107,6 +147,8 @@
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+extern crate self as babar;
+
 pub(crate) mod auth;
 pub mod codec;
 mod config;
@@ -114,6 +156,47 @@ mod error;
 pub(crate) mod protocol;
 pub mod query;
 pub mod types;
+
+/// Build a [`query::Fragment`] from SQL that uses named placeholders.
+///
+/// Placeholders use the v0.1 syntax `$name`. Each placeholder must have a
+/// matching `name = codec` binding, and repeating the same placeholder reuses
+/// the same parameter slot. Nested `sql!(...)` calls are allowed and flatten
+/// into one fragment with left-to-right parameter ordering.
+///
+/// The macro only rewrites placeholders and captures source origin metadata. It
+/// does not connect to Postgres, infer codecs, quote identifiers, or validate
+/// output columns.
+/// Build typed SQL fragments with named `$name` placeholders.
+///
+/// ```
+/// use babar::codec::{bool, int4, text};
+/// use babar::query::{Command, Query};
+///
+/// let query: Query<(i32, bool), (String,)> = Query::from_fragment(
+///     babar::sql!(
+///         "SELECT name FROM users WHERE ($filter) AND active = $active",
+///         filter = babar::sql!("id = $id OR owner_id = $id", id = int4),
+///         active = bool,
+///     ),
+///     (text,),
+/// );
+/// assert_eq!(
+///     query.sql(),
+///     "SELECT name FROM users WHERE (id = $1 OR owner_id = $1) AND active = $2"
+/// );
+///
+/// let command: Command<(i32, String)> = Command::from_fragment(babar::sql!(
+///     "INSERT INTO users (id, name) VALUES ($id, $name)",
+///     id = int4,
+///     name = text,
+/// ));
+/// assert_eq!(
+///     command.sql(),
+///     "INSERT INTO users (id, name) VALUES ($1, $2)"
+/// );
+/// ```
+pub use babar_macros::sql;
 
 // `tokio::net` is unavailable under `--cfg loom`; the session machinery
 // uses TcpStream and so must be cfg-gated. Pure modules above remain
