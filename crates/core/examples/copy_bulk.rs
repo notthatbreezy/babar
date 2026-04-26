@@ -12,15 +12,10 @@ use babar::{Config, CopyIn, Session};
 
 #[derive(Debug, Clone, PartialEq, babar::Codec)]
 struct VisitRow {
-    #[pg(codec = "int4")]
     id: i32,
-    #[pg(codec = "text")]
     email: String,
-    #[pg(codec = "bool")]
     active: bool,
-    #[pg(codec = "nullable(text)")]
     note: Option<String>,
-    #[pg(codec = "int8")]
     visits: i64,
 }
 

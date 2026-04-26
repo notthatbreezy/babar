@@ -4,7 +4,8 @@
 //! `babar` deliberately keeps the API explicit:
 //!
 //! - SQL is a typed value (`Query`, `Command`, `PreparedQuery`, ...).
-//! - Codecs are imported values (`int4`, `text`, `uuid`, ...), not inferred.
+//! - Query codecs are imported values (`int4`, `text`, `uuid`, ...); `#[derive(Codec)]`
+//!   infers common struct fields and accepts `#[pg(codec = "...")]` overrides.
 //! - A background task owns the socket so public API calls remain
 //!   cancellation-safe.
 //! - Errors retain SQL context, SQLSTATE metadata, and `sql!` callsite origin.

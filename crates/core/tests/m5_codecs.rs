@@ -6,7 +6,7 @@ use babar::query::{Command, Query};
 #[cfg(feature = "net")]
 use std::net::{IpAddr, Ipv4Addr};
 
-use babar::Session;
+use babar::{types, Session};
 use common::{AuthMode, PgContainer};
 
 fn require_docker() -> bool {
@@ -47,6 +47,25 @@ struct DerivedRow {
     visits: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct InferredRow {
+    id: i32,
+    name: String,
+    active: bool,
+    payload: Vec<u8>,
+    note: Option<String>,
+    visits: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct MixedOverrideRow {
+    id: i32,
+    #[pg(codec = "varchar")]
+    label: String,
+    note: Option<String>,
+    active: bool,
+}
+
 type DerivedQuery = Query<(), DerivedRow>;
 #[cfg(feature = "time")]
 type TimeTuple = (
@@ -64,6 +83,36 @@ type ChronoTuple = (
 );
 #[cfg(feature = "array")]
 type IntTextArrays = (babar::codec::Array<i32>, babar::codec::Array<String>);
+
+#[test]
+fn derive_codec_uses_inferred_and_override_oids() {
+    assert_eq!(
+        <_ as babar::codec::Encoder<InferredRow>>::oids(&InferredRow::CODEC),
+        &[
+            types::INT4,
+            types::TEXT,
+            types::BOOL,
+            types::BYTEA,
+            types::TEXT,
+            types::INT8,
+        ]
+    );
+    assert_eq!(
+        <_ as babar::codec::Decoder<InferredRow>>::oids(&InferredRow::CODEC),
+        &[
+            types::INT4,
+            types::TEXT,
+            types::BOOL,
+            types::BYTEA,
+            types::TEXT,
+            types::INT8,
+        ]
+    );
+    assert_eq!(
+        <_ as babar::codec::Encoder<MixedOverrideRow>>::oids(&MixedOverrideRow::CODEC),
+        &[types::INT4, types::VARCHAR, types::TEXT, types::BOOL]
+    );
+}
 
 #[tokio::test]
 async fn derive_codec_roundtrips_struct_rows() {
@@ -116,6 +165,122 @@ async fn derive_codec_roundtrips_struct_rows() {
         "SELECT id, name, active, note, visits FROM derive_rows ORDER BY id",
         (),
         DerivedRow::CODEC,
+    );
+    let actual = session.query(&select, ()).await.expect("select rows");
+    assert_eq!(actual, expected);
+
+    session.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn derive_codec_roundtrips_inferred_rows() {
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    session
+        .simple_query_raw(
+            "CREATE TEMP TABLE inferred_rows (\
+                id int4 PRIMARY KEY,\
+                name text NOT NULL,\
+                active bool NOT NULL,\
+                payload bytea NOT NULL,\
+                note text,\
+                visits int8 NOT NULL\
+            )",
+        )
+        .await
+        .expect("create table");
+
+    let insert: Command<InferredRow> = Command::raw(
+        "INSERT INTO inferred_rows (id, name, active, payload, note, visits) VALUES ($1, $2, $3, $4, $5, $6)",
+        InferredRow::CODEC,
+    );
+    let expected = vec![
+        InferredRow {
+            id: 1,
+            name: "alice".into(),
+            active: true,
+            payload: b"alpha".to_vec(),
+            note: Some("first".into()),
+            visits: 4,
+        },
+        InferredRow {
+            id: 2,
+            name: "bob".into(),
+            active: false,
+            payload: b"beta".to_vec(),
+            note: None,
+            visits: 9,
+        },
+    ];
+    for row in &expected {
+        let affected = session
+            .execute(&insert, row.clone())
+            .await
+            .expect("insert row");
+        assert_eq!(affected, 1);
+    }
+
+    let select: Query<(), InferredRow> = Query::raw(
+        "SELECT id, name, active, payload, note, visits FROM inferred_rows ORDER BY id",
+        (),
+        InferredRow::CODEC,
+    );
+    let actual = session.query(&select, ()).await.expect("select rows");
+    assert_eq!(actual, expected);
+
+    session.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn derive_codec_roundtrips_mixed_inferred_and_explicit_rows() {
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    session
+        .simple_query_raw(
+            "CREATE TEMP TABLE mixed_override_rows (\
+                id int4 PRIMARY KEY,\
+                label varchar(64) NOT NULL,\
+                note text,\
+                active bool NOT NULL\
+            )",
+        )
+        .await
+        .expect("create table");
+
+    let insert: Command<MixedOverrideRow> = Command::raw(
+        "INSERT INTO mixed_override_rows (id, label, note, active) VALUES ($1, $2, $3, $4)",
+        MixedOverrideRow::CODEC,
+    );
+    let expected = vec![
+        MixedOverrideRow {
+            id: 1,
+            label: "alpha".into(),
+            note: Some("first".into()),
+            active: true,
+        },
+        MixedOverrideRow {
+            id: 2,
+            label: "beta".into(),
+            note: None,
+            active: false,
+        },
+    ];
+    for row in &expected {
+        let affected = session
+            .execute(&insert, row.clone())
+            .await
+            .expect("insert row");
+        assert_eq!(affected, 1);
+    }
+
+    let select: Query<(), MixedOverrideRow> = Query::raw(
+        "SELECT id, label, note, active FROM mixed_override_rows ORDER BY id",
+        (),
+        MixedOverrideRow::CODEC,
     );
     let actual = session.query(&select, ()).await.expect("select rows");
     assert_eq!(actual, expected);

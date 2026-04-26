@@ -332,10 +332,10 @@ Feature-gated modules, each its own Cargo feature:
 
 Proc macro:
 
-- `#[derive(Codec)]` on structs. Field order is column order. Each field's
-  codec is specified via `#[pg(codec = "int4")]` or similar; alternative is
-  to require a `const CODEC:` associated item. Shape of this attribute is
-  open decision B.
+- `#[derive(Codec)]` on structs. Field order is column order. Common
+  unambiguous Rust field types infer their default codecs automatically;
+  `#[pg(codec = "int4")]` (or similar) remains available as an explicit
+  override for unsupported or intentionally different mappings.
 - `#[derive(Codec)]` generates code equivalent to
   `imap((f1_codec, f2_codec, ...).into_codec(), |tup| Struct{...},
   |s| (s.f1, s.f2, ...))`.

@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet};
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
 use syn::{
-    parse_macro_input, Attribute, Data, DeriveInput, Expr, ExprMacro, Field, Fields, Generics,
-    Ident, LitStr, Result, Token,
+    parse_macro_input, Attribute, Data, DeriveInput, Expr, ExprMacro, Field, Fields,
+    GenericArgument, Generics, Ident, LitStr, PathArguments, Result, Token, Type, TypePath,
 };
 
 struct SqlInput {
@@ -82,10 +82,30 @@ pub fn sql(input: TokenStream) -> TokenStream {
 
 /// Derive a `CODEC` associated constant for a named struct.
 ///
-/// Each field must declare its codec with `#[pg(codec = "...")]`. The string
-/// is parsed as a Rust expression in a scope that brings `babar::codec::*`
-/// into scope, so values like `"int4"`, `"nullable(text)"`, or
-/// `"typed_json::<MyType>()"` all work.
+/// Fields infer default codecs for supported unambiguous Rust types. Use
+/// `#[pg(codec = "...")]` to override inference or provide a codec for
+/// unsupported types. The string is parsed as a Rust expression in a scope
+/// that brings `babar::codec::*` into scope, so values like `"int4"`,
+/// `"nullable(text)"`, or `"typed_json::<MyType>()"` all work.
+///
+/// ```ignore
+/// use babar::query::Query;
+///
+/// #[derive(Debug, Clone, PartialEq, babar::Codec)]
+/// struct UserRow {
+///     id: i32,
+///     email: String,
+///     note: Option<String>,
+///     #[pg(codec = "varchar")]
+///     handle: String,
+/// }
+///
+/// let _query: Query<(), UserRow> = Query::raw(
+///     "SELECT id, email, note, handle FROM users",
+///     (),
+///     UserRow::CODEC,
+/// );
+/// ```
 #[proc_macro_derive(Codec, attributes(pg))]
 pub fn derive_codec(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -326,7 +346,7 @@ fn parse_codec_attr(field: &Field) -> Result<Expr> {
         parse_pg_attr(attr, &mut codec)?;
     }
 
-    codec.ok_or_else(|| syn::Error::new_spanned(field, "missing #[pg(codec = \"...\")] attribute"))
+    codec.map_or_else(|| infer_field_codec(field), Ok)
 }
 
 fn parse_pg_attr(attr: &Attribute, codec: &mut Option<Expr>) -> Result<()> {
@@ -341,6 +361,103 @@ fn parse_pg_attr(attr: &Attribute, codec: &mut Option<Expr>) -> Result<()> {
         *codec = Some(lit.parse()?);
         Ok(())
     })
+}
+
+fn infer_field_codec(field: &Field) -> Result<Expr> {
+    let Some(codec) = infer_codec_expr(&field.ty) else {
+        let field_ty = &field.ty;
+        return Err(syn::Error::new_spanned(
+            field_ty,
+            format!(
+                "no default codec inference for field type `{}`; add #[pg(codec = \"...\")]",
+                quote!(#field_ty)
+            ),
+        ));
+    };
+    syn::parse_str(&codec)
+}
+
+fn infer_codec_expr(ty: &Type) -> Option<String> {
+    if type_matches(ty, &["i16"]) {
+        return Some("int2".into());
+    }
+    if type_matches(ty, &["i32"]) {
+        return Some("int4".into());
+    }
+    if type_matches(ty, &["i64"]) {
+        return Some("int8".into());
+    }
+    if type_matches(ty, &["bool"]) {
+        return Some("bool".into());
+    }
+    if type_matches(ty, &["String"])
+        || type_matches(ty, &["std", "string", "String"])
+        || type_matches(ty, &["alloc", "string", "String"])
+    {
+        return Some("text".into());
+    }
+    if let Some(inner) = generic_type_arg(ty, &["Option"])
+        .or_else(|| generic_type_arg(ty, &["std", "option", "Option"]))
+        .or_else(|| generic_type_arg(ty, &["core", "option", "Option"]))
+    {
+        return infer_codec_expr(inner).map(|codec| format!("nullable({codec})"));
+    }
+    if let Some(inner) = generic_type_arg(ty, &["Vec"])
+        .or_else(|| generic_type_arg(ty, &["std", "vec", "Vec"]))
+        .or_else(|| generic_type_arg(ty, &["alloc", "vec", "Vec"]))
+    {
+        if type_matches(inner, &["u8"]) {
+            return Some("bytea".into());
+        }
+    }
+    None
+}
+
+fn type_matches(ty: &Type, expected: &[&str]) -> bool {
+    let Type::Path(TypePath { qself: None, path }) = ty else {
+        return false;
+    };
+    let segments: Vec<_> = path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    segments
+        .iter()
+        .map(String::as_str)
+        .eq(expected.iter().copied())
+}
+
+fn generic_type_arg<'a>(ty: &'a Type, expected: &[&str]) -> Option<&'a Type> {
+    let Type::Path(TypePath { qself: None, path }) = ty else {
+        return None;
+    };
+    if !path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>()
+        .iter()
+        .map(String::as_str)
+        .eq(expected.iter().copied())
+    {
+        return None;
+    }
+    let last = path.segments.last()?;
+    let PathArguments::AngleBracketed(args) = &last.arguments else {
+        return None;
+    };
+    let mut type_args = args.args.iter().filter_map(|arg| {
+        let GenericArgument::Type(ty) = arg else {
+            return None;
+        };
+        Some(ty)
+    });
+    let first = type_args.next()?;
+    if type_args.next().is_some() {
+        return None;
+    }
+    Some(first)
 }
 
 fn nested_sql(expr: &Expr) -> Result<Option<SqlInput>> {

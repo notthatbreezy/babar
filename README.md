@@ -2,14 +2,14 @@
 
 Typed, async PostgreSQL driver for Tokio that speaks the PostgreSQL wire protocol directly.
 
-`babar` is intentionally explicit: queries and commands are typed values, codecs are imported values, SQL composition is opt-in via `sql!`, and a background driver task owns the socket so public API calls stay cancellation-safe.
+`babar` is intentionally explicit: queries and commands are typed values, codecs are imported values, SQL composition is opt-in via `sql!`, `#[derive(Codec)]` infers common struct fields and lets `#[pg(codec = "...")]` override the outliers, and a background driver task owns the socket so public API calls stay cancellation-safe.
 
 ## Highlights
 
 - direct wire-protocol implementation on Tokio — no `libpq`, no `tokio-postgres`
 - typed `Query`, `Command`, `PreparedQuery`, `PreparedCommand`, `Transaction`/`Savepoint`, and `Pool` APIs
 - typed binary `CopyIn<T>` for `COPY FROM STDIN` bulk ingest from `Vec<T>` / iterators
-- SQL composition with `sql!` and `#[derive(Codec)]`
+- SQL composition with `sql!` and `#[derive(Codec)]` (inference first, explicit overrides when needed)
 - rich errors with SQLSTATE fields plus SQL/caret rendering
 - OpenTelemetry-friendly `tracing` spans: `db.connect`, `db.prepare`, `db.execute`, `db.transaction`
 - TLS via `rustls` (default) or `native-tls`
@@ -85,7 +85,7 @@ When connecting by IP address, set `tls_server_name("db.example.com")` so SNI an
 
 ## Bulk ingest with COPY
 
-`babar` ships a dedicated typed API for **binary `COPY FROM STDIN`** bulk ingest:
+`babar` ships a dedicated typed API for **binary `COPY FROM STDIN`** bulk ingest. `#[derive(Codec)]` infers the common field codecs here; add `#[pg(codec = "...")]` only when you want a different mapping or inference does not apply:
 
 ```rust,no_run
 use babar::{CopyIn, Session};
@@ -94,12 +94,11 @@ use babar::Config;
 
 #[derive(Clone, Debug, PartialEq, babar::Codec)]
 struct UserRow {
-    #[pg(codec = "int4")]
     id: i32,
-    #[pg(codec = "text")]
     email: String,
-    #[pg(codec = "nullable(text)")]
     note: Option<String>,
+    #[pg(codec = "varchar")]
+    handle: String,
 }
 
 # async fn demo() -> babar::Result<()> {
@@ -110,23 +109,23 @@ let session = Session::connect(
 
 session
     .simple_query_raw(
-        "CREATE TEMP TABLE copy_users (id int4 PRIMARY KEY, email text NOT NULL, note text)",
+        "CREATE TEMP TABLE copy_users (id int4 PRIMARY KEY, email text NOT NULL, note text, handle varchar NOT NULL)",
     )
     .await?;
 
 let rows = vec![
-    UserRow { id: 1, email: "ada@example.com".into(), note: Some("first".into()) },
-    UserRow { id: 2, email: "bob@example.com".into(), note: None },
+    UserRow { id: 1, email: "ada@example.com".into(), note: Some("first".into()), handle: "ada".into() },
+    UserRow { id: 2, email: "bob@example.com".into(), note: None, handle: "bob".into() },
 ];
 
 let copy = CopyIn::binary(
-    "COPY copy_users (id, email, note) FROM STDIN BINARY",
+    "COPY copy_users (id, email, note, handle) FROM STDIN BINARY",
     UserRow::CODEC,
 );
 session.copy_in(&copy, rows).await?;
 
 let select: Query<(), UserRow> = Query::raw(
-    "SELECT id, email, note FROM copy_users ORDER BY id",
+    "SELECT id, email, note, handle FROM copy_users ORDER BY id",
     (),
     UserRow::CODEC,
 );
@@ -143,6 +142,7 @@ The COPY surface is intentionally limited to bulk ingest with binary `COPY FROM 
 Real-world example programs live in `crates/core/examples/`:
 
 - `quickstart` — smallest typed end-to-end example
+- `derive_codec` — struct mapping with inferred `#[derive(Codec)]` defaults
 - `prepared_and_stream` — prepared statements plus streaming
 - `transactions` / `pool` — M4 lifecycle walkthroughs
 - `copy_bulk` — `Vec<Struct>` bulk ingest with `CopyIn<T>`

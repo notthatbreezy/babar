@@ -1,7 +1,7 @@
 #[derive(babar::Codec)]
-struct Broken {
+struct Ambiguous {
     id: i32,
-    names: Vec<i32>,
+    payload: serde_json::Value,
 }
 
 fn main() {}

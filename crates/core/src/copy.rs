@@ -22,25 +22,25 @@
 //!
 //! #[derive(Clone, Debug, PartialEq, babar::Codec)]
 //! struct UserRow {
-//!     #[pg(codec = "int4")]
 //!     id: i32,
-//!     #[pg(codec = "text")]
 //!     name: String,
+//!     #[pg(codec = "varchar")]
+//!     handle: String,
 //! }
 //!
 //! async fn demo(session: &Session) -> babar::Result<Vec<UserRow>> {
 //!     let rows = vec![
-//!         UserRow { id: 1, name: "Ada".into() },
-//!         UserRow { id: 2, name: "Linus".into() },
+//!         UserRow { id: 1, name: "Ada".into(), handle: "ada".into() },
+//!         UserRow { id: 2, name: "Linus".into(), handle: "linus".into() },
 //!     ];
 //!     let copy = CopyIn::binary(
-//!         "COPY users (id, name) FROM STDIN BINARY",
+//!         "COPY users (id, name, handle) FROM STDIN BINARY",
 //!         UserRow::CODEC,
 //!     );
 //!     session.copy_in(&copy, rows).await?;
 //!
 //!     let select: Query<(), UserRow> =
-//!         Query::raw("SELECT id, name FROM users ORDER BY id", (), UserRow::CODEC);
+//!         Query::raw("SELECT id, name, handle FROM users ORDER BY id", (), UserRow::CODEC);
 //!     session.query(&select, ()).await
 //! }
 //! ```

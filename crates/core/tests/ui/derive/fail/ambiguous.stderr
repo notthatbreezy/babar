@@ -1,0 +1,5 @@
+error: no default codec inference for field type `serde_json :: Value`; add #[pg(codec = "...")]
+ --> tests/ui/derive/fail/ambiguous.rs:4:14
+  |
+4 |     payload: serde_json::Value,
+  |              ^^^^^^^^^^^^^^^^^

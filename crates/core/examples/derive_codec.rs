@@ -12,16 +12,13 @@ use babar::{Config, Session};
 
 #[derive(Debug, Clone, PartialEq, babar::Codec)]
 struct UserRow {
-    #[pg(codec = "int4")]
     id: i32,
-    #[pg(codec = "text")]
     name: String,
-    #[pg(codec = "bool")]
     active: bool,
-    #[pg(codec = "nullable(text)")]
     note: Option<String>,
-    #[pg(codec = "int8")]
     visits: i64,
+    #[pg(codec = "varchar")]
+    handle: String,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -68,14 +65,15 @@ async fn run(session: &Session) -> babar::Result<()> {
             name text NOT NULL,\
             active bool NOT NULL,\
             note text,\
-            visits int8 NOT NULL\
+            visits int8 NOT NULL,\
+            handle varchar NOT NULL\
         )",
         (),
     );
     session.execute(&create, ()).await?;
 
     let insert: Command<UserRow> = Command::raw(
-        "INSERT INTO derive_codec_demo (id, name, active, note, visits) VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO derive_codec_demo (id, name, active, note, visits, handle) VALUES ($1, $2, $3, $4, $5, $6)",
         UserRow::CODEC,
     );
     for row in [
@@ -85,6 +83,7 @@ async fn run(session: &Session) -> babar::Result<()> {
             active: true,
             note: Some("beta tester".into()),
             visits: 3,
+            handle: "alice".into(),
         },
         UserRow {
             id: 2,
@@ -92,13 +91,14 @@ async fn run(session: &Session) -> babar::Result<()> {
             active: false,
             note: None,
             visits: 8,
+            handle: "bob".into(),
         },
     ] {
         session.execute(&insert, row).await?;
     }
 
     let select: Query<(), UserRow> = Query::raw(
-        "SELECT id, name, active, note, visits FROM derive_codec_demo ORDER BY id",
+        "SELECT id, name, active, note, visits, handle FROM derive_codec_demo ORDER BY id",
         (),
         UserRow::CODEC,
     );

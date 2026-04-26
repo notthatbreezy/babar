@@ -1,5 +1,5 @@
-error: missing #[pg(codec = "...")] attribute
- --> tests/ui/derive/fail/missing_attr.rs:5:5
+error: no default codec inference for field type `Vec < i32 >`; add #[pg(codec = "...")]
+ --> tests/ui/derive/fail/missing_attr.rs:4:12
   |
-5 |     name: String,
-  |     ^^^^^^^^^^^^
+4 |     names: Vec<i32>,
+  |            ^^^^^^^^
