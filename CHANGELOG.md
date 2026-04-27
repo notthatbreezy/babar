@@ -2,6 +2,9 @@
 
 ## 0.1.0
 
+### Documentation
+- mdbook documentation site rewritten as *The Book of Babar* with Diataxis-aligned hierarchy (Get Started, Book, Reference, Explanation), conversational doobie-style voice, inline `// type: T` annotations, and new explanation pages (`why-babar`, `what-makes-babar-babar`, `design-principles`, `driver-task`, `comparisons`, `roadmap`)
+
 ### M0 — protocol foundation
 - background driver task and cancellation-safe `Session`
 - startup/auth for cleartext, MD5, and SCRAM-SHA-256

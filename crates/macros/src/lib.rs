@@ -329,11 +329,11 @@ fn compile_codec_dsl_scalar(expr: &Expr) -> Result<proc_macro2::TokenStream> {
             "unsupported verifiable codec DSL; expected nullable(...) around a supported codec",
         ));
     };
-    if !path
+    if path
         .path
         .segments
         .last()
-        .is_some_and(|segment| segment.ident == "nullable")
+        .is_none_or(|segment| segment.ident != "nullable")
     {
         return Err(syn::Error::new_spanned(
             expr,

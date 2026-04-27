@@ -83,6 +83,7 @@ async fn dropped_transaction_future_rolls_back() {
     {
         let fut = session.transaction(dropped_future_body);
         tokio::pin!(fut);
+        let _ = &fut;
 
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

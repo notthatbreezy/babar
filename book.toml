@@ -2,7 +2,7 @@
 authors = ["babar contributors"]
 language = "en"
 src = "docs"
-title = "babar tutorial"
+title = "The Book of Babar"
 
 [output.html]
 default-theme = "navy"

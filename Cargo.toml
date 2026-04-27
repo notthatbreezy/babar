@@ -10,7 +10,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/notthatbreezy/babar"
 readme = "README.md"
@@ -49,7 +49,6 @@ fallible-iterator = "0.2"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 rustls-native-certs = "0.8"
-rustls-pemfile = "2"
 native-tls = "0.2"
 tokio-native-tls = "0.3"
 

@@ -8,10 +8,10 @@ use std::sync::{Arc, Weak};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use async_fn_traits::AsyncFnOnce1;
 use futures_core::Stream;
 use tokio::sync::{Mutex, Notify};
 
+use crate::async_fn::AsyncFnOnce1;
 use crate::error::{Error, Result};
 use crate::query::{Command, Query};
 use crate::{Config, PreparedCommand, PreparedQuery, RowStream, Session};

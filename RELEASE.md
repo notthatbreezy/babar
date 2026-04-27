@@ -1,12 +1,19 @@
 # Release runbook
 
 ## Preconditions
-- Rust 1.75 installed locally (MSRV) plus current stable and nightly.
+- Rust 1.88 installed locally (MSRV) plus current stable and nightly.
 - Docker available for integration tests.
 - crates.io ownership configured for `babar` and `babar-macros`.
 - GitHub Actions green on the release commit.
 
 ## Validation checklist
+0. **MSRV verification** — stable `cargo check` does not catch transitive `rust-version` requirements; use the pinned toolchain:
+   ```bash
+   MSRV=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)
+   rustup toolchain install "${MSRV}"
+   cargo "+${MSRV}" check --workspace --all-features
+   cargo "+${MSRV}" test --workspace --no-run
+   ```
 1. `cargo fmt --check`
 2. `cargo clippy --all-targets --all-features -- -D warnings`
 3. `cargo test --all-features`
@@ -23,8 +30,10 @@
 2. Confirm workspace version and crate versions are the intended release (`0.1.0` here).
 3. Push the release commit and wait for CI to finish.
 4. Create and push tag `v0.1.0`.
-5. Publish `babar-macros`.
-6. Publish `babar`.
+5. Publish `babar-macros` (`cargo publish -p babar-macros`).
+6. Publish `babar` (`cargo publish -p babar`).
+
+> **crates.io credentials.** Local publish uses `cargo login` (token stored in `~/.cargo/credentials.toml`). Any future GitHub Actions publish job must read the token from the repo-level secret **`CARGO_REGISTRY_TOKEN`** and expose it as `env: CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}` on the `cargo publish` step. The two `cargo publish --dry-run` invocations in the `hygiene` CI job do not require the token. No publish workflow currently exists.
 7. Open docs.rs build and verify it completed successfully.
 8. Announce the release with the README quick-start and example links.
 
