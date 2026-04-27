@@ -20,7 +20,7 @@ cargo tarpaulin          # coverage — informational, not gated
 cargo msrv               # MSRV enforcement (likely Rust 1.75+ for async-trait-in-trait)
 ```
 
-Integration tests use `testcontainers-rs` (Postgres 14–17). Property-based tests use `proptest` (256 cases by default, 2048 on nightly). UI/macro tests use `trybuild` with golden `.stderr` files in `macros/tests/`.
+Integration tests use hand-rolled Docker containers (including a PostGIS image when needed) across Postgres 14–17 scenarios. Property-based tests use `proptest` (256 cases by default, 2048 on nightly). UI/macro tests use `trybuild` with golden `.stderr` files in `macros/tests/`.
 
 ## Architecture
 
@@ -101,7 +101,7 @@ pub const text: TextCodec;
 | M2 | Extended protocol + binary | `PreparedQuery`, schema check at prepare time, binary codecs, pipelining |
 | M3 | `sql!` macro | Fragment composition, placeholder syntax, SQL origin tracking |
 | M4 | Transactions + pool | `Transaction<'s>`, savepoints, deadpool integration |
-| M5 | Expanded types + derive | uuid/time/chrono/json/numeric/net/array/range codec modules, `#[derive(Codec)]` |
+| M5 | Expanded types + derive | uuid/time/chrono/json/numeric/net/interval/array/range/multirange plus postgis/pgvector/text-search/macaddr/bits/hstore/citext codec modules, `#[derive(Codec)]` |
 | M6 | TLS + observability + release | rustls/native-tls, tracing spans, error polish, v0.1 |
 
 ## Resolved decisions
@@ -115,7 +115,6 @@ pub const text: TextCodec;
 
 ## Open decisions (resolve before the indicated milestone)
 
-- **B** (M5): `#[derive(Codec)]` shape — attribute-per-field vs column-order matching?
 - **C** (M4): Pool implementation — custom vs deadpool?
 
 ## Testing policy

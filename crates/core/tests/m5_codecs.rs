@@ -3,11 +3,16 @@
 mod common;
 
 use babar::query::{Command, Query};
+#[cfg(feature = "hstore")]
+use std::collections::BTreeMap;
 #[cfg(feature = "net")]
 use std::net::{IpAddr, Ipv4Addr};
 
 use babar::{types, Session};
 use common::{AuthMode, PgContainer};
+
+#[cfg(feature = "postgis")]
+const DEFAULT_POSTGIS_IMAGE: &str = "postgis/postgis:17-3.5-alpine";
 
 fn require_docker() -> bool {
     let ok = std::process::Command::new("docker")
@@ -30,6 +35,25 @@ async fn fresh_session() -> Option<(PgContainer, Session)> {
     let session = Session::connect(pg.config(pg.user(), pg.password()))
         .await
         .expect("connect");
+    Some((pg, session))
+}
+
+#[cfg(feature = "postgis")]
+async fn fresh_postgis_session() -> Option<(PgContainer, Session)> {
+    if !require_docker() {
+        return None;
+    }
+
+    let image =
+        std::env::var("BABAR_POSTGIS_IMAGE").unwrap_or_else(|_| DEFAULT_POSTGIS_IMAGE.to_string());
+    let pg = PgContainer::start_with_image(AuthMode::Scram, image).await;
+    let session = Session::connect(pg.config(pg.user(), pg.password()))
+        .await
+        .expect("connect");
+    session
+        .simple_query_raw("CREATE EXTENSION IF NOT EXISTS postgis")
+        .await
+        .expect("create postgis extension");
     Some((pg, session))
 }
 
@@ -83,6 +107,16 @@ type ChronoTuple = (
 );
 #[cfg(feature = "array")]
 type IntTextArrays = (babar::codec::Array<i32>, babar::codec::Array<String>);
+#[cfg(feature = "postgis")]
+type PostgisRow = (
+    babar::codec::Geometry<geo_types::Point<f64>>,
+    babar::codec::Geometry<geo_types::LineString<f64>>,
+    babar::codec::Geometry<geo_types::Polygon<f64>>,
+    babar::codec::Geometry<geo_types::MultiPolygon<f64>>,
+    babar::codec::Geography<geo_types::Point<f64>>,
+);
+#[cfg(feature = "multirange")]
+type Int4Multiranges = (babar::codec::Multirange<i32>,);
 
 #[test]
 fn derive_codec_uses_inferred_and_override_oids() {
@@ -306,6 +340,119 @@ async fn uuid_codec_roundtrip() {
     session.close().await.expect("close");
 }
 
+#[cfg(feature = "macaddr")]
+#[tokio::test]
+async fn macaddr_codecs_roundtrip() {
+    use babar::codec::{macaddr, macaddr8, MacAddr, MacAddr8};
+
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    let mac = MacAddr::from([0x08, 0x00, 0x2b, 0x01, 0x02, 0x03]);
+    let mac8 = MacAddr8::from([0x08, 0x00, 0x2b, 0xff, 0xfe, 0x01, 0x02, 0x03]);
+    let query: Query<(MacAddr, MacAddr8), (MacAddr, MacAddr8)> = Query::raw(
+        "SELECT $1::macaddr, $2::macaddr8",
+        (macaddr, macaddr8),
+        (macaddr, macaddr8),
+    );
+    let rows = session
+        .query(&query, (mac, mac8))
+        .await
+        .expect("select macaddr values");
+    assert_eq!(rows, vec![(mac, mac8)]);
+
+    session.close().await.expect("close");
+}
+
+#[cfg(feature = "bits")]
+#[tokio::test]
+async fn bit_codecs_roundtrip() {
+    use babar::codec::{bit, varbit, BitString};
+
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    let fixed = BitString::from_text("10110010").expect("fixed bit string");
+    let varying = BitString::from_text("10110").expect("varying bit string");
+    let query: Query<(BitString, BitString), (BitString, BitString)> = Query::raw(
+        "SELECT $1::bit(8), $2::varbit",
+        (bit, varbit),
+        (bit, varbit),
+    );
+    let rows = session
+        .query(&query, (fixed.clone(), varying.clone()))
+        .await
+        .expect("select bit values");
+    assert_eq!(rows, vec![(fixed, varying)]);
+
+    session.close().await.expect("close");
+}
+
+#[cfg(feature = "citext")]
+#[tokio::test]
+async fn citext_codec_roundtrip_with_dynamic_type_resolution() {
+    use babar::codec::{citext, Decoder, Encoder};
+
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    session
+        .simple_query_raw("CREATE EXTENSION IF NOT EXISTS citext")
+        .await
+        .expect("create citext extension");
+
+    let value = "MiXeD".to_string();
+    let query: Query<(String,), (String,)> = Query::raw("SELECT $1::citext", (citext,), (citext,));
+    let rows = session
+        .query(&query, (value.clone(),))
+        .await
+        .expect("select citext value");
+    assert_eq!(rows, vec![(value,)]);
+    assert_eq!(Encoder::<String>::oids(&citext), &[0]);
+    assert_eq!(Decoder::<String>::oids(&citext), &[0]);
+    assert_eq!(query.param_types(), &[types::CITEXT_TYPE]);
+    assert_eq!(query.output_types(), &[types::CITEXT_TYPE]);
+
+    session.close().await.expect("close");
+}
+
+#[cfg(feature = "hstore")]
+#[tokio::test]
+async fn hstore_codec_roundtrip_with_stable_map_surface() {
+    use babar::codec::{hstore, Decoder, Encoder, Hstore};
+
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    session
+        .simple_query_raw("CREATE EXTENSION IF NOT EXISTS hstore")
+        .await
+        .expect("create hstore extension");
+
+    let mut map = BTreeMap::new();
+    map.insert("alpha".to_string(), Some("one".to_string()));
+    map.insert("beta".to_string(), None);
+    map.insert("quoted".to_string(), Some("a\"b".to_string()));
+    let value = Hstore::from(map);
+
+    let query: Query<(Hstore,), (Hstore,)> = Query::raw("SELECT $1::hstore", (hstore,), (hstore,));
+    let rows = session
+        .query(&query, (value.clone(),))
+        .await
+        .expect("select hstore value");
+    assert_eq!(rows, vec![(value,)]);
+    assert_eq!(Encoder::<Hstore>::oids(&hstore), &[0]);
+    assert_eq!(Decoder::<Hstore>::oids(&hstore), &[0]);
+    assert_eq!(query.param_types(), &[types::HSTORE_TYPE]);
+    assert_eq!(query.output_types(), &[types::HSTORE_TYPE]);
+
+    session.close().await.expect("close");
+}
+
 #[cfg(feature = "time")]
 #[tokio::test]
 async fn time_codecs_roundtrip() {
@@ -519,5 +666,187 @@ async fn range_codec_roundtrip() {
         .await
         .expect("select range");
     assert_eq!(rows, vec![(value,)]);
+    session.close().await.expect("close");
+}
+
+#[cfg(feature = "postgis")]
+#[tokio::test]
+async fn postgis_codecs_roundtrip_common_shapes() {
+    use babar::codec::{geography, geometry, Geography, Geometry, Srid};
+    use geo_types::{LineString, MultiPolygon, Point, Polygon};
+
+    let Some((_pg, session)) = fresh_postgis_session().await else {
+        return;
+    };
+
+    let planar = Geometry::with_srid(Point::new(1.25, -3.5), Srid::new(3857));
+    let route = Geometry::new(LineString::from(vec![(0.0, 0.0), (2.0, 3.0), (5.0, 8.0)]));
+    let area = Geometry::with_srid(
+        Polygon::new(
+            LineString::from(vec![(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 0.0)]),
+            vec![LineString::from(vec![
+                (1.0, 1.0),
+                (2.0, 1.0),
+                (1.0, 2.0),
+                (1.0, 1.0),
+            ])],
+        ),
+        Srid::new(4326),
+    );
+    let regions = Geometry::new(MultiPolygon(vec![Polygon::new(
+        LineString::from(vec![(10.0, 10.0), (12.0, 10.0), (12.0, 12.0), (10.0, 10.0)]),
+        vec![],
+    )]));
+    let earth = Geography::wgs84(Point::new(-73.9857, 40.7484));
+
+    let query: Query<PostgisRow, PostgisRow> = Query::raw(
+        "SELECT $1::geometry, $2::geometry, $3::geometry, $4::geometry, $5::geography",
+        (
+            geometry::<Point<f64>>(),
+            geometry::<LineString<f64>>(),
+            geometry::<Polygon<f64>>(),
+            geometry::<MultiPolygon<f64>>(),
+            geography::<Point<f64>>(),
+        ),
+        (
+            geometry::<Point<f64>>(),
+            geometry::<LineString<f64>>(),
+            geometry::<Polygon<f64>>(),
+            geometry::<MultiPolygon<f64>>(),
+            geography::<Point<f64>>(),
+        ),
+    );
+
+    let rows = session
+        .query(
+            &query,
+            (
+                planar.clone(),
+                route.clone(),
+                area.clone(),
+                regions.clone(),
+                earth.clone(),
+            ),
+        )
+        .await
+        .expect("select postgis row");
+    assert_eq!(rows, vec![(planar, route, area, regions, earth)]);
+
+    session.close().await.expect("close");
+}
+
+#[cfg(feature = "postgis")]
+#[tokio::test]
+async fn postgis_reports_documented_geometry_collection_limit() {
+    use babar::codec::{geometry, Geometry};
+    use geo_types::Geometry as GeoGeometry;
+
+    let Some((_pg, session)) = fresh_postgis_session().await else {
+        return;
+    };
+
+    let query: Query<(), Geometry<GeoGeometry<f64>>> = Query::raw(
+        "SELECT ST_GeomFromText('GEOMETRYCOLLECTION(POINT(1 2))')::geometry",
+        (),
+        geometry::<GeoGeometry<f64>>(),
+    );
+    let error = session
+        .query(&query, ())
+        .await
+        .expect_err("geometry collection should be rejected");
+    assert!(error.to_string().contains("GeometryCollection"));
+
+    session.close().await.expect("close");
+}
+
+#[cfg(feature = "multirange")]
+#[tokio::test]
+async fn multirange_codec_roundtrip() {
+    use babar::codec::{int4, multirange, Multirange, Range, RangeBound};
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    let value = Multirange::new(vec![
+        Range::NonEmpty {
+            lower: RangeBound::Inclusive(1_i32),
+            upper: RangeBound::Exclusive(5_i32),
+        },
+        Range::NonEmpty {
+            lower: RangeBound::Inclusive(10_i32),
+            upper: RangeBound::Exclusive(15_i32),
+        },
+    ]);
+    let query: Query<Int4Multiranges, Int4Multiranges> = Query::raw(
+        "SELECT $1::int4multirange",
+        (multirange(int4),),
+        (multirange(int4),),
+    );
+    let rows = session
+        .query(&query, (value.clone(),))
+        .await
+        .expect("select multirange");
+    assert_eq!(rows, vec![(value,)]);
+    session.close().await.expect("close");
+}
+
+#[cfg(feature = "pgvector")]
+#[tokio::test]
+async fn pgvector_codec_roundtrip() {
+    use babar::codec::{vector, Vector};
+
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    if session
+        .simple_query_raw("CREATE EXTENSION IF NOT EXISTS vector")
+        .await
+        .is_err()
+    {
+        eprintln!("skipping: pgvector extension unavailable");
+        session.close().await.expect("close");
+        return;
+    }
+
+    let value = Vector::new(vec![1.0, -2.5, 3.25]).expect("vector");
+    let query: Query<(Vector,), (Vector,)> = Query::raw("SELECT $1::vector", (vector,), (vector,));
+    let prepared = session.prepare_query(&query).await.expect("prepare vector");
+    let rows = prepared
+        .query((value.clone(),))
+        .await
+        .expect("select vector");
+    assert_eq!(rows, vec![(value,)]);
+    prepared.close().await.expect("close prepared");
+    session.close().await.expect("close");
+}
+
+#[cfg(feature = "text-search")]
+#[tokio::test]
+async fn text_search_codecs_roundtrip() {
+    use babar::codec::{tsquery, tsvector, TsQuery, TsVector};
+
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    let vector = TsVector::from("'fat':1 'rat':2");
+    let query = TsQuery::from("fat & rat");
+    let roundtrip: Query<(TsVector, TsQuery), (TsVector, TsQuery)> = Query::raw(
+        "SELECT $1::tsvector, $2::tsquery",
+        (tsvector, tsquery),
+        (tsvector, tsquery),
+    );
+    let rows = session
+        .query(&roundtrip, (vector, query))
+        .await
+        .expect("select text-search row");
+    assert_eq!(
+        rows,
+        vec![(
+            TsVector::from("'fat':1 'rat':2"),
+            TsQuery::from("'fat' & 'rat'"),
+        )]
+    );
     session.close().await.expect("close");
 }

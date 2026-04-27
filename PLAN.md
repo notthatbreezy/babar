@@ -62,7 +62,7 @@ Out of scope for the project's identity:
 | # | Decision | Blocks | Notes |
 |---|---|---|---|
 | A | Crate name | Everything | Pick before M0 publishes |
-| B | Derive-macro shape for `#[derive(Codec)]` | M5 | Attribute to specify column codec per field? Order matches struct declaration? |
+| B | Derive-macro shape for `#[derive(Codec)]` | M5 | **Resolved:** field order is column order, with inference-first defaults and `#[pg(codec = "...")]` overrides |
 | C | Pool implementation: custom vs `deadpool` | M4 | `deadpool` is fine for most, but we want statement-cache awareness |
 | D | `sql!` macro form: positional `{}` vs named `$name` | M3 | **Resolved:** named `$name` placeholders shipped in M3 |
 | E | Public name for `Void` | M1 | `Void`, `NoParams`, `()`? |
@@ -200,7 +200,9 @@ Detail and acceptance criteria in `MILESTONES.md`.
 | M6 | TLS, observability, error rendering polish, v0.1 release | 16–17 |
 
 Deferred past v0.1: LISTEN/NOTIFY channels, remaining COPY protocol work,
-out-of-band cancellation, logical replication.
+out-of-band cancellation, logical replication, broader spatial coverage
+(`GeometryCollection`, Z/M coordinates, PostgreSQL built-in geometric types),
+and generic extension-backed range/multirange families.
 
 Current COPY support is intentionally narrower: typed binary `COPY FROM STDIN`
 bulk ingest is in scope, while `COPY TO`, text/CSV COPY modes, and other COPY

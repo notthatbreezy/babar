@@ -15,7 +15,9 @@
 //! - simple-query, extended query, prepared-statement, transaction, pool, and
 //!   binary `COPY FROM STDIN` bulk-ingest APIs
 //! - text codecs in core plus opt-in `uuid`, `time`, `chrono`, `json`,
-//!   `numeric`, `net`, `interval`, `array`, `range`, and `postgis` modules
+//!   `numeric`, `net`, `interval`, `array`, `range`, `multirange`, PostGIS
+//!   spatial codecs via `postgis`, plus `pgvector`, `text-search`, `macaddr`,
+//!   `bits`, `hstore`, and `citext` modules
 //! - optional TLS via the `rustls` feature (default) or `native-tls`
 //! - OpenTelemetry-friendly `tracing` spans for connect / prepare / execute /
 //!   transaction flows
@@ -23,6 +25,19 @@
 //! COPY support is intentionally narrow in v0.1: babar ships typed binary
 //! `COPY FROM STDIN` bulk ingest via [`CopyIn`], while `COPY TO`, text/CSV
 //! modes, and broader replication-style COPY flows remain out of scope.
+//!
+//! Important codec caveats in v0.1:
+//!
+//! - `postgis`, `pgvector`, `hstore`, and `citext` require the matching
+//!   PostgreSQL extension to exist in the target database.
+//! - PostGIS support is limited to common 2D EWKB shapes; Z/M geometries,
+//!   `GeometryCollection`, and PostgreSQL built-in geometric types are not
+//!   supported.
+//! - `TsVector` / `TsQuery` keep canonical SQL text rather than exposing a
+//!   structured Rust AST.
+//! - `range` / `multirange` currently cover PostgreSQL's built-in scalar range
+//!   families only (`int4`, `int8`, `numeric`, `date`, `timestamp`,
+//!   `timestamptz`).
 //!
 //! ## Quick start
 //!

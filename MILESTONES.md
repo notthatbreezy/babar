@@ -337,6 +337,16 @@ Feature-gated modules, each its own Cargo feature:
 - `interval`: custom `Interval` type with month/day/microsecond split.
 - `array`: 1-D and N-D array codec, `array(inner_codec)` combinator.
 - `range`: range type codec, `range(inner_codec)` combinator.
+- `multirange`: multirange codec, `multirange(inner_codec)` combinator for the
+  built-in range families.
+- `postgis`: `geometry()` / `geography()` codecs over `geo-types`, with
+  `Geometry<T>` / `Geography<T>` wrappers and optional `Srid`.
+- `pgvector`: `Vector` wrapper plus dynamic-`vector` codec.
+- `text-search`: `TsVector` / `TsQuery` wrappers plus codecs.
+- `macaddr`: `MacAddr` / `MacAddr8` codecs for `macaddr` / `macaddr8`.
+- `bits`: `BitString` codecs for `bit` / `varbit`.
+- `hstore`: stable map wrapper plus dynamic `hstore` codec.
+- `citext`: `citext` codec mapped to Rust `String`.
 
 Proc macro:
 
@@ -367,6 +377,8 @@ Proc macro:
 - [ ] Each feature compiles independently.
 - [ ] `examples/derive_codec.rs` demonstrates struct mapping.
 - [ ] Feature compatibility matrix documented in `README.md`.
+- [ ] Codec docs call out important v0.1 limits for extension-backed and spatial
+      families.
 
 ---
 

@@ -63,13 +63,19 @@ impl PgContainer {
     /// Spawn a container with the given auth method. Blocks until the server
     /// accepts a connection or 30s elapses.
     pub async fn start(auth: AuthMode) -> Self {
+        Self::start_with_image(auth, Self::image()).await
+    }
+
+    /// Spawn a container with an explicit image name. Blocks until the server
+    /// accepts a connection or 30s elapses.
+    pub async fn start_with_image(auth: AuthMode, image: impl Into<String>) -> Self {
         let suffix = format!("{:x}", rand::random::<u32>());
         let name = format!("babar-test-{suffix}");
         let user = "babar".to_string();
         let password = "secret".to_string();
         let db = "babar".to_string();
 
-        let image = Self::image();
+        let image = image.into();
         let mut cmd = Command::new("docker");
         cmd.args([
             "run",

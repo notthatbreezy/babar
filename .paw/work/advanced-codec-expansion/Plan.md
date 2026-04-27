@@ -87,6 +87,13 @@ This plan explicitly **excludes PostgreSQL built-in geometric types**. The inten
 - examples
 - docs / feature matrix updates
 
+Status: complete. README / crate docs now describe the added codec families,
+dynamic-extension requirements, and the main v0.1 limits (notably PostGIS 2D
+coverage, text-search wrapper scope, and built-in-only range/multirange
+families). Integration coverage exercises the new families under `m5_codecs`,
+with PostGIS using a dedicated image and pgvector gracefully skipping when the
+extension is unavailable in the test image.
+
 ## Notes
 - `geo-types` should be the core spatial dependency; treat broader `geo` integration as optional follow-on convenience rather than the central codec contract.
 - `pgvector` and `tsvector` are both important, but PostGIS remains the first milestone in this wave.

@@ -75,17 +75,7 @@ where
         }
 
         let mut buf = BytesMut::new();
-        match value {
-            Range::Empty => postgres_protocol::types::empty_range_to_sql(&mut buf),
-            Range::NonEmpty { lower, upper } => {
-                range_to_sql(
-                    |buf| Ok(encode_bound(&self.inner, lower, buf)?),
-                    |buf| Ok(encode_bound(&self.inner, upper, buf)?),
-                    &mut buf,
-                )
-                .map_err(|e| Error::Codec(format!("range: {e}")))?;
-            }
-        }
+        encode_range_value(&self.inner, value, &mut buf)?;
         params.push(Some(buf.to_vec()));
         Ok(())
     }
@@ -117,14 +107,7 @@ where
                 "range: unsupported inner OID {expected_oid}"
             )));
         }
-        let pg_range = range_from_sql(bytes).map_err(|e| Error::Codec(format!("range: {e}")))?;
-        match pg_range {
-            PgRange::Empty => Ok(Range::Empty),
-            PgRange::Nonempty(lower, upper) => Ok(Range::NonEmpty {
-                lower: decode_bound(&self.inner, &lower, expected_oid)?,
-                upper: decode_bound(&self.inner, &upper, expected_oid)?,
-            }),
-        }
+        decode_range_value(&self.inner, bytes, expected_oid)
     }
 
     fn n_columns(&self) -> usize {
@@ -137,6 +120,46 @@ where
 
     fn format_codes(&self) -> &'static [i16] {
         &[FORMAT_BINARY]
+    }
+}
+
+pub(super) fn encode_range_value<C, T>(
+    codec: &C,
+    value: &Range<T>,
+    buf: &mut BytesMut,
+) -> Result<()>
+where
+    C: Encoder<T>,
+{
+    match value {
+        Range::Empty => postgres_protocol::types::empty_range_to_sql(buf),
+        Range::NonEmpty { lower, upper } => {
+            range_to_sql(
+                |buf| Ok(encode_bound(codec, lower, buf)?),
+                |buf| Ok(encode_bound(codec, upper, buf)?),
+                buf,
+            )
+            .map_err(|e| Error::Codec(format!("range: {e}")))?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn decode_range_value<C, T>(
+    codec: &C,
+    bytes: &[u8],
+    expected_oid: Oid,
+) -> Result<Range<T>>
+where
+    C: Decoder<T>,
+{
+    let pg_range = range_from_sql(bytes).map_err(|e| Error::Codec(format!("range: {e}")))?;
+    match pg_range {
+        PgRange::Empty => Ok(Range::Empty),
+        PgRange::Nonempty(lower, upper) => Ok(Range::NonEmpty {
+            lower: decode_bound(codec, &lower, expected_oid)?,
+            upper: decode_bound(codec, &upper, expected_oid)?,
+        }),
     }
 }
 
@@ -217,7 +240,7 @@ where
     codec.decode(&[Some(Bytes::copy_from_slice(bytes))])
 }
 
-fn binary_scalar_oid<C, T>(codec: &C, context: &str) -> Result<Oid>
+pub(super) fn binary_scalar_oid<C, T>(codec: &C, context: &str) -> Result<Oid>
 where
     C: Encoder<T> + Decoder<T>,
 {
@@ -238,13 +261,32 @@ where
     Ok(<C as Encoder<T>>::oids(codec)[0])
 }
 
-fn range_oid_slice_for_scalar_oid(element_oid: Oid) -> Option<&'static [Oid]> {
+pub(super) fn range_oid_slice_for_scalar_oid(element_oid: Oid) -> Option<&'static [Oid]> {
     match element_oid {
         types::INT4 => Some(&[types::INT4_RANGE]),
         types::INT8 => Some(&[types::INT8_RANGE]),
+        types::NUMERIC => Some(&[types::NUM_RANGE]),
         types::DATE => Some(&[types::DATE_RANGE]),
         types::TIMESTAMP => Some(&[types::TS_RANGE]),
         types::TIMESTAMPTZ => Some(&[types::TSTZ_RANGE]),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "numeric")]
+    use crate::types;
+
+    #[cfg(feature = "numeric")]
+    use super::range_oid_slice_for_scalar_oid;
+
+    #[cfg(feature = "numeric")]
+    #[test]
+    fn numeric_ranges_use_builtin_oid_mapping() {
+        assert_eq!(
+            range_oid_slice_for_scalar_oid(types::NUMERIC),
+            Some(&[types::NUM_RANGE] as &'static [types::Oid])
+        );
     }
 }

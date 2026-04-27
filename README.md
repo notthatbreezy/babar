@@ -43,20 +43,39 @@ These ship in the core crate with no extra Cargo feature flag:
 | `interval` | PostgreSQL interval codec | ❌ |
 | `array` | binary array codec/combinators | ❌ |
 | `range` | binary range codec/combinators | ❌ |
-| `postgis` | PostGIS spatial wrappers (`Geometry`, `Geography`, `Srid`) and upcoming codecs | ❌ |
-| `pgvector` | reserved feature slot for upcoming `pgvector` codecs | ❌ |
-| `text-search` | reserved feature slot for upcoming `tsvector` / `tsquery` codecs | ❌ |
-| `macaddr` | reserved feature slot for upcoming `macaddr` / `macaddr8` codecs | ❌ |
-| `bits` | reserved feature slot for upcoming `bit` / `varbit` codecs | ❌ |
-| `hstore` | reserved feature slot for upcoming `hstore` codecs | ❌ |
-| `citext` | reserved feature slot for upcoming `citext` codecs | ❌ |
-| `multirange` | reserved feature slot for upcoming multirange codecs | ❌ |
+| `postgis` | PostGIS `geometry` / `geography` codecs for common 2D `geo-types` shapes | ❌ |
+| `pgvector` | `Vector` wrapper plus dynamic-`vector` codec | ❌ |
+| `text-search` | `TsVector` / `TsQuery` wrappers plus text-search codecs | ❌ |
+| `macaddr` | `macaddr` / `macaddr8` codecs with `MacAddr` / `MacAddr8` values | ❌ |
+| `bits` | `bit` / `varbit` codecs with explicit `BitString` length tracking | ❌ |
+| `hstore` | `hstore` codec backed by a stable `Hstore` map wrapper | ❌ |
+| `citext` | `citext` codec value mapped to Rust `String` | ❌ |
+| `multirange` | binary multirange codec/combinators layered on `Range` | ❌ |
 
-The architecture pass for advanced codecs reserves the extension-driven feature
-layout now so later codec families can land independently. The `postgis`
-feature already exposes the v1 spatial wrapper story: `geo-types` values stay
-primary, while babar's `Geometry<T>` / `Geography<T>` wrappers carry optional
-`Srid` metadata and keep the SQL type distinction explicit.
+Advanced codecs now mix fixed-OID families (`macaddr`, `bits`) with
+extension-resolved families (`hstore`, `citext`, `postgis`). The `postgis`
+feature now ships binary PostGIS codecs on top of that dynamic type-resolution
+path: `geo-types` values stay primary, while babar's `Geometry<T>` /
+`Geography<T>` wrappers carry optional `Srid` metadata and keep the SQL type
+distinction explicit. v1 deliberately supports common 2D shapes (`Point`,
+`LineString`, `Polygon`, `MultiPoint`, `MultiLineString`, `MultiPolygon`) and
+does not yet cover Z/M geometries, `GeometryCollection`, or PostgreSQL's
+built-in geometric types. The `multirange` feature builds directly on the same
+`Range<T>` model used by the `range` family, adding a thin `Multirange<T>`
+wrapper rather than a separate shape.
+
+Important caveats for the new families:
+
+- `postgis`, `pgvector`, `hstore`, and `citext` require the matching PostgreSQL
+  extension to be installed in the target database.
+- `pgvector` uses a dedicated `Vector` wrapper, requires at least one finite
+  `f32` dimension, and resolves the extension OID dynamically per session.
+- `text-search` intentionally keeps `TsVector` / `TsQuery` as canonical SQL text
+  wrappers in v0.1 rather than exposing a parsed Rust AST.
+- `range` / `multirange` currently support PostgreSQL's built-in scalar range
+  families with binary inner codecs (`int4`, `int8`, `numeric`, `date`,
+  `timestamp`, `timestamptz`); they are not a generic wrapper for arbitrary
+  extension types.
 
 ## Quick start
 

@@ -33,17 +33,29 @@
 
 #[cfg(feature = "array")]
 mod array;
+#[cfg(feature = "bits")]
+mod bits;
 #[cfg(feature = "chrono")]
 mod chrono;
+#[cfg(feature = "citext")]
+mod citext;
+#[cfg(feature = "hstore")]
+mod hstore;
 #[cfg(feature = "interval")]
 mod interval;
 #[cfg(feature = "json")]
 mod json;
+#[cfg(feature = "macaddr")]
+mod macaddr;
+#[cfg(feature = "multirange")]
+mod multirange;
 #[cfg(feature = "net")]
 mod net;
 mod nullable;
 #[cfg(feature = "numeric")]
 mod numeric;
+#[cfg(feature = "pgvector")]
+mod pgvector;
 #[cfg(feature = "postgis")]
 mod postgis;
 mod primitive;
@@ -51,6 +63,8 @@ mod primitive;
 mod proptests;
 #[cfg(feature = "range")]
 mod range;
+#[cfg(feature = "text-search")]
+mod text_search;
 #[cfg(feature = "time")]
 mod time;
 mod tuple;
@@ -59,11 +73,20 @@ mod uuid;
 
 #[cfg(feature = "array")]
 pub use array::{array, Array, ArrayCodec, ArrayDimension};
+#[cfg(feature = "bits")]
+#[cfg_attr(docsrs, doc(cfg(feature = "bits")))]
+pub use bits::{bit, varbit, BitCodec, BitString, VarbitCodec};
 #[cfg(feature = "chrono")]
 pub use chrono::{
     chrono_date, chrono_time, chrono_timestamp, chrono_timestamptz, ChronoDateCodec,
     ChronoDateTimeCodec, ChronoTimeCodec, ChronoTimestampCodec,
 };
+#[cfg(feature = "citext")]
+#[cfg_attr(docsrs, doc(cfg(feature = "citext")))]
+pub use citext::{citext, CitextCodec};
+#[cfg(feature = "hstore")]
+#[cfg_attr(docsrs, doc(cfg(feature = "hstore")))]
+pub use hstore::{hstore, Hstore, HstoreCodec};
 #[cfg(feature = "interval")]
 pub use interval::{interval, Interval, IntervalCodec};
 #[cfg(feature = "json")]
@@ -71,20 +94,33 @@ pub use json::{
     json, jsonb, typed_json, typed_json_text, JsonCodec, JsonbCodec, TypedJsonCodec,
     TypedJsonTextCodec,
 };
+#[cfg(feature = "macaddr")]
+#[cfg_attr(docsrs, doc(cfg(feature = "macaddr")))]
+pub use macaddr::{macaddr, macaddr8, MacAddr, MacAddr8, Macaddr8Codec, MacaddrCodec};
+#[cfg(feature = "multirange")]
+pub use multirange::{multirange, Multirange, MultirangeCodec};
 #[cfg(feature = "net")]
 pub use net::{cidr, inet, CidrCodec, InetCodec};
 pub use nullable::{nullable, Nullable};
 #[cfg(feature = "numeric")]
 pub use numeric::{numeric, NumericCodec};
+#[cfg(feature = "pgvector")]
+#[cfg_attr(docsrs, doc(cfg(feature = "pgvector")))]
+pub use pgvector::{vector, Vector, VectorCodec};
 #[cfg(feature = "postgis")]
 #[cfg_attr(docsrs, doc(cfg(feature = "postgis")))]
-pub use postgis::{Geography, Geometry, SpatialKind, Srid};
+pub use postgis::{
+    geography, geometry, Geography, GeographyCodec, Geometry, GeometryCodec, SpatialKind, Srid,
+};
 pub use primitive::{
     bool, bpchar, bytea, float4, float8, int2, int4, int8, text, varchar, BoolCodec, BpcharCodec,
     ByteaCodec, Float4Codec, Float8Codec, Int2Codec, Int4Codec, Int8Codec, TextCodec, VarcharCodec,
 };
 #[cfg(feature = "range")]
 pub use range::{range, Range, RangeBound, RangeCodec};
+#[cfg(feature = "text-search")]
+#[cfg_attr(docsrs, doc(cfg(feature = "text-search")))]
+pub use text_search::{tsquery, tsvector, TsQuery, TsQueryCodec, TsVector, TsVectorCodec};
 #[cfg(feature = "time")]
 pub use time::{
     date, time, timestamp, timestamptz, DateCodec, OffsetDateTimeCodec, PrimitiveDateTimeCodec,

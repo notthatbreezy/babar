@@ -39,7 +39,7 @@ impl<A, B> Query<A, B> {
         E: Encoder<A> + Send + Sync + 'static,
         D: Decoder<B> + Send + Sync + 'static,
     {
-        let n_params = encoder.types().len();
+        let n_params = encoder.oids().len();
         Self::new(
             Fragment::__from_parts(sql, encoder, n_params, None),
             decoder,
@@ -118,7 +118,7 @@ impl<A> Command<A> {
     where
         E: Encoder<A> + Send + Sync + 'static,
     {
-        let n_params = encoder.types().len();
+        let n_params = encoder.oids().len();
         Self::new(Fragment::__from_parts(sql, encoder, n_params, None))
     }
 

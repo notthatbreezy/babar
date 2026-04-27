@@ -39,7 +39,7 @@ macaddr = []
 bits = []
 hstore = []
 citext = []
-multirange = []
+multirange = ["range"]
 
 [dependencies]
 babar-macros = { workspace = true }
