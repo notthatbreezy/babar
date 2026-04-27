@@ -76,7 +76,7 @@ observe a final `Result` if the server objected to anything.
 `Session::connect` returns `babar::Result<Session>`. The error is the
 same `babar::Error` enum you'll meet in
 [Chapter 9](./09-error-handling.md); for connection failures you'll
-typically see `Error::Io { .. }` (DNS, TCP, TLS) or `Error::Server {
+typically see `Error::Io(_)` (DNS, TCP, TLS) or `Error::Server {
 code, .. }` (auth rejected, database missing). Inspect the variant
 directly — there's no `Error::kind()` classifier.
 
