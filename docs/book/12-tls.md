@@ -49,11 +49,12 @@ use.
 
 ## Two backends, pick one
 
-`TlsBackend::Rustls` is the pure-Rust default. `TlsBackend::NativeTls`
+`TlsBackend::Rustls` is the pure-Rust default; the cargo feature is
+`tls-rustls`. `TlsBackend::NativeTls` (cargo feature `native-tls`)
 uses the platform's TLS stack (Schannel on Windows, Secure Transport
 on macOS, OpenSSL on Linux). Pick `Rustls` unless you have a specific
 reason — system roots, FIPS mode, smartcard support — to reach for the
-platform stack. They're behind crate features; check
+platform `native-tls` stack. See
 [reference/feature-flags.md](../reference/feature-flags.md) for the
 exact flag names.
 
@@ -84,9 +85,12 @@ optional channel binding when TLS is in play. The short version:
   `SCRAM-SHA-256-PLUS` over TLS connections; babar uses it
   automatically when both sides offer it.
 
-Older mechanisms (`md5`, `password`, `gss`, `sspi`) surface as
-`Error::UnsupportedAuth(_)`. Update the server's `pg_hba.conf` to use
-`scram-sha-256` rather than weakening babar.
+babar also supports MD5 and cleartext-password auth for legacy
+servers, but if the server selects something babar doesn't speak —
+`gss`, `sspi`, or any auth code babar hasn't implemented — you get
+`Error::UnsupportedAuth(_)`. The fix is almost always to update the
+server's `pg_hba.conf` to use `scram-sha-256` rather than weakening
+the client.
 
 ## A "what could go wrong?" checklist
 

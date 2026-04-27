@@ -76,7 +76,7 @@ the variant:
 | `Error::Closed { sql, origin }` | Server hung up or the driver task shut down with an in-flight request. |
 | `Error::Protocol(String)` | The server (or driver) sent a wire-protocol message that doesn't fit the state machine. Always a bug somewhere. |
 | `Error::Auth(String)` | SCRAM rejected, password wrong, role can't log in. |
-| `Error::UnsupportedAuth(String)` | Server asked for an auth method babar doesn't speak (`md5`, `gss`, …). |
+| `Error::UnsupportedAuth(String)` | Server asked for an auth method babar doesn't speak (e.g. `gss`, `sspi`). |
 | `Error::Server { code, severity, message, detail, hint, position, sql, origin }` | `ErrorResponse` from Postgres. `code` is SQLSTATE — match on it. |
 | `Error::Config(String)` | Configuration problem caught before any I/O. |
 | `Error::Codec(String)` | An encoder or decoder rejected a value. |

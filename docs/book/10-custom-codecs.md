@@ -51,7 +51,8 @@ Both traits are generic over a Rust value type `A`. `Encoder<A>` turns
 an `&A` into one or more parameter byte buffers; `Decoder<A>` turns
 N column buffers back into an `A`.
 
-The four required `Encoder<A>` methods:
+The `Encoder<A>` methods (`format_codes` and `types` have sensible
+defaults — implement them only when you need to override):
 
 - `encode(&self, value, params)` — push exactly `oids().len()` entries
   onto `params`. `Some(bytes)` for a value, `None` for SQL `NULL`.
@@ -61,7 +62,8 @@ The four required `Encoder<A>` methods:
 - `types()` — richer type metadata; default implementation derives
   this from `oids()`.
 
-The four required `Decoder<A>` methods:
+The `Decoder<A>` methods (`format_codes` and `types` again have
+defaults you can usually skip):
 
 - `decode(&self, columns)` — consume the first `n_columns()` entries
   of `columns` and produce an `A`.

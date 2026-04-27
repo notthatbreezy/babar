@@ -1,8 +1,8 @@
 # 11. Building a web service
 
-In this chapter we'll wire babar into an Axum HTTP service: a
-connection pool in shared state, JSON in / JSON out handlers, and
-clean error mapping at the boundary.
+In this chapter you'll wire babar into an Axum HTTP service: a
+connection pool in your shared state, JSON in / JSON out handlers,
+and clean error mapping at the boundary.
 
 ## Setup
 
