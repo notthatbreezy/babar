@@ -67,7 +67,7 @@ From `Spec.md` and `CodeResearch.md`:
 ## Phase Status
 
 - [x] **Phase 1: Asset Relocation & Site Skeleton** — Move authoring artifacts out, relocate brand images, update `book.toml`, scaffold the full `SUMMARY.md` hierarchy with placeholder pages so `mdbook build` is green from this point onward.
-- [ ] **Phase 2: Landing Page & Quickstart** — Author `docs/index.md` (doobie hero) and `docs/getting-started/first-query.md`.
+- [x] **Phase 2: Landing Page & Quickstart** — Author `docs/index.md` (doobie hero) and `docs/getting-started/first-query.md`.
 - [ ] **Phase 3: Book Foundations (Chapters 1–4)** — Connecting, Selecting, Parameterized Commands, Prepared Queries & Streaming.
 - [ ] **Phase 4: Book Composition (Chapters 5–8)** — Transactions, Pooling, Bulk Loads (COPY), Migrations.
 - [ ] **Phase 5: Book Production (Chapters 9–13)** — Error Handling, Custom Codecs / `derive(Codec)`, Web Service (Axum), TLS & Security, Observability/Tracing.
