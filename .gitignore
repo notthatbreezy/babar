@@ -30,3 +30,5 @@ cobertura.xml
 
 # mdbook build output
 /book/
+
+.internal

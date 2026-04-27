@@ -10,7 +10,7 @@ The short answer is *one obvious way to do each thing*. Connect, run a
 typed query, run a command, stream a result, manage a transaction,
 hold a pool, ingest with COPY, run migrations — there is one shape per
 task, and the codecs are values you import by name. The next time you
-read your own code, you can read it.
+read your own code (or some code that AI wrote), you can read it.
 
 ## Three pillars
 
@@ -27,6 +27,8 @@ The wire protocol, faithfully. babar speaks Postgres directly —
 extended-protocol prepares, binary results, SCRAM-SHA-256, channel
 binding over TLS, and binary `COPY FROM STDIN` for bulk ingest. There
 is no translation layer between you and the server.
+
+Over time `babar` will take advantage of unique features and advantages of PostgreSQL because it does not need to worry about the lowest common denominator among databases.
 
 ### Built for the herd
 
@@ -48,15 +50,6 @@ compiler knows the parameter shape, the row shape, and which codecs
 participate. There is no magic — `Query::raw` constructs one
 explicitly, and the `query!` macro builds the same thing with optional
 compile-time SQL verification.
-
-## What babar deliberately does not do
-
-- It does not require a compile-time database. `query!` against
-  `BABAR_DATABASE_URL` is opt-in; the default `Query::raw` path runs
-  without any dev-loop infrastructure.
-- It does not hide errors behind `&dyn Error`. `babar::Error` is a
-  plain enum with eleven variants, each carrying the fields you need
-  to decide what to do.
 
 ## Where to read next
 

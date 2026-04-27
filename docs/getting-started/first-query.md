@@ -57,9 +57,7 @@ cargo run
 that takes the four required fields by position. Optional fields are
 chained on after: `.password(...)`, `.application_name(...)`,
 `.connect_timeout(...)`. There is no `Config::from_env()` and no DSN
-parser — `Config` is a plain struct, and you set its fields. This is a
-deliberate choice: the credentials your program uses should be visible
-in code review, not hidden in a connection string.
+parser — `Config` is a plain struct, and you set its fields.
 
 **`Session::connect(cfg)`** returns a `Session`. A `Session` owns one
 Postgres connection plus a background task that owns the socket. Every
@@ -87,7 +85,7 @@ the bytes are already typed Rust values.
 
 ## What happened
 
-You spoke the Postgres wire protocol, prepared a statement, bound zero
+You connected to PostgrSQL via the wire protocol, prepared a statement, bound zero
 parameters, fetched one row, decoded `int4` into `i32` and `text` into
 `String`, and closed the session.
 

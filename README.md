@@ -32,8 +32,6 @@ These ship in the core crate with no extra Cargo feature flag:
 
 | Feature | Purpose | On by Default |
 | --- | --- | --- |
-| `rustls` | TLS with pure-Rust certificates / SNI / verification | ✅ |
-| `native-tls` | Alternate TLS backend using the platform stack | ❌ |
 | `uuid` | `uuid::Uuid` codecs | ❌ |
 | `time` | `time` date/time codecs | ❌ |
 | `chrono` | `chrono` date/time codecs | ❌ |
