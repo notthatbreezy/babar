@@ -37,6 +37,17 @@ The intended v1 safety model includes:
 - Define the public library API shape.
 - Decide how non-transactional migrations are declared.
 
+Architecture decisions sharpened in code:
+- File grammar: `<version>__<name>.up.sql` and `<version>__<name>.down.sql`
+  where `version` is a `u64` and `name` is lowercase `snake_case`.
+- Non-transactional execution is a per-file top-of-file pragma:
+  `--! babar:transaction = none`
+- Default state table: `public.babar_schema_migrations`
+  with `version`, `name`, `up_checksum`, `down_checksum`,
+  `up_transaction_mode`, `down_transaction_mode`, and `applied_at`.
+- Shared library entry point: `Migrator<S>` with `MigratorOptions`,
+  backed by a `MigrationSource` abstraction so the eventual CLI stays thin.
+
 ### 2. `migration-source-and-plan`
 - Discover migrations from disk.
 - Validate ordering and pairing.
@@ -93,3 +104,8 @@ The intended v1 safety model includes:
 - The cleanest v1 is library-first with a thin CLI wrapper, not two separate implementations.
 - PostgreSQL-only scope is a strength here: advisory locks and transactional DDL can be part of the core design instead of optional abstractions.
 - Non-transactional migrations need an explicit opt-out mechanism from the start, even if most migrations stay transactional.
+
+## Final Status Notes
+- `migration-validation-docs` completed with end-to-end validation for the library-first migration engine, filesystem source, and CLI wrapper.
+- User-facing docs now cover migration file grammar, startup-safe `Migrator` usage, CLI commands, drift/checksum behavior, advisory locking, transaction modes, and rollback limits.
+- Validation passed with `cargo fmt --check`, `cargo clippy -p babar --all-targets --all-features -- -D warnings`, `cargo test -p babar --all-features`, and `RUSTDOCFLAGS="-D warnings" cargo doc -p babar --all-features --no-deps`.

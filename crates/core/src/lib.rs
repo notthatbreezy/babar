@@ -179,6 +179,7 @@ pub mod codec;
 mod config;
 pub mod copy;
 mod error;
+pub mod migration;
 #[cfg(not(loom))]
 pub mod pool;
 pub(crate) mod protocol;
@@ -244,6 +245,7 @@ mod session;
 pub use config::{Config, TlsBackend, TlsMode};
 pub use copy::CopyIn;
 pub use error::{Error, Result};
+pub use migration::{MigrationError, Migrator, MigratorOptions};
 #[cfg(not(loom))]
 pub use pool::{
     HealthCheck, Pool, PoolConfig, PoolConnection, PoolError, PooledPreparedCommand,

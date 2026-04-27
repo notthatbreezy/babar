@@ -216,6 +216,64 @@ session.close().await?;
 
 The COPY surface is intentionally limited to bulk ingest with binary `COPY FROM STDIN`. `COPY TO`, text COPY, and CSV COPY are not implemented.
 
+## Schema migrations
+
+`babar` ships a library-first migration engine plus a thin CLI example wrapper.
+
+- file names are paired as `<version>__<name>.up.sql` and `<version>__<name>.down.sql`
+- `version` is a `u64`; `name` must be lowercase `snake_case`
+- each migration must provide both files
+- scripts are transactional by default; opt out per file with `--! babar:transaction = none`
+- applied history lives in `public.babar_schema_migrations` by default
+
+Use the library API during startup before serving traffic:
+
+```rust,no_run
+use babar::migration::FileSystemMigrationSource;
+use babar::{Config, Migrator, Session};
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> babar::Result<()> {
+    let session = Session::connect(
+        Config::new("localhost", 5432, "postgres", "app").password("secret"),
+    )
+    .await?;
+    let migrator = Migrator::new(FileSystemMigrationSource::new("migrations"));
+    let plan = migrator.apply(&session).await?;
+    println!("applied {} migration(s)", plan.steps().len());
+    session.close().await?;
+    Ok(())
+}
+```
+
+That startup path is safe to call from multiple processes: babar creates the
+state table if needed, acquires a PostgreSQL advisory lock before changing
+state, and treats re-running `apply` as a no-op once the applied prefix matches
+disk.
+
+The CLI example wraps the same engine:
+
+```text
+cargo run -p babar --example migration_cli -- status
+cargo run -p babar --example migration_cli -- plan
+cargo run -p babar --example migration_cli -- up
+cargo run -p babar --example migration_cli -- down --steps 1
+```
+
+Key operational rules:
+
+- `status`, `plan`, `up`, and `down` all enforce checksum and transaction-mode
+  drift detection for already-applied migrations
+- advisory locking only serializes babar migration runners that share the same
+  lock id; override it with `MigratorOptions` or `--migration-lock-id` only on
+  purpose
+- non-transactional scripts run outside an explicit transaction so PostgreSQL
+  features like `CREATE INDEX CONCURRENTLY` work, but partial effects may remain
+  if such a script fails
+- rollbacks only cover the currently applied prefix and only what the checked-in
+  `down` scripts can reverse; requesting more steps than are applied just rolls
+  back the whole applied prefix
+
 ## Examples
 
 Real-world example programs live in `crates/core/examples/`:
@@ -225,6 +283,7 @@ Real-world example programs live in `crates/core/examples/`:
 - `prepared_and_stream` — prepared statements plus streaming
 - `transactions` / `pool` — M4 lifecycle walkthroughs
 - `copy_bulk` — `Vec<Struct>` bulk ingest with `CopyIn<T>`
+- `migration_cli` — migration status/plan/apply/rollback wrapper over the shared engine
 - `todo_cli` — CLI app using `clap`
 - `axum_service` — small Axum JSON API backed by `Pool`
 

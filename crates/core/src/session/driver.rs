@@ -1281,6 +1281,7 @@ impl Error {
             },
             Error::Config(s) => Error::Config(s.clone()),
             Error::Codec(s) => Error::Codec(s.clone()),
+            Error::Migration(err) => Error::Migration(err.clone()),
             Error::ColumnAlignment {
                 expected,
                 actual,

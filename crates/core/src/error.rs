@@ -3,6 +3,7 @@
 use std::fmt;
 use std::io;
 
+use crate::migration::MigrationError;
 use crate::query::Origin;
 
 /// Convenience alias for `Result<T, babar::Error>`.
@@ -89,6 +90,9 @@ pub enum Error {
         /// Macro callsite captured by [`crate::sql!`], when available.
         origin: Option<Origin>,
     },
+
+    /// Migration parsing, planning, or configuration failed before execution.
+    Migration(MigrationError),
 }
 
 impl Error {
@@ -140,7 +144,8 @@ impl Error {
             | Self::Auth(_)
             | Self::UnsupportedAuth(_)
             | Self::Config(_)
-            | Self::Codec(_) => {}
+            | Self::Codec(_)
+            | Self::Migration(_) => {}
         }
         self
     }
@@ -184,6 +189,12 @@ impl From<io::Error> for Error {
     }
 }
 
+impl From<MigrationError> for Error {
+    fn from(value: MigrationError) -> Self {
+        Self::Migration(value)
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -218,6 +229,7 @@ impl fmt::Display for Error {
             }
             Self::Config(msg) => write!(f, "configuration error: {msg}"),
             Self::Codec(msg) => write!(f, "codec error: {msg}"),
+            Self::Migration(err) => write!(f, "migration error: {err}"),
             Self::ColumnAlignment {
                 expected,
                 actual,

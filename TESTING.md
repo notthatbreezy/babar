@@ -33,6 +33,9 @@ Spin up a real Postgres. This is the primary correctness bar.
   `POSTGRES_VERSION` env var.
 - Tests that exercise version-specific behavior gate via
   `#[cfg(feature = "pg17")]` or skip at runtime with a logged reason.
+- Migration coverage belongs here too: the migration runner/CLI tests use a real
+  Postgres instance to validate advisory locking, checksum drift, rollback, and
+  non-transactional execution behavior.
 
 ### 3. Property-based tests — `proptest`
 

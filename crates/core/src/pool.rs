@@ -1028,6 +1028,7 @@ fn should_recycle(err: &Error) -> bool {
         | Error::UnsupportedAuth(_)
         | Error::Config(_)
         | Error::Codec(_)
+        | Error::Migration(_)
         | Error::ColumnAlignment { .. }
         | Error::SchemaMismatch { .. } => false,
     }
