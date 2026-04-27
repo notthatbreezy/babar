@@ -116,6 +116,130 @@ async fn main() -> babar::Result<()> {
 }
 ```
 
+## Development
+
+Local commands that match every CI gate one-to-one. Run the **Pre-push checklist**
+below before `git push` to a PR branch — it covers everything CI runs and surfaces
+the same failures.
+
+### Toolchain setup
+
+`babar`'s MSRV is in `Cargo.toml` under `rust-version`. CI tests both the MSRV
+floor and current `stable`. To exercise both locally:
+
+```bash
+# Install rustup + the MSRV toolchain (one-time)
+MSRV=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)
+rustup toolchain install "$MSRV" --profile minimal --component clippy,rustfmt
+rustup toolchain install stable --profile minimal --component clippy,rustfmt
+
+# Tools used by the hygiene job (one-time install; slow first build)
+cargo install --locked cargo-deny cargo-audit cargo-semver-checks cargo-msrv
+cargo install --locked mdbook
+```
+
+> Running `cargo check` against your *current* toolchain does **not** catch
+> `requires rustc X.Y` errors from transitive deps. Always run the MSRV toolchain
+> for that gate (the pre-push checklist below does it for you).
+
+### Local Postgres for tests and tutorials
+
+Most chapters in [`docs/`](docs/) and the integration tests assume a local
+Postgres reachable on `localhost:5432`. Run one in the foreground with verbose
+query logging so you can watch every statement land:
+
+```bash
+docker run --rm -it \
+  --name babar-pg \
+  -p 5432:5432 \
+  postgres:17 \
+  -c log_statement=all \
+  -c log_destination=stderr \
+  -c log_min_duration_statement=0 \
+  -c log_connections=on \
+  -c log_disconnections=on
+```
+
+Default credentials baked into the image: user `postgres`, password `postgres`,
+db `postgres`. Connection string: `postgres://postgres:postgres@localhost:5432/postgres`.
+Ctrl-C kills the container; `--rm` discards data — exactly what you want for
+local dev.
+
+### Pre-push checklist
+
+This block reproduces every CI gate. Run it from the repo root before pushing
+to any branch with an open PR:
+
+```bash
+MSRV=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)
+
+# 1. Format (CI: lint job)
+cargo fmt --check
+
+# 2. Clippy on stable AND MSRV with -D warnings (CI: lint job)
+cargo +stable clippy --all-targets --all-features -- -D warnings
+cargo +"$MSRV" clippy --all-targets --all-features -- -D warnings
+
+# 3. Rustdoc with -D warnings (CI: lint job)
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
+# 4. Tests on MSRV AND stable (CI: test matrix)
+cargo +"$MSRV" test --all-features
+cargo +stable test --all-features
+
+# 5. Hygiene (CI: hygiene job)
+cargo deny check
+cargo audit
+cargo msrv verify -- cargo check
+cargo semver-checks
+cargo publish --dry-run -p babar-macros
+cargo publish --dry-run -p babar
+
+# 6. mdbook builds clean (CI: pages workflow)
+mdbook build
+```
+
+If any step fails, fix it locally first — don't push and let CI catch it. The
+matrix is intentionally redundant: `cargo +stable clippy` and `cargo +$MSRV
+clippy` can disagree (newer rustc adds new lints; older deps may lint
+differently). CI runs both, so you should too.
+
+### Faster iteration loops
+
+The full checklist takes a few minutes from a cold cache. While iterating on a
+single change, `cargo check --all-features` and `cargo test -p <crate>` are
+fine; just run the full block before push.
+
+For doc-only changes, only steps 3 and 6 are required. For source-only changes
+that don't touch `Cargo.toml` / `Cargo.lock`, you can skip step 5's
+`cargo audit` / `cargo deny` (they validate the dependency graph, which hasn't
+moved).
+
+### Common failures
+
+- **`feature edition2024 is required`** — a transitive dep needs a newer rustc
+  than your MSRV floor. Either bump `rust-version` in `Cargo.toml` (and the CI
+  matrix in `.github/workflows/ci.yml`) or pin the offending crate via
+  `cargo update -p <name> --precise <older-version>`.
+- **`-D warnings` clippy failure that doesn't reproduce** — run with
+  `cargo +stable` *and* `cargo +$MSRV`. Newer rustc adds lints that older
+  toolchains don't know about.
+- **`cargo publish --dry-run` failure** — usually a missing `description`,
+  `license`, or `repository` field, or a path-only dependency on a workspace
+  crate without a corresponding `version =`. Check `crates/*/Cargo.toml`.
+
+### Continuous integration
+
+CI is defined in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml). After pushing,
+read live status without leaving the terminal:
+
+```bash
+gh pr checks            # status of the PR linked to the current branch
+gh run watch            # follow the most recent run live
+gh run view --log-failed   # only the failed jobs' logs
+```
+
 ## Tutorial
 
 For a guided build from an empty directory, start with
