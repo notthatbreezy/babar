@@ -28,9 +28,9 @@ From `Spec.md` and `CodeResearch.md`:
 - `docs/SITE-COPY.md` and `docs/landing-mockup.html` no longer exist under `docs/`; both are tracked at `.design/` at the repo root and are not built into the site.
 - The four brand PNGs live at `docs/assets/img/` with kebab-case names; `:Zone.Identifier` sidecar files do not exist anywhere in the working tree.
 - `book.toml` has `title = "The Book of Babar"`. The existing `[output.html]` configuration is preserved (`navy` theme, `git-repository-url`, `site-url`).
-- `docs/SUMMARY.md` reflects the four-section hierarchy (landing → Get Started → Book → Reference → Explanation → Tutorial), with every linked file present.
+- `docs/SUMMARY.md` reflects the four-section hierarchy (landing → Get Started → Book → Reference → Explanation → Tutorial), with every linked file present. The Explanation section opens with `what-makes-babar-babar.md` (added in Phase 7).
 - `docs/index.md` is a doobie-style landing page: babar wordmark + tagline (*Ergonomic Postgres for Rust.*), one brand image, three pillars, a runnable code snippet, primary "Get Started" CTA. (FR-001, SC-001.)
-- A "Get Started" first-query quickstart exists at `docs/getting-started/first-query.md` (FR-002).
+- A "Get Started" first-query quickstart exists at `docs/getting-started/first-query.md` (FR-002), preceded by `docs/getting-started/prerequisites.md` which gives the reader a foreground `docker run` Postgres with verbose query logging (FR-002a, added retroactively in Phase 7).
 - All thirteen numbered Book chapters (FR-003) exist as full prose drafts under `docs/book/`, each meeting the chapter-shape gate from SC-004.
 - Reference section under `docs/reference/`: codec catalog, error catalog, feature flags, configuration knobs (FR-005).
 - Explanation section under `docs/explanation/`: design philosophy, comparison, background-driver-task model, no-unsafe / validate-early, roadmap (FR-006).
@@ -72,7 +72,7 @@ From `Spec.md` and `CodeResearch.md`:
 - [x] **Phase 4: Book Composition (Chapters 5–8)** — Transactions, Pooling, Bulk Loads (COPY), Migrations.
 - [x] **Phase 5: Book Production (Chapters 9–13)** — Error Handling, Custom Codecs / `derive(Codec)`, Web Service (Axum), TLS & Security, Observability/Tracing.
 - [x] **Phase 6: Reference Section** — Codec catalog, error catalog, feature flags, configuration knobs.
-- [ ] **Phase 7: Explanation / Why Babar** — Design philosophy, comparison, background-driver-task model, no-unsafe / validate-early, roadmap.
+- [x] **Phase 7: Explanation / Why Babar** — Design philosophy, comparison, background-driver-task model, no-unsafe / validate-early, roadmap.
 - [ ] **Phase 8: Polish, Voice Sweep & Documentation** — American-English/voice sweep across all new content, `mdbook build` green & warning-free with full content, Docs.md and CHANGELOG entry.
 
 ## Phase Candidates
@@ -117,6 +117,7 @@ From `Spec.md` and `CodeResearch.md`:
   [Welcome](index.md)
 
   # Get Started
+  - [Prerequisites](getting-started/prerequisites.md)
   - [Your first query](getting-started/first-query.md)
 
   # The Book of Babar
@@ -329,6 +330,7 @@ Same chapter-shape gate as Phase 3.
 ### Changes Required
 
 - **`docs/explanation/why-babar.md`**: Top-level pillar page sourced from `.design/SITE-COPY.md` §2 "Why babar three-up". Links onward to the four sub-pages.
+- **`docs/explanation/what-makes-babar-babar.md`** (added retroactively in Phase 7): One-page tour covering where babar sits, the four distinctive properties (background-driver-task, typestate-at-the-boundary, explicit codecs, validate-early), what babar deliberately is **not**, and when to reach for it. Linked first from the landing page CTA. Also cross-linked from `book/01-connecting.md` (driver-task section) and `book/05-transactions.md` (typestate section). Cross-driver phrasing kept soft (no new named claims beyond what `comparisons.md` already covers).
 - **`docs/explanation/design-principles.md`**: Typed / async / native protocol / **validate-early / no-unsafe**. Both "validate-early" and "no-unsafe" must appear by name with at least a paragraph of treatment each (this is where FR-006's six-item list folds two items into one page rather than spawning four separate pages). Cite `CLAUDE.md` for the no-unsafe stance and `MILESTONES.md` for ethos.
 - **`docs/explanation/comparisons.md`**: vs `tokio-postgres`, `sqlx`, `diesel`. Sourced from `.design/SITE-COPY.md` §2 "Comparison band". **Mid-phase user-confirmation step**: before merging this file, surface each comparison claim as a checklist for user sign-off (per Spec R3). Drop or rephrase any claim the user marks as overreaching.
 - **`docs/explanation/driver-task.md`**: The per-connection background task model — what it is, what channel types it uses, why it exists. Cite `crates/core/src/session.rs` / wherever the task lives per CodeResearch §16.
@@ -342,6 +344,7 @@ Same chapter-shape gate as Phase 3.
 - [ ] `docs/explanation/design-principles.md` contains both "validate-early" and "no-unsafe" / "unsafe" treatments (`grep -qiE 'validate.early' docs/explanation/design-principles.md && grep -qiE 'no.unsafe|unsafe' docs/explanation/design-principles.md`) — this is how SC-006's six-item gate is mechanically witnessed when validate-early and no-unsafe are folded into the design-principles page.
 - [ ] `docs/explanation/design-principles.md` is at least 50 non-blank lines (`[ "$(grep -cv '^[[:space:]]*$' docs/explanation/design-principles.md)" -ge 50 ]`) — coarse depth gate so the page isn't left as a placeholder (FR-006 "design philosophy").
 - [ ] `docs/explanation/why-babar.md` is at least 30 non-blank lines (same shape, applied to the Explanation pillar page).
+- [ ] `docs/explanation/what-makes-babar-babar.md` exists, is at least 80 non-blank lines, and contains the four distinctive-property sections plus "what babar is not" and "when babar is the right pick" sections (SC-006a).
 - [ ] `docs/explanation/roadmap.md` references `MILESTONES.md` (`grep -q MILESTONES docs/explanation/roadmap.md`).
 - [ ] No British-English markers across `docs/explanation/`.
 

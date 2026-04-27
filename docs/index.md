@@ -62,8 +62,14 @@ the call that ties them together. The codec tuple `(int4, text)`
 
 ## Where to go next
 
+> **New here?** Read **[What makes babar babar →](explanation/what-makes-babar-babar.md)**
+> first — a one-page tour of where babar sits and what makes it
+> distinctive.
+
+- **[Prerequisites →](getting-started/prerequisites.md)** — one
+  `docker run` for a Postgres that logs every byte back at you.
 - **[Your first query →](getting-started/first-query.md)** — the same
-  flow, walked one line at a time, with a real Postgres handy.
+  flow, walked one line at a time, with that Postgres handy.
 - **[The Book of Babar →](book/01-connecting.md)** — thirteen short
   chapters covering connecting, querying, transactions, pooling, COPY,
   migrations, errors, codecs, web services, TLS, and observability.

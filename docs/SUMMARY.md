@@ -3,6 +3,7 @@
 [Welcome](index.md)
 
 # Get Started
+- [Prerequisites](getting-started/prerequisites.md)
 - [Your first query](getting-started/first-query.md)
 
 # The Book of Babar
@@ -27,6 +28,7 @@
 - [Configuration knobs](reference/configuration.md)
 
 # Explanation
+- [What makes babar babar](explanation/what-makes-babar-babar.md)
 - [Why babar](explanation/why-babar.md)
 - [Design principles](explanation/design-principles.md)
 - [Comparisons](explanation/comparisons.md)

@@ -73,7 +73,10 @@ your body, and:
 You never write `COMMIT` or `ROLLBACK` yourself, and you can't forget
 to. The borrow checker won't let you call methods on the underlying
 `Session` while the `Transaction` is alive — there's exactly one
-in-flight request on the connection at a time.
+in-flight request on the connection at a time. (This typestate
+discipline is one of the four properties that make babar distinctive;
+see
+[What makes babar babar](../explanation/what-makes-babar-babar.md#2-typestate-at-the-boundary).)
 
 ## Savepoints compose the same way
 

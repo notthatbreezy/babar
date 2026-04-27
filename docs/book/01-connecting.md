@@ -49,7 +49,9 @@ That background task is the reason every public call on `Session` is
 cancellation-safe. If you `tokio::select!` away from a query midway
 through, the protocol stays in a consistent state — the driver task
 finishes reading the in-flight messages even if you don't await the
-result. We dive into the details in
+result. The shape of the model is sketched in
+[What makes babar babar](../explanation/what-makes-babar-babar.md#1-the-background-driver-task);
+we dive into the details in
 [explanation/driver-task.md](../explanation/driver-task.md).
 
 ## Reading server parameters
