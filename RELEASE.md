@@ -1,7 +1,7 @@
 # Release runbook
 
 ## Preconditions
-- Rust 1.85 installed locally (MSRV) plus current stable and nightly.
+- Rust 1.88 installed locally (MSRV) plus current stable and nightly.
 - Docker available for integration tests.
 - crates.io ownership configured for `babar` and `babar-macros`.
 - GitHub Actions green on the release commit.

@@ -92,7 +92,7 @@ cargo add babar
 ```
 
 **Trust strip (small caps under the install line)**:
-> Postgres 14 · 15 · 16 · 17     ·     Rust 1.85+     ·     0 unsafe blocks     ·     MIT / Apache-2.0
+> Postgres 14 · 15 · 16 · 17     ·     Rust 1.88+     ·     0 unsafe blocks     ·     MIT / Apache-2.0
 
 ### Why babar (three-up)
 
@@ -232,7 +232,7 @@ async fn main() -> babar::Result<()> {
 
 **Prereq callout**:
 > **You'll need**
-> · Rust 1.85 or newer
+> · Rust 1.88 or newer
 > · A local Postgres 14+ (Docker is fine)
 > · Five quiet minutes
 
@@ -355,7 +355,7 @@ async fn main() -> babar::Result<()> {
 |---------|---------|
 | `cancellation-safe` badge | Drop the future at any time — the in-flight command unwinds cleanly without leaving the connection in a bad state. |
 | `feature-gated` badge | Behind a Cargo feature flag. Add it to your `Cargo.toml` to enable. |
-| `MSRV 1.85` badge | Minimum supported Rust version. We bump it deliberately, not casually. |
+| `MSRV 1.88` badge | Minimum supported Rust version. We bump it deliberately, not casually. |
 | `0 unsafe` badge | The core crate forbids `unsafe`. Verified in CI by Miri. |
 | `binary protocol` badge | Uses Postgres' binary wire format — no text parsing on the hot path. |
 

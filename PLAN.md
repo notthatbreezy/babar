@@ -66,7 +66,7 @@ Out of scope for the project's identity:
 | C | Pool implementation: custom vs `deadpool` | M4 | `deadpool` is fine for most, but we want statement-cache awareness |
 | D | `sql!` macro form: positional `{}` vs named `$name` | M3 | **Resolved:** named `$name` placeholders shipped in M3 |
 | E | Public name for `Void` | M1 | `Void`, `NoParams`, `()`? |
-| F | MSRV | M6 | Rust 1.85+ (edition2024 stabilization; required by transitive deps in the `toml` family) |
+| F | MSRV | M6 | Rust 1.88+ (edition2024 stabilization; required by transitive deps in the `toml` family) |
 
 ## Crate structure
 
