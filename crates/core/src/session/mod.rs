@@ -5,6 +5,7 @@ mod driver;
 mod prepared;
 mod startup;
 mod stream;
+mod type_registry;
 
 use std::borrow::Borrow;
 use std::sync::Arc;
@@ -21,9 +22,11 @@ use crate::error::{Error, Result};
 use crate::protocol::backend::RowField;
 use crate::query::{Command as QueryCommand, Query};
 use crate::telemetry;
+use crate::types::{Oid, Type};
 
 use self::cache::{CacheKey, CachedStatement, StatementCache};
 use self::stream::{begin_transaction, close_statement_best_effort, next_name, StreamConfig};
+use self::type_registry::TypeRegistry;
 
 pub(crate) use driver::Command;
 pub use driver::{RawRows, ServerParams};
@@ -39,6 +42,7 @@ pub struct Session {
     params: ServerParams,
     key_data: Option<driver::BackendKeyData>,
     cache: Arc<Mutex<StatementCache>>,
+    type_registry: Arc<Mutex<TypeRegistry>>,
     closed: bool,
     state: Arc<driver::DriverState>,
 }
@@ -220,12 +224,14 @@ impl Session {
                 .map_err(|err| err.with_sql(query.sql(), query.origin()))?;
             let param_formats = query.fragment.encoder.format_codes().to_vec();
             let stmt_name = next_name("babar_stream_stmt");
+            let param_oids = self.resolve_type_oids(query.fragment.param_types()).await?;
+            let output_oids = self.resolve_type_oids(query.decoder.types()).await?;
             let (reply_tx, reply_rx) = oneshot::channel();
             self.tx
                 .send(Command::Prepare {
                     name: stmt_name.clone(),
                     sql: query.sql().to_string(),
-                    param_oids: query.fragment.encoder.oids().to_vec(),
+                    param_oids,
                     reply: reply_tx,
                 })
                 .await
@@ -235,7 +241,9 @@ impl Session {
                 Err(_) => return Err(Error::closed().with_sql(query.sql(), query.origin())),
             };
 
-            if let Err(err) = validate_row_description(&query.decoder, &outcome.row_fields) {
+            if let Err(err) =
+                validate_row_description(&query.decoder, &outcome.row_fields, &output_oids)
+            {
                 close_statement_best_effort(&self.tx, stmt_name).await;
                 return Err(err.with_sql(query.sql(), query.origin()));
             }
@@ -272,8 +280,8 @@ impl Session {
     {
         let span = telemetry::prepare_span(query.sql());
         async {
-            let param_oids = query.fragment.encoder.oids();
-            let key = CacheKey::new(query.sql(), param_oids);
+            let param_types = query.fragment.param_types();
+            let key = CacheKey::new(query.sql(), param_types);
 
             {
                 let mut cache = self.cache.lock().await;
@@ -289,12 +297,14 @@ impl Session {
             }
 
             let name = self.cache.lock().await.next_name();
+            let param_oids = self.resolve_type_oids(param_types).await?;
+            let output_oids = self.resolve_type_oids(query.decoder.types()).await?;
             let (reply_tx, reply_rx) = oneshot::channel();
             self.tx
                 .send(Command::Prepare {
                     name: name.clone(),
                     sql: query.sql().to_string(),
-                    param_oids: param_oids.to_vec(),
+                    param_oids,
                     reply: reply_tx,
                 })
                 .await
@@ -304,7 +314,9 @@ impl Session {
                 Err(_) => return Err(Error::closed().with_sql(query.sql(), query.origin())),
             };
 
-            if let Err(err) = validate_row_description(&query.decoder, &outcome.row_fields) {
+            if let Err(err) =
+                validate_row_description(&query.decoder, &outcome.row_fields, &output_oids)
+            {
                 close_statement_best_effort(&self.tx, name).await;
                 return Err(err.with_sql(query.sql(), query.origin()));
             }
@@ -335,8 +347,8 @@ impl Session {
     {
         let span = telemetry::prepare_span(cmd.sql());
         async {
-            let param_oids = cmd.fragment.encoder.oids();
-            let key = CacheKey::new(cmd.sql(), param_oids);
+            let param_types = cmd.fragment.param_types();
+            let key = CacheKey::new(cmd.sql(), param_types);
 
             {
                 let mut cache = self.cache.lock().await;
@@ -352,12 +364,13 @@ impl Session {
             }
 
             let name = self.cache.lock().await.next_name();
+            let param_oids = self.resolve_type_oids(param_types).await?;
             let (reply_tx, reply_rx) = oneshot::channel();
             self.tx
                 .send(Command::Prepare {
                     name: name.clone(),
                     sql: cmd.sql().to_string(),
-                    param_oids: param_oids.to_vec(),
+                    param_oids,
                     reply: reply_tx,
                 })
                 .await
@@ -422,6 +435,76 @@ impl Session {
     pub(crate) fn transaction_status(&self) -> u8 {
         self.state.transaction_status()
     }
+
+    async fn resolve_type_oids(&self, declared: &[Type]) -> Result<Vec<Oid>> {
+        let mut resolved = Vec::with_capacity(declared.len());
+
+        for ty in declared {
+            if ty.is_resolved() {
+                resolved.push(ty.oid());
+                continue;
+            }
+
+            if let Some(oid) = self.type_registry.lock().await.get(*ty) {
+                resolved.push(oid);
+                continue;
+            }
+
+            let oid = self.resolve_dynamic_type(*ty).await?;
+            self.type_registry.lock().await.insert(*ty, oid);
+            resolved.push(oid);
+        }
+
+        Ok(resolved)
+    }
+
+    async fn resolve_dynamic_type(&self, ty: Type) -> Result<Oid> {
+        let sql = if let Some(extension) = ty.extension_name() {
+            format!(
+                "SELECT t.oid::text \
+                 FROM pg_type AS t \
+                 JOIN pg_namespace AS n ON n.oid = t.typnamespace \
+                 JOIN pg_extension AS e ON e.extnamespace = n.oid \
+                 WHERE e.extname = '{}' AND t.typname = '{}'",
+                escape_sql_literal(extension),
+                escape_sql_literal(ty.name()),
+            )
+        } else {
+            format!(
+                "SELECT to_regtype('{}')::oid::text",
+                escape_sql_literal(ty.name()),
+            )
+        };
+
+        let rows = self.simple_query_raw(&sql).await?;
+        let raw = rows
+            .first()
+            .and_then(|rowset| rowset.first())
+            .and_then(|row| row.first())
+            .and_then(|cell| cell.as_deref())
+            .ok_or_else(|| {
+                Error::Codec(format!(
+                    "could not resolve PostgreSQL type \"{}\"{}",
+                    ty.name(),
+                    ty.extension_name()
+                        .map(|ext| format!(" from extension \"{ext}\""))
+                        .unwrap_or_default()
+                ))
+            })?;
+
+        let text = std::str::from_utf8(raw).map_err(|_| {
+            Error::Codec(format!(
+                "type resolution for \"{}\" returned non-UTF-8",
+                ty.name()
+            ))
+        })?;
+        text.parse::<Oid>().map_err(|_| {
+            Error::Codec(format!(
+                "type resolution for \"{}\" returned invalid OID {text:?}",
+                ty.name()
+            ))
+        })
+    }
 }
 
 impl Drop for Session {
@@ -447,6 +530,7 @@ pub(crate) fn new_session(
         params,
         key_data,
         cache: Arc::new(Mutex::new(StatementCache::new(retain_prepared_statements))),
+        type_registry: Arc::new(Mutex::new(TypeRegistry::default())),
         state,
         closed: false,
     }
@@ -474,6 +558,7 @@ fn parse_affected_rows(tag: Option<&str>) -> u64 {
 fn validate_row_description<B>(
     decoder: &Arc<dyn Decoder<B> + Send + Sync>,
     row_fields: &[RowField],
+    expected_oids: &[Oid],
 ) -> Result<()> {
     if row_fields.len() != decoder.n_columns() {
         return Err(Error::ColumnAlignment {
@@ -484,10 +569,9 @@ fn validate_row_description<B>(
         });
     }
 
-    let decoder_oids = decoder.oids();
-    if !decoder_oids.is_empty() {
+    if !expected_oids.is_empty() {
         for (position, (expected_oid, field)) in
-            decoder_oids.iter().zip(row_fields.iter()).enumerate()
+            expected_oids.iter().zip(row_fields.iter()).enumerate()
         {
             if *expected_oid != field.type_oid {
                 return Err(Error::SchemaMismatch {
@@ -503,6 +587,10 @@ fn validate_row_description<B>(
     }
 
     Ok(())
+}
+
+fn escape_sql_literal(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 #[cfg(test)]

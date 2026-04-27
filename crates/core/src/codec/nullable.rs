@@ -5,7 +5,7 @@ use bytes::Bytes;
 
 use super::{Decoder, Encoder};
 use crate::error::Result;
-use crate::types::Oid;
+use crate::types::{Oid, Type};
 
 /// Codec wrapper that maps `None` to SQL `NULL` and `Some(v)` to the
 /// inner codec's encoding of `v`.
@@ -48,6 +48,9 @@ where
     fn oids(&self) -> &'static [Oid] {
         self.0.oids()
     }
+    fn types(&self) -> &'static [Type] {
+        self.0.types()
+    }
     fn format_codes(&self) -> &'static [i16] {
         self.0.format_codes()
     }
@@ -75,6 +78,9 @@ where
     fn oids(&self) -> &'static [Oid] {
         self.0.oids()
     }
+    fn types(&self) -> &'static [Type] {
+        self.0.types()
+    }
     fn format_codes(&self) -> &'static [i16] {
         self.0.format_codes()
     }
@@ -82,8 +88,48 @@ where
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
     use super::*;
     use crate::codec::{int4, text};
+    use crate::error::Result;
+    use crate::types::{self, Type};
+
+    #[derive(Clone, Copy)]
+    struct DynamicGeometryCodec;
+
+    impl Encoder<()> for DynamicGeometryCodec {
+        fn encode(&self, _value: &(), params: &mut Vec<Option<Vec<u8>>>) -> Result<()> {
+            params.push(Some(Vec::new()));
+            Ok(())
+        }
+
+        fn oids(&self) -> &'static [Oid] {
+            &[0]
+        }
+
+        fn types(&self) -> &'static [Type] {
+            &[types::GEOMETRY_TYPE]
+        }
+    }
+
+    impl Decoder<()> for DynamicGeometryCodec {
+        fn decode(&self, _columns: &[Option<Bytes>]) -> Result<()> {
+            Ok(())
+        }
+
+        fn n_columns(&self) -> usize {
+            1
+        }
+
+        fn oids(&self) -> &'static [Oid] {
+            &[0]
+        }
+
+        fn types(&self) -> &'static [Type] {
+            &[types::GEOMETRY_TYPE]
+        }
+    }
 
     #[test]
     fn nullable_int4_encode_some() {
@@ -122,5 +168,12 @@ mod tests {
         let codec = nullable(text);
         let got = codec.decode(&[Some(Bytes::from_static(b""))]).unwrap();
         assert_eq!(got, Some(String::new()));
+    }
+
+    #[test]
+    fn nullable_preserves_dynamic_type_metadata() {
+        let codec = nullable(DynamicGeometryCodec);
+        assert_eq!(Encoder::oids(&codec), &[0]);
+        assert_eq!(Encoder::types(&codec), &[types::GEOMETRY_TYPE]);
     }
 }

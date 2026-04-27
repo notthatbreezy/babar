@@ -15,7 +15,7 @@ use bytes::Bytes;
 
 use super::{Decoder, Encoder};
 use crate::error::{Error, Result};
-use crate::types::Oid;
+use crate::types::{Oid, Type};
 
 /// Concatenate static OID slices into a fresh `&'static [Oid]`.
 ///
@@ -28,6 +28,16 @@ use crate::types::Oid;
 fn concat_static_oids(parts: &[&[Oid]]) -> &'static [Oid] {
     let total: usize = parts.iter().map(|p| p.len()).sum();
     let mut all: Vec<Oid> = Vec::with_capacity(total);
+    for p in parts {
+        all.extend_from_slice(p);
+    }
+    Box::leak(all.into_boxed_slice())
+}
+
+/// Same as `concat_static_oids` but for richer type metadata.
+fn concat_static_types(parts: &[&[Type]]) -> &'static [Type] {
+    let total: usize = parts.iter().map(|p| p.len()).sum();
+    let mut all: Vec<Type> = Vec::with_capacity(total);
     for p in parts {
         all.extend_from_slice(p);
     }
@@ -79,6 +89,9 @@ macro_rules! tuple_codec {
             fn oids(&self) -> &'static [Oid] {
                 concat_static_oids(&[ $( self.$idx.oids() ),+ ])
             }
+            fn types(&self) -> &'static [Type] {
+                concat_static_types(&[ $( self.$idx.types() ),+ ])
+            }
             fn format_codes(&self) -> &'static [i16] {
                 concat_static_formats(&[ $( self.$idx.format_codes() ),+ ])
             }
@@ -104,6 +117,9 @@ macro_rules! tuple_codec {
             }
             fn oids(&self) -> &'static [Oid] {
                 concat_static_oids(&[ $( self.$idx.oids() ),+ ])
+            }
+            fn types(&self) -> &'static [Type] {
+                concat_static_types(&[ $( self.$idx.types() ),+ ])
             }
             fn format_codes(&self) -> &'static [i16] {
                 concat_static_formats(&[ $( self.$idx.format_codes() ),+ ])
@@ -139,6 +155,9 @@ impl Encoder<()> for () {
     fn oids(&self) -> &'static [Oid] {
         &[]
     }
+    fn types(&self) -> &'static [Type] {
+        &[]
+    }
 }
 
 impl Decoder<()> for () {
@@ -151,12 +170,53 @@ impl Decoder<()> for () {
     fn oids(&self) -> &'static [Oid] {
         &[]
     }
+    fn types(&self) -> &'static [Type] {
+        &[]
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::codec::{bool, int4, text};
+    use crate::error::Result;
+    use crate::types::{self, Type};
+
+    #[derive(Clone, Copy)]
+    struct DynamicGeometryCodec;
+
+    impl Encoder<()> for DynamicGeometryCodec {
+        fn encode(&self, _value: &(), params: &mut Vec<Option<Vec<u8>>>) -> Result<()> {
+            params.push(Some(Vec::new()));
+            Ok(())
+        }
+
+        fn oids(&self) -> &'static [Oid] {
+            &[0]
+        }
+
+        fn types(&self) -> &'static [Type] {
+            &[types::GEOMETRY_TYPE]
+        }
+    }
+
+    impl Decoder<()> for DynamicGeometryCodec {
+        fn decode(&self, _columns: &[Option<Bytes>]) -> Result<()> {
+            Ok(())
+        }
+
+        fn n_columns(&self) -> usize {
+            1
+        }
+
+        fn oids(&self) -> &'static [Oid] {
+            &[0]
+        }
+
+        fn types(&self) -> &'static [Type] {
+            &[types::GEOMETRY_TYPE]
+        }
+    }
 
     #[test]
     fn pair_encode_concatenates_slots() {
@@ -209,5 +269,15 @@ mod tests {
         let codec = (int4, (text, bool), int4);
         // Three components: 1 + 2 + 1 = 4 columns.
         assert_eq!(codec.n_columns(), 4);
+    }
+
+    #[test]
+    fn tuple_preserves_dynamic_type_metadata() {
+        let codec = (DynamicGeometryCodec, int4);
+        assert_eq!(Encoder::oids(&codec), &[0, types::INT4]);
+        assert_eq!(
+            Encoder::types(&codec),
+            &[types::GEOMETRY_TYPE, Type::fixed(types::INT4, "int4")]
+        );
     }
 }

@@ -11,7 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [package.metadata.docs.rs]
-features = ["rustls", "uuid", "time", "chrono", "json", "numeric", "net", "interval", "array", "range"]
+features = ["rustls", "uuid", "time", "chrono", "json", "numeric", "net", "interval", "array", "range", "postgis", "pgvector", "text-search", "macaddr", "bits", "hstore", "citext", "multirange"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
@@ -32,6 +32,14 @@ net = []
 interval = []
 array = ["dep:fallible-iterator"]
 range = []
+postgis = ["dep:geo-types"]
+pgvector = []
+text-search = []
+macaddr = []
+bits = []
+hstore = []
+citext = []
+multirange = []
 
 [dependencies]
 babar-macros = { workspace = true }
@@ -47,6 +55,7 @@ async_fn_traits = "0.1"
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
+geo-types = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 rust_decimal = { workspace = true, optional = true }

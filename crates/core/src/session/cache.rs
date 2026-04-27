@@ -1,29 +1,29 @@
 //! Per-session prepared statement cache.
 //!
-//! Keyed by `(sql_hash, param_oids)` so two queries that differ only in
-//! their decoder (but share SQL + encoder) still share a prepared
-//! statement server-side.
+//! Keyed by `(sql_hash, param_types)` so two queries that differ only in their
+//! decoder (but share SQL + encoder) still share a prepared statement
+//! server-side.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use crate::protocol::backend::RowField;
-use crate::types::Oid;
+use crate::types::Type;
 
 /// Cache key: hash of (SQL text, encoder OIDs).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CacheKey {
     sql_hash: u64,
-    param_oids: Vec<Oid>,
+    param_types: Vec<Type>,
 }
 
 impl CacheKey {
-    pub fn new(sql: &str, param_oids: &[Oid]) -> Self {
+    pub fn new(sql: &str, param_types: &[Type]) -> Self {
         let mut hasher = std::hash::DefaultHasher::new();
         sql.hash(&mut hasher);
         Self {
             sql_hash: hasher.finish(),
-            param_oids: param_oids.to_vec(),
+            param_types: param_types.to_vec(),
         }
     }
 }
@@ -103,5 +103,19 @@ impl StatementCache {
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.stmts.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CacheKey;
+    use crate::types;
+
+    #[test]
+    fn cache_key_distinguishes_dynamic_types_with_placeholder_oids() {
+        let geometry = CacheKey::new("SELECT $1", &[types::GEOMETRY_TYPE]);
+        let geography = CacheKey::new("SELECT $1", &[types::GEOGRAPHY_TYPE]);
+
+        assert_ne!(geometry, geography);
     }
 }

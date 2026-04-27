@@ -43,6 +43,20 @@ These ship in the core crate with no extra Cargo feature flag:
 | `interval` | PostgreSQL interval codec | ❌ |
 | `array` | binary array codec/combinators | ❌ |
 | `range` | binary range codec/combinators | ❌ |
+| `postgis` | PostGIS spatial wrappers (`Geometry`, `Geography`, `Srid`) and upcoming codecs | ❌ |
+| `pgvector` | reserved feature slot for upcoming `pgvector` codecs | ❌ |
+| `text-search` | reserved feature slot for upcoming `tsvector` / `tsquery` codecs | ❌ |
+| `macaddr` | reserved feature slot for upcoming `macaddr` / `macaddr8` codecs | ❌ |
+| `bits` | reserved feature slot for upcoming `bit` / `varbit` codecs | ❌ |
+| `hstore` | reserved feature slot for upcoming `hstore` codecs | ❌ |
+| `citext` | reserved feature slot for upcoming `citext` codecs | ❌ |
+| `multirange` | reserved feature slot for upcoming multirange codecs | ❌ |
+
+The architecture pass for advanced codecs reserves the extension-driven feature
+layout now so later codec families can land independently. The `postgis`
+feature already exposes the v1 spatial wrapper story: `geo-types` values stay
+primary, while babar's `Geometry<T>` / `Geography<T>` wrappers carry optional
+`Srid` metadata and keep the SQL type distinction explicit.
 
 ## Quick start
 

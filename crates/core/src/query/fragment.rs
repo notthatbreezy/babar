@@ -12,7 +12,7 @@ use bytes::Bytes;
 use super::{Command, Query};
 use crate::codec::{Decoder, Encoder};
 use crate::error::Result;
-use crate::types::Oid;
+use crate::types::{Oid, Type};
 
 /// Source location captured for a macro-built fragment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -190,6 +190,11 @@ impl<A> Fragment<A> {
         self.encoder.oids()
     }
 
+    /// Postgres type metadata the encoder declares, in placeholder order.
+    pub fn param_types(&self) -> &'static [Type] {
+        self.encoder.types()
+    }
+
     /// Number of parameter placeholders this fragment carries.
     pub fn n_params(&self) -> usize {
         self.n_params
@@ -250,6 +255,11 @@ where
         all.extend_from_slice(self.tail.oids());
         Box::leak(all.into_boxed_slice())
     }
+    fn types(&self) -> &'static [Type] {
+        let mut all: Vec<Type> = self.head.types().to_vec();
+        all.extend_from_slice(self.tail.types());
+        Box::leak(all.into_boxed_slice())
+    }
     fn format_codes(&self) -> &'static [i16] {
         let mut all: Vec<i16> = self.head.format_codes().to_vec();
         all.extend_from_slice(self.tail.format_codes());
@@ -278,6 +288,11 @@ where
         all.extend_from_slice(self.tail.oids());
         Box::leak(all.into_boxed_slice())
     }
+    fn types(&self) -> &'static [Type] {
+        let mut all: Vec<Type> = self.head.types().to_vec();
+        all.extend_from_slice(self.tail.types());
+        Box::leak(all.into_boxed_slice())
+    }
     fn format_codes(&self) -> &'static [i16] {
         let mut all: Vec<i16> = self.head.format_codes().to_vec();
         all.extend_from_slice(self.tail.format_codes());
@@ -292,6 +307,9 @@ impl<A, T: Encoder<A> + ?Sized> Encoder<A> for Arc<T> {
     }
     fn oids(&self) -> &'static [Oid] {
         (**self).oids()
+    }
+    fn types(&self) -> &'static [Type] {
+        (**self).types()
     }
     fn format_codes(&self) -> &'static [i16] {
         (**self).format_codes()
@@ -308,6 +326,9 @@ impl<A, T: Decoder<A> + ?Sized> Decoder<A> for Arc<T> {
     }
     fn oids(&self) -> &'static [Oid] {
         (**self).oids()
+    }
+    fn types(&self) -> &'static [Type] {
+        (**self).types()
     }
     fn format_codes(&self) -> &'static [i16] {
         (**self).format_codes()

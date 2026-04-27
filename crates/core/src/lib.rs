@@ -15,7 +15,7 @@
 //! - simple-query, extended query, prepared-statement, transaction, pool, and
 //!   binary `COPY FROM STDIN` bulk-ingest APIs
 //! - text codecs in core plus opt-in `uuid`, `time`, `chrono`, `json`,
-//!   `numeric`, `net`, `interval`, `array`, and `range` modules
+//!   `numeric`, `net`, `interval`, `array`, `range`, and `postgis` modules
 //! - optional TLS via the `rustls` feature (default) or `native-tls`
 //! - OpenTelemetry-friendly `tracing` spans for connect / prepare / execute /
 //!   transaction flows

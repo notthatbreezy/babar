@@ -16,6 +16,8 @@ This plan explicitly **excludes PostgreSQL built-in geometric types**. The inten
 - **No built-in PG geometric types** in this work.
 - **Feature-gated family expansion** remains the model.
 - **Parallel-friendly structure**: a small shared architecture phase first, then PostGIS, vectors/search, scalar/extension codecs, and multirange can be implemented with minimal overlap.
+- **Shared type metadata**: codecs can now describe slots by stable SQL type metadata, not only fixed OIDs, so extension-defined families can resolve dynamic OIDs per session before prepare-time validation.
+- **PostGIS v1 wrapper story**: `Geometry<T>` and `Geography<T>` are distinct wrappers over `geo-types` values and carry an optional `Srid`; no separate Rust model for PostgreSQL built-in geometric types will be added.
 
 ## Proposed Feature Families
 - `postgis` — PostGIS `geometry` / `geography` codecs using `geo-types`
@@ -35,6 +37,10 @@ This plan explicitly **excludes PostgreSQL built-in geometric types**. The inten
   - how SRID is represented
   - how `geometry` vs `geography` is exposed
   - how much of PostGIS is supported in the first cut
+- Shared substrate chosen:
+  - reserve narrow Cargo features for `postgis`, `pgvector`, `text-search`, `macaddr`, `bits`, `hstore`, `citext`, and `multirange`
+  - use runtime type resolution for extension-defined codecs whose OIDs are not globally stable
+  - keep PostGIS wrappers in core behind `postgis` so later EWKB codecs can reuse them without revisiting the public shape
 
 ### 2. `postgis-codecs`
 - Add `postgis` feature and dependencies.

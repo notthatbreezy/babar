@@ -44,6 +44,8 @@ mod net;
 mod nullable;
 #[cfg(feature = "numeric")]
 mod numeric;
+#[cfg(feature = "postgis")]
+mod postgis;
 mod primitive;
 #[cfg(test)]
 mod proptests;
@@ -74,6 +76,9 @@ pub use net::{cidr, inet, CidrCodec, InetCodec};
 pub use nullable::{nullable, Nullable};
 #[cfg(feature = "numeric")]
 pub use numeric::{numeric, NumericCodec};
+#[cfg(feature = "postgis")]
+#[cfg_attr(docsrs, doc(cfg(feature = "postgis")))]
+pub use postgis::{Geography, Geometry, SpatialKind, Srid};
 pub use primitive::{
     bool, bpchar, bytea, float4, float8, int2, int4, int8, text, varchar, BoolCodec, BpcharCodec,
     ByteaCodec, Float4Codec, Float8Codec, Int2Codec, Int4Codec, Int8Codec, TextCodec, VarcharCodec,
@@ -91,7 +96,7 @@ pub use uuid::{uuid, UuidCodec};
 use bytes::Bytes;
 
 use crate::error::Result;
-use crate::types::Oid;
+use crate::types::{self, Oid, Type};
 
 /// Postgres wire format code: `0` = text, `1` = binary.
 pub const FORMAT_TEXT: i16 = 0;
@@ -107,7 +112,15 @@ pub trait Encoder<A>: Send + Sync {
     fn encode(&self, value: &A, params: &mut Vec<Option<Vec<u8>>>) -> Result<()>;
 
     /// OIDs of the parameter slots this encoder produces, in order.
+    ///
+    /// Dynamic extension codecs return `0` for slots whose concrete OID is
+    /// resolved from [`Encoder::types`] when the statement is prepared.
     fn oids(&self) -> &'static [Oid];
+
+    /// Richer type metadata for the parameter slots this encoder produces.
+    fn types(&self) -> &'static [Type] {
+        types::types_for_oids(self.oids())
+    }
 
     /// Postgres format codes for parameter slots, in order. Each element
     /// is `0` (text) or `1` (binary). Default: text for all.
@@ -132,7 +145,15 @@ pub trait Decoder<A>: Send + Sync {
     fn n_columns(&self) -> usize;
 
     /// OIDs of consumed columns, in order. `oids().len() == n_columns()`.
+    ///
+    /// Dynamic extension codecs return `0` for slots whose concrete OID is
+    /// resolved from [`Decoder::types`] when validating a prepared statement.
     fn oids(&self) -> &'static [Oid];
+
+    /// Richer type metadata for the columns this decoder consumes.
+    fn types(&self) -> &'static [Type] {
+        types::types_for_oids(self.oids())
+    }
 
     /// Postgres format codes for result columns, in order. Each element
     /// is `0` (text) or `1` (binary). Default: text for all.

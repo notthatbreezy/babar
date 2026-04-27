@@ -11,7 +11,7 @@ use crate::codec::{Decoder, Encoder};
 use crate::error::{Error, Result};
 use crate::query::{Command as QueryCommand, Fragment, Origin, Query};
 use crate::telemetry;
-use crate::types::Oid;
+use crate::types::{Oid, Type};
 
 struct PreparedStatement<A> {
     name: String,
@@ -54,6 +54,10 @@ impl<A> PreparedStatement<A> {
 
     fn param_oids(&self) -> &'static [Oid] {
         self.fragment.param_oids()
+    }
+
+    fn param_types(&self) -> &'static [Type] {
+        self.fragment.param_types()
     }
 
     fn encode(&self, args: &A) -> Result<Vec<Option<Vec<u8>>>> {
@@ -194,9 +198,19 @@ impl<A, B> PreparedQuery<A, B> {
         self.statement.param_oids()
     }
 
+    /// Postgres type metadata the encoder declares, in placeholder order.
+    pub fn param_types(&self) -> &'static [Type] {
+        self.statement.param_types()
+    }
+
     /// Postgres OIDs the decoder expects, in column order.
     pub fn output_oids(&self) -> &'static [Oid] {
         self.decoder.oids()
+    }
+
+    /// Postgres type metadata the decoder expects, in column order.
+    pub fn output_types(&self) -> &'static [Type] {
+        self.decoder.types()
     }
 
     /// Number of columns the decoder expects.
@@ -293,6 +307,11 @@ impl<A> PreparedCommand<A> {
     /// Postgres OIDs the encoder declares, in placeholder order.
     pub fn param_oids(&self) -> &'static [Oid] {
         self.statement.param_oids()
+    }
+
+    /// Postgres type metadata the encoder declares, in placeholder order.
+    pub fn param_types(&self) -> &'static [Type] {
+        self.statement.param_types()
     }
 
     /// Explicitly close this prepared statement.

@@ -18,7 +18,7 @@ pub use fragment::{Fragment, Origin};
 use std::sync::Arc;
 
 use crate::codec::{Decoder, Encoder};
-use crate::types::Oid;
+use crate::types::{Oid, Type};
 
 /// A statement that returns rows. `A` is the parameter tuple, `B` is the
 /// per-row output type produced by the decoder.
@@ -39,7 +39,7 @@ impl<A, B> Query<A, B> {
         E: Encoder<A> + Send + Sync + 'static,
         D: Decoder<B> + Send + Sync + 'static,
     {
-        let n_params = encoder.oids().len();
+        let n_params = encoder.types().len();
         Self::new(
             Fragment::__from_parts(sql, encoder, n_params, None),
             decoder,
@@ -80,9 +80,19 @@ impl<A, B> Query<A, B> {
         self.fragment.param_oids()
     }
 
+    /// Postgres type metadata the encoder declares, in placeholder order.
+    pub fn param_types(&self) -> &'static [Type] {
+        self.fragment.param_types()
+    }
+
     /// Postgres OIDs the decoder expects, in column order.
     pub fn output_oids(&self) -> &'static [Oid] {
         self.decoder.oids()
+    }
+
+    /// Postgres type metadata the decoder expects, in column order.
+    pub fn output_types(&self) -> &'static [Type] {
+        self.decoder.types()
     }
 
     /// Number of columns the decoder expects.
@@ -108,7 +118,7 @@ impl<A> Command<A> {
     where
         E: Encoder<A> + Send + Sync + 'static,
     {
-        let n_params = encoder.oids().len();
+        let n_params = encoder.types().len();
         Self::new(Fragment::__from_parts(sql, encoder, n_params, None))
     }
 
@@ -137,6 +147,11 @@ impl<A> Command<A> {
         self.fragment.param_oids()
     }
 
+    /// Postgres type metadata the encoder declares, in placeholder order.
+    pub fn param_types(&self) -> &'static [Type] {
+        self.fragment.param_types()
+    }
+
     /// The underlying SQL fragment and parameter codec.
     pub fn fragment(&self) -> &Fragment<A> {
         &self.fragment
@@ -147,7 +162,45 @@ impl<A> Command<A> {
 mod tests {
     use super::*;
     use crate::codec::{bool, int4, text};
+    use crate::error::Result;
     use crate::types;
+    use bytes::Bytes;
+
+    #[derive(Clone, Copy)]
+    struct DynamicGeometryCodec;
+
+    impl Encoder<()> for DynamicGeometryCodec {
+        fn encode(&self, _value: &(), params: &mut Vec<Option<Vec<u8>>>) -> Result<()> {
+            params.push(Some(Vec::new()));
+            Ok(())
+        }
+
+        fn oids(&self) -> &'static [types::Oid] {
+            &[0]
+        }
+
+        fn types(&self) -> &'static [Type] {
+            &[types::GEOMETRY_TYPE]
+        }
+    }
+
+    impl Decoder<()> for DynamicGeometryCodec {
+        fn decode(&self, _columns: &[Option<Bytes>]) -> Result<()> {
+            Ok(())
+        }
+
+        fn n_columns(&self) -> usize {
+            1
+        }
+
+        fn oids(&self) -> &'static [types::Oid] {
+            &[0]
+        }
+
+        fn types(&self) -> &'static [Type] {
+            &[types::GEOMETRY_TYPE]
+        }
+    }
 
     #[test]
     fn query_raw_carries_metadata() {
@@ -193,5 +246,19 @@ mod tests {
         assert_eq!(cmd.sql(), "DELETE FROM t WHERE id = $1");
         assert_eq!(cmd.param_oids(), &[types::INT4][..]);
         assert_eq!(cmd.origin(), Some(Origin::new("demo.rs", 2, 4)));
+    }
+
+    #[test]
+    fn query_exposes_dynamic_type_metadata() {
+        let q: Query<(), ()> = Query::raw(
+            "SELECT $1::geometry",
+            DynamicGeometryCodec,
+            DynamicGeometryCodec,
+        );
+
+        assert_eq!(q.param_oids(), &[0]);
+        assert_eq!(q.output_oids(), &[0]);
+        assert_eq!(q.param_types(), &[types::GEOMETRY_TYPE]);
+        assert_eq!(q.output_types(), &[types::GEOMETRY_TYPE]);
     }
 }
