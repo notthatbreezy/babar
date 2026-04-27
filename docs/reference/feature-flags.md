@@ -46,7 +46,7 @@ compile time and binary size small.
 | `pgvector` | `babar::codec::pgvector` | `Vector` for the `pgvector` extension | — |
 | `postgis` | `babar::codec::postgis` | `geometry::<T>()` / `geography::<T>()` over `geo-types` | `geo-types` |
 
-Pick what your schema actually uses. A common starting set for an
+Pick what your application actually uses. A common starting set for an
 HTTP service:
 
 ```toml
@@ -55,8 +55,7 @@ babar = { version = "...", features = ["rustls", "uuid", "time", "json", "numeri
 
 ## Default features
 
-`default = ["rustls"]`. Disable defaults if you want to ship with
-`native-tls`, or with TLS off entirely:
+Disable defaults if you want to ship with `native-tls`, or with TLS off entirely:
 
 ```toml
 babar = { version = "...", default-features = false, features = ["native-tls", "uuid"] }

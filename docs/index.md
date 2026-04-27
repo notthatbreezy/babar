@@ -5,7 +5,7 @@
 
 ![The Babar brand sheet — wordmark, palette, and the herd at work](assets/img/babar-brand-sheet.png)
 
-`babar` is a typed, async Postgres driver for Tokio that speaks the wire
+`babar` is a typed, async Postgres driver for Tokio that speaks the PostgreSQL wire
 protocol directly. No `libpq`. No magic. Just queries, codecs, and clear
 errors — composed the way you'd compose any other Rust value.
 
@@ -18,8 +18,8 @@ cargo add babar
 | Pillar | Headline | What you get |
 |---|---|---|
 | **Ergonomic by Design** | Read it once, understand it forever. | Queries are typed values. Codecs are imported by name. There is one way to start a transaction, one way to bind a parameter, one way to run a migration. |
-| **Postgres at Heart** | The wire protocol, faithfully. | Extended-protocol prepares, binary results, SCRAM-SHA-256, channel binding over TLS, and binary `COPY FROM STDIN` for bulk ingest. No translation layer between you and the server. |
-| **Built for the Herd** | Predictable under load. | A single background task owns the socket and serializes wire I/O, so every public call is cancellation-safe. Pool, statement cache, and `tracing` spans are first-class — not bolted on later. |
+| **Postgres at Heart** | Why use any other database? | Extended-protocol prepares, binary results, SCRAM-SHA-256, channel binding over TLS, and binary `COPY FROM STDIN` for bulk ingest. No translation layer between you and the server. |
+| **Built for the Herd** | Predictable under load. | A single background task owns the socket and serializes wire I/O, so every public call is cancellation-safe. Pool, statement cache, and `tracing` spans are first-class. |
 
 ## Connect, type, query
 
@@ -55,10 +55,10 @@ async fn main() -> babar::Result<()> {
 }
 ```
 
-You wrote three things: a `Config` describing where to connect, a
-`Query<A, B>` describing the round-trip (parameters in, rows out), and
-the call that ties them together. The codec tuple `(int4, text)`
-**is** the schema of the rows you'll get back.
+You wrote three things: 
+ 1. a `Config` describing where to connect
+ 2. a `Query<A, B>` describing the round-trip (parameters in, rows out)
+ 3. the codec tuple ties it all together:  `(int4, text)` **is** the schema of the rows you'll get back
 
 ## Where to go next
 
@@ -66,13 +66,9 @@ the call that ties them together. The codec tuple `(int4, text)`
 > first — a one-page tour of where babar sits and what makes it
 > distinctive.
 
-- **[Prerequisites →](getting-started/prerequisites.md)** — one
-  `docker run` for a Postgres that logs every byte back at you.
-- **[Your first query →](getting-started/first-query.md)** — the same
-  flow, walked one line at a time, with that Postgres handy.
-- **[The Book of Babar →](book/01-connecting.md)** — thirteen short
-  chapters covering connecting, querying, transactions, pooling, COPY,
+- **[Prerequisites →](getting-started/prerequisites.md)** — start a postgreSQL instance locally and see every query, command, and operation `babar` makes to the server.
+- **[Your first query →](getting-started/first-query.md)** — make your first query, with explanations of every step broken down along the way.
+- **[The Book of Babar →](book/01-connecting.md)** — covers everything A-Z when it comes to babary: connecting, querying, transactions, pooling, COPY,
   migrations, errors, codecs, web services, TLS, and observability.
-- **[Reference →](reference/codecs.md)** — codec catalog, error
-  catalog, feature flags, configuration knobs.
-- **[Why babar →](explanation/why-babar.md)** — the design notes.
+- **[Reference →](reference/codecs.md)** — codec catalog, error catalog, feature flags, configuration knobs.
+- **[Why babar →](explanation/why-babar.md)** — understand the philosophy behind the design and what makes babar different.

@@ -43,7 +43,7 @@ call would need to lock against every other public call, and Tokio
 cancellation would tear half-finished protocol exchanges apart.
 Instead, babar puts the protocol state machine inside the task, and
 the public API becomes "send a `Command`, await the reply." The cost
-of an extra `mpsc` hop buys two large benefits.
+of an extra `mpsc` hop buys two large benefits: cancellation safety and concurrency on a single connection.
 
 ## Cancellation safety
 

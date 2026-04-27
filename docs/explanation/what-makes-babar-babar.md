@@ -24,17 +24,16 @@ for.
 
 There is no `libpq`, no `tokio-postgres` underneath, and no abstraction
 layer that pretends Postgres is a generic SQL backend. babar speaks the
-Postgres v3 protocol directly on top of Tokio. That is the whole stack.
+Postgres v3 protocol directly on top of Tokio.
 
-This is a deliberate choice. A driver that supports four databases has
-to find the lowest common denominator across four protocols. babar
+A driver that supports four databases has to find the lowest common denominator across four protocols. babar
 picks one protocol and exposes its shape — extended-protocol prepare,
 binary results, channel binding, binary `COPY FROM STDIN` — without
 flattening it.
 
 ## What's distinctive
 
-Four properties show up everywhere in the API and why I created it.
+Four properties show up everywhere in the API.
 
 ### 1. The background driver task
 

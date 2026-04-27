@@ -6,8 +6,7 @@
 
 ## Variants
 
-Every `babar::Error` variant. There is no `Error::kind()` — match on
-the variant directly.
+Every `babar::Error` variant match on error directly.
 
 | Variant | Shape | When it fires |
 |---|---|---|
