@@ -17,7 +17,7 @@ cargo deny check
 cargo semver-checks
 RUSTDOCFLAGS="-D warnings" cargo doc
 cargo tarpaulin          # coverage — informational, not gated
-cargo msrv               # MSRV enforcement (likely Rust 1.75+ for async-trait-in-trait)
+cargo msrv               # MSRV enforcement (Rust 1.85+ for edition2024 transitive deps)
 ```
 
 Integration tests use hand-rolled Docker containers (including a PostGIS image when needed) across Postgres 14–17 scenarios. Property-based tests use `proptest` (256 cases by default, 2048 on nightly). UI/macro tests use `trybuild` with golden `.stderr` files in `macros/tests/`.
@@ -111,7 +111,7 @@ pub const text: TextCodec;
 - **E** (M1): Zero-param type — Rust's unit type `()`. `Query<(), B>` reads
   as "no parameters"; no new public vocabulary to teach. Skunk's `Void`
   exists to dodge Scala's bulky `Unit`; Rust doesn't have that problem.
-- **F** (M0): MSRV — Rust 1.75.
+- **F** (M0): MSRV — Rust 1.85 (edition2024 stabilization; required by transitive deps in the `toml` family).
 
 ## Open decisions (resolve before the indicated milestone)
 
