@@ -37,11 +37,13 @@ struct FixtureDir {
 
 impl FixtureDir {
     fn create() -> Self {
-        let path = PathBuf::from(format!(
-            "/home/chris-brown/projects/babar/crates/core/tests/.tls-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/test-artifacts")
+            .join(format!(
+                "tls-{}-{}",
+                std::process::id(),
+                rand::random::<u64>()
+            ));
         fs::create_dir_all(&path).expect("create tls fixture dir");
         Self { path }
     }
