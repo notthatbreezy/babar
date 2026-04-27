@@ -32,7 +32,7 @@ async fn main() -> babar::Result<()> {
     .await?;
 
     // Each acquire() hands you a connection scoped to the binding.
-    let conn = pool.acquire().await?;                                 // type: PooledConnection<'_>
+    let conn = pool.acquire().await?;                                 // type: PoolConnection
     let create: Command<()> = Command::raw(
         "CREATE TEMP TABLE pool_demo (id int4 PRIMARY KEY, note text NOT NULL)",
         (),
@@ -66,11 +66,11 @@ async fn main() -> babar::Result<()> {
 
 `Pool::new(config, pool_config)` opens up to `max_size` background
 connections, keeping at least `min_idle` warm and ready. `pool.acquire()`
-hands you a `PooledConnection` that behaves like a `Session` —
+hands you a `PoolConnection` that behaves like a `Session` —
 `execute`, `query`, `prepare_command`, `prepare_query`,
 `stream_with_batch_size`, `transaction`, all of it.
 
-Drop the `PooledConnection` and the pool reclaims it. Drop the
+Drop the `PoolConnection` and the pool reclaims it. Drop the
 `Pool` itself and outstanding handles continue working until they're
 dropped, at which point the connections are closed.
 
@@ -80,7 +80,7 @@ dropped, at which point the connections are closed.
 |---|---|
 | `min_idle` | Minimum number of warm connections kept open. |
 | `max_size` | Hard ceiling on simultaneous connections (idle + in-use). |
-| `acquire_timeout` | How long `pool.acquire()` waits before returning `PoolError::AcquireTimeout`. |
+| `acquire_timeout` | How long `pool.acquire()` waits before returning `PoolError::Timeout`. |
 | `idle_timeout` | How long an idle connection lingers before being closed. |
 | `max_lifetime` | How long any connection (idle or in-use) lives before being recycled. |
 | `health_check` | Test to apply when checking out: `HealthCheck::None`, `HealthCheck::Ping`, or a custom probe. |
@@ -92,7 +92,7 @@ and Postgres' own `pg_stat_activity` for connection churn.
 
 ## Pooled prepared statements
 
-Each `PooledConnection` is a real, distinct Postgres connection.
+Each `PoolConnection` is a real, distinct Postgres connection.
 Prepared statements live on the server, attached to *that* connection.
 That has two consequences worth holding in your head:
 
@@ -106,9 +106,9 @@ That has two consequences worth holding in your head:
 
 ## Errors that come from the pool itself
 
-`pool.acquire()` returns `Result<PooledConnection<'_>, PoolError>`.
+`pool.acquire()` returns `Result<PoolConnection, PoolError>`.
 `PoolError::AcquireFailed(babar::Error)` wraps the underlying connect
-error; `PoolError::AcquireTimeout` is its own variant. Translate them
+error; `PoolError::Timeout` is its own variant. Translate them
 into your service's error type at the boundary — the `pool` example
 shows the pattern.
 
