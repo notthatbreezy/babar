@@ -47,9 +47,7 @@ impl MigrationExecutor for Session {
         Session::simple_query_raw(self, "BEGIN").await?;
         for statement in statements {
             if let Err(err) = Session::simple_query_raw(self, statement).await {
-                Session::simple_query_raw(self, "ROLLBACK")
-                    .await
-                    .map(|_| ())?;
+                let _ = Session::simple_query_raw(self, "ROLLBACK").await;
                 return Err(err);
             }
         }
@@ -67,9 +65,7 @@ impl MigrationExecutor for PoolConnection {
         PoolConnection::simple_query_raw(self, "BEGIN").await?;
         for statement in statements {
             if let Err(err) = PoolConnection::simple_query_raw(self, statement).await {
-                PoolConnection::simple_query_raw(self, "ROLLBACK")
-                    .await
-                    .map(|_| ())?;
+                let _ = PoolConnection::simple_query_raw(self, "ROLLBACK").await;
                 return Err(err);
             }
         }
@@ -144,8 +140,8 @@ fn finish_locked_operation<T>(
     unlock: crate::Result<()>,
 ) -> crate::Result<T> {
     match (outcome, unlock) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(err), Ok(()) | Err(_)) | (Ok(_), Err(err)) => Err(err),
+        (Ok(value), Ok(()) | Err(_)) => Ok(value),
+        (Err(err), Ok(()) | Err(_)) => Err(err),
     }
 }
 
