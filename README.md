@@ -2,7 +2,7 @@
 
 Typed, async PostgreSQL driver for Tokio that speaks the PostgreSQL wire protocol directly.
 
-`babar` is intentionally explicit: queries and commands are typed values, codecs are imported values, SQL composition is opt-in via `sql!`, `#[derive(Codec)]` infers common struct fields and lets `#[pg(codec = "...")]` override the outliers, and a background driver task owns the socket so public API calls stay cancellation-safe.
+`babar` is explicit: queries and commands are typed values, codecs are imported values, SQL composition is opt-in via `sql!`, `#[derive(Codec)]` infers common struct fields and lets `#[pg(codec = "...")]` override the outliers, and a background driver task owns the socket so public API calls stay cancellation-safe.
 
 ## Highlights
 
@@ -28,9 +28,9 @@ These ship in the core crate with no extra Cargo feature flag:
 | nullability | `nullable(codec)` |
 | composition | tuple codecs (arities 1-16) |
 
-## Optional feature flags
+## Optional codecs enabled via feature flags
 
-| Feature | Purpose | Default |
+| Feature | Purpose | On by Default |
 | --- | --- | --- |
 | `rustls` | TLS with pure-Rust certificates / SNI / verification | ✅ |
 | `native-tls` | Alternate TLS backend using the platform stack | ❌ |
@@ -190,10 +190,10 @@ cargo +stable test --all-features
 # 5. Hygiene (CI: hygiene job)
 cargo deny check
 cargo audit
-cargo msrv verify -- cargo check
-cargo semver-checks
-cargo publish --dry-run -p babar-macros
-cargo publish --dry-run -p babar
+cargo msrv verify --manifest-path crates/core/Cargo.toml --all-features -- cargo check --all-features
+cargo msrv verify --manifest-path crates/macros/Cargo.toml -- cargo check
+cargo semver-checks --workspace --baseline-rev origin/main
+cargo publish --dry-run --allow-dirty -p babar-macros
 
 # 6. mdbook builds clean (CI: pages workflow)
 mdbook build
@@ -226,7 +226,9 @@ moved).
   toolchains don't know about.
 - **`cargo publish --dry-run` failure** — usually a missing `description`,
   `license`, or `repository` field, or a path-only dependency on a workspace
-  crate without a corresponding `version =`. Check `crates/*/Cargo.toml`.
+  crate without a corresponding `version =`. `babar-macros` can be verified
+  directly; `babar` itself must wait until `babar-macros` is visible in the
+  crates.io index.
 
 ### Continuous integration
 
@@ -251,17 +253,6 @@ material; the tutorial owns the end-to-end walkthrough.
 
 The same tutorial is published via GitHub Pages at
 [`https://babar.notthatbreezy.io`](https://babar.notthatbreezy.io).
-
-### GitHub Pages publishing notes
-
-Repository-side Pages publishing is configured in
-[`.github/workflows/pages.yml`](.github/workflows/pages.yml) using mdBook and
-the custom-domain `CNAME` file. The remaining manual steps are:
-
-1. In GitHub repository settings, enable GitHub Pages and select **GitHub Actions** as the source.
-2. In the Pages settings, set and verify the custom domain `babar.notthatbreezy.io` if GitHub has not already picked it up from `CNAME`.
-3. In DNS for `notthatbreezy.io`, create the `CNAME`/alias for `babar.notthatbreezy.io` so it resolves to `notthatbreezy.github.io` (or the GitHub Pages target GitHub shows for the repo).
-4. After DNS propagates, confirm the Pages deployment succeeds and HTTPS is active for the custom domain.
 
 ## Compile-time SQL verification
 
@@ -441,36 +432,30 @@ cargo run -p babar --example todo_cli -- --help
 cargo run -p babar --example axum_service
 ```
 
-## Comparison
+## Choosing a Rust Postgres tool
 
-### vs `sqlx`
+Different Rust data-access libraries optimize for different trade-offs. `babar`
+is aimed at teams that want a Postgres-specific client with explicit typed query
+values, explicit codecs, and early validation around prepare-time schema drift.
 
-What `babar` does better:
+| If you care most about... | `babar` | `sqlx` | `tokio-postgres` |
+| --- | --- | --- | --- |
+| Database scope | Postgres only | Postgres, MySQL, SQLite, MSSQL | Postgres only |
+| Query model | Typed runtime `Query<P, R>` / `Command<P>` values | Raw SQL plus compile-time macros | Raw SQL strings plus codec traits |
+| Compile-time SQL checking | Optional, online-only macros | Strongest emphasis here, including offline workflows | Minimal |
+| Runtime explicitness | Very explicit codecs and row shapes | More macro- and trait-driven | More trait-driven |
+| Feature coverage / maturity today | Focused `0.1` surface | Broad ecosystem and tooling | Most battle-tested async Postgres driver in Rust |
+| Best fit | Postgres-specific apps that want explicit typed values | Teams prioritizing compile-time SQL workflows or multi-database support | Teams prioritizing mature Postgres coverage and established operational history |
 
-- explicit runtime codec values instead of trait-driven inference
-- normal builds do not require a compile-time database connection or offline cache
-- SQL-origin-aware runtime errors with caret rendering
-
-What `sqlx` does better:
-
-- broader compile-time checked query macros, including offline-cache workflows
-- broader database coverage
-- much larger ecosystem and production maturity today
-
-### vs `tokio-postgres`
-
-What `babar` does better:
-
-- typed query/command values are the API, not a thin wrapper on raw SQL strings
-- explicit prepare-time schema validation with codec metadata
-- richer user-facing error rendering and `sql!` origin tracking
-
-What `tokio-postgres` does better:
-
-- battle-tested stability and wider operational history
-- broader feature coverage today (notably `COPY TO`, text/CSV COPY, cancel, and LISTEN/NOTIFY style surface)
-- no need to buy into babar's explicit codec model
+None of those are "wrong" choices. If your team prefers compile-time SQL by
+default, `sqlx` is a strong fit. If you need the widest async Postgres feature
+coverage today, `tokio-postgres` remains the reference point. If you want a
+single Postgres-focused API where query shape and codec shape stay visible in
+the types, `babar` is designed for that workflow.
 
 ## Status
 
-`babar` is ready for a `0.1.0` release candidate in this repository. Remaining release work that cannot be completed purely in-repo (for example, publishing to crates.io or pushing a Git tag) is captured in `RELEASE.md`.
+`babar` `0.1.0` is now published on crates.io alongside `babar-macros`, and the
+book is published via GitHub Pages at
+[`https://babar.notthatbreezy.io`](https://babar.notthatbreezy.io). `RELEASE.md`
+remains the maintenance runbook for future releases.

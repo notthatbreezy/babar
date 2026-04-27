@@ -201,7 +201,7 @@ are real needs and there are good answers for them.
 - [Design principles](./design-principles.md) — the rule book.
 - [The background driver task](./driver-task.md) — how the task,
   channels, and shutdown work.
-- [Comparisons](./comparisons.md) — head-to-head with
-  `tokio-postgres`, `sqlx`, and `diesel`.
+- [Comparisons](./comparisons.md) — a trade-off-focused comparison table
+  for `tokio-postgres`, `sqlx`, and `diesel`.
 - [Roadmap](./roadmap.md) — what's shipped, what's next, what's
   deferred by design.

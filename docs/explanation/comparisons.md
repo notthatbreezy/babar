@@ -2,92 +2,60 @@
 
 > See also: [Why babar](./why-babar.md), [Design principles](./design-principles.md).
 
-> **Honest about trade-offs.** Pick the tool that fits the job. babar
-> is the right fit when you want one obvious way to do things and
-> you'd rather see a typed value than a clever macro.
+> **Trade-offs, not scorekeeping.** These tools solve overlapping
+> problems from different angles. The useful question is which shape
+> fits your team, database scope, and operating model.
 
-The comparisons below name three other Rust Postgres clients —
-`tokio-postgres`, `sqlx`, and `diesel`. The wording is taken from the
-project's own `SITE-COPY.md` band where it exists, and tightened to
-fit reference prose. It is meant to be balanced; if a claim here is
-out of date or unfair, file an issue.
+The table below compares `babar` with three common Rust choices:
+`tokio-postgres`, `sqlx`, and `diesel`.
 
-## babar vs `tokio-postgres`
+| Dimension | `babar` | `tokio-postgres` | `sqlx` | `diesel` |
+| --- | --- | --- | --- | --- |
+| Primary shape | Typed Postgres client | Async Postgres driver | Async SQL toolkit | ORM / query DSL |
+| Database scope | Postgres only | Postgres only | Multiple databases | Multiple databases |
+| Query API | Typed runtime `Query<P, R>` / `Command<P>` values | Raw SQL strings plus codec traits | Raw SQL, macros, row mapping helpers | Schema-aware DSL and derives |
+| SQL checking style | Optional online verification plus prepare-time validation | Mostly runtime | Strong compile-time emphasis | Schema-driven compile-time DSL |
+| Explicit codec model | Yes, codecs are imported values | Usually trait-based (`ToSql` / `FromSql`) | Mostly inferred / mapped through traits and macros | Mostly hidden behind derives / schema mapping |
+| Current maturity | Newer, intentionally focused surface | Most battle-tested async Postgres option | Large ecosystem and polished tooling | Mature ORM ecosystem |
+| Strong fit | Postgres-specific apps that want explicit typed values and protocol visibility | Teams that want established async Postgres coverage today | Teams that want compile-time SQL workflows or multi-database support | Teams that want an ORM and schema-driven query construction |
 
-`tokio-postgres` is the reference Tokio-native Postgres client — the
-async cousin of `postgres-protocol`, which babar also depends on.
+## Reading the trade-offs
 
-**Where babar wins**: typed `Query<P, R>` / `Command<P>` values are
-the API, codecs are imported by name as runtime values, prepare-time
-schema validation surfaces drift as `Error::ColumnAlignment` /
-`Error::SchemaMismatch`, and errors carry SQL-origin caret rendering.
+### `babar` and `tokio-postgres`
 
-**Where `tokio-postgres` wins**: years of production hardening,
-broader feature coverage today (notably `COPY TO`, text/CSV `COPY`,
-`LISTEN`/`NOTIFY`, out-of-band cancellation), and you don't have to
-buy into the explicit codec model — `to_sql` / `from_sql` traits on
-your types are enough.
+These two are the closest in scope: both are Postgres-specific async
+clients. The trade-off is mostly about API shape.
 
-**Pick `tokio-postgres` when**: you need a feature babar has
-[deferred](./roadmap.md), you're already comfortable with
-`to_sql`/`from_sql`, or you want the most battle-tested option in
-the Rust Postgres ecosystem.
+- Choose **`babar`** when you want query and row shape visible in the
+  type signature, explicit codec values, prepare-time schema checks,
+  and richer SQL-origin error rendering.
+- Choose **`tokio-postgres`** when you want the most established async
+  Postgres driver in Rust today, broader production history, or a
+  feature babar still [defers](./roadmap.md) such as broader `COPY`,
+  `LISTEN` / `NOTIFY`, or cancellation surface.
 
-**Pick babar when**: you want the row and parameter shape visible
-in the type signature, you want `validate-early` semantics on
-prepare, and you'd rather have one obvious way to start a
-transaction than several to choose between.
+### `babar` and `sqlx`
 
-## babar vs `sqlx`
+These overlap most for teams that like hand-written SQL but care about
+types and validation.
 
-`sqlx` is a multi-database (Postgres, MySQL, SQLite, MSSQL)
-async client with a strong focus on compile-time SQL verification.
+- Choose **`babar`** when you want Postgres-specific APIs, explicit
+  runtime codecs, and normal builds that do not depend on compile-time
+  database connectivity.
+- Choose **`sqlx`** when compile-time SQL checking is the center of your
+  workflow, you want offline-cache tooling, or you need a single client
+  across multiple databases.
 
-**Where babar wins**: explicit runtime codecs (you can write
-`Query::raw` without any dev-loop database), no compile-time database
-required for normal builds, SQL-origin caret rendering on every
-error, and a single Postgres focus that means the protocol surface
-isn't an abstraction over four backends.
+### `babar` and `diesel`
 
-**Where `sqlx` wins**: broader compile-time macros (its `query!`
-introspects against a live database with very polished tooling),
-broader database coverage (it's not just Postgres), a larger
-ecosystem, and a longer production track record.
+Here the trade-off is more architectural than incremental.
 
-**Pick `sqlx` when**: you want compile-time-checked SQL by default,
-you target multiple databases, or you value a larger third-party
-ecosystem.
-
-**Pick babar when**: you target Postgres specifically, you want the
-typed `Query<P, R>` value to be the API rather than a macro
-expansion, and you prefer the validate-early-against-the-server
-discipline at prepare time over compile-time DSN-driven validation.
-
-## babar vs `diesel`
-
-`diesel` is the established synchronous-by-default Rust ORM, with
-first-class support for Postgres, MySQL, and SQLite. Async support
-exists via `diesel-async`.
-
-**Where babar wins**: babar is a *typed Postgres client*, not an
-ORM. There is no DSL between you and SQL; `Query::raw` and the
-`sql!` macro give you composable SQL fragments and the row decoder
-is whatever `Decoder<R>` you supply. Spans, the driver task, and
-the pool are first-class.
-
-**Where `diesel` wins**: a mature schema-aware DSL, schema
-introspection via `diesel print-schema`, an established migration
-story, and an ecosystem of crates built on its `Queryable` /
-`Insertable` traits.
-
-**Pick `diesel` when**: you want an ORM with schema-driven query
-construction, your team prefers a DSL over hand-written SQL, or
-you target a non-Postgres backend.
-
-**Pick babar when**: you want SQL to be SQL, you want types to ride
-along on the query and command values, and you want the protocol
-seam (codecs, prepare, COPY, transactions) to be the API surface
-rather than a layer underneath a DSL.
+- Choose **`babar`** when you want SQL to stay SQL and prefer the
+  protocol seam — codecs, prepare, COPY, transactions, pooling — to be
+  the visible API.
+- Choose **`diesel`** when you want an ORM, schema-driven query
+  construction, and a workflow built around derives, generated schema,
+  and migration tooling.
 
 ## Summary
 

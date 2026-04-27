@@ -64,7 +64,7 @@ compile-time SQL verification.
   protocol, validate-early, no-unsafe.
 - [The driver task](./driver-task.md) — the per-connection background
   task that makes every call cancellation-safe.
-- [Comparisons](./comparisons.md) — honest trade-offs against
-  `tokio-postgres`, `sqlx`, and `diesel`.
+- [Comparisons](./comparisons.md) — a trade-off-focused comparison table
+  for `tokio-postgres`, `sqlx`, and `diesel`.
 - [Roadmap](./roadmap.md) — what's in, what's deferred, and where the
   project is going.
