@@ -38,17 +38,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo install cargo-deny cargo-audit cargo-semver-checks cargo-msrv
+      - run: cargo install --locked cargo-deny cargo-audit cargo-semver-checks cargo-msrv
       - run: cargo deny check
       - run: cargo audit
-      - run: cargo msrv verify -- cargo check
-      - run: cargo semver-checks
-      - run: cargo publish --dry-run -p babar-macros
-      - run: cargo publish --dry-run -p babar
+      - run: cargo msrv verify --manifest-path crates/core/Cargo.toml --all-features -- cargo check --all-features
+      - run: cargo msrv verify --manifest-path crates/macros/Cargo.toml -- cargo check
+      - run: cargo semver-checks --workspace --baseline-rev origin/main
+      - run: cargo publish --dry-run --allow-dirty -p babar-macros
 
   miri:
     if: github.event_name == 'schedule'

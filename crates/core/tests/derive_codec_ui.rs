@@ -57,16 +57,21 @@ babar = {{ path = "{}" }}
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    for needle in [
-        "Int4Codec: Encoder<String>",
-        "Int4Codec: Decoder<String>",
-        "expected `i32`, found `String`",
-    ] {
+    for needle in ["Int4Codec: Encoder<String>", "Int4Codec: Decoder<String>"] {
         assert!(
             stderr.contains(needle),
             "wrong_type fixture stderr should contain `{needle}`\nfull stderr:\n{stderr}",
         );
     }
+    assert!(
+        stderr.contains("mismatched types"),
+        "wrong_type fixture stderr should mention mismatched types\nfull stderr:\n{stderr}",
+    );
+    assert!(
+        (stderr.contains("expected `i32`") && stderr.contains("found `String`"))
+            || (stderr.contains("expected `&i32`") && stderr.contains("found `&String`")),
+        "wrong_type fixture stderr should describe the i32/String type mismatch\nfull stderr:\n{stderr}",
+    );
 }
 
 fn create_temp_project_dir() -> PathBuf {
