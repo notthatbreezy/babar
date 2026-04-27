@@ -1,7 +1,6 @@
 //! TLS transport helpers.
 
 use std::fs::File;
-use std::io::BufReader;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -173,7 +172,7 @@ fn tls_name(config: &Config) -> Result<String> {
 
 #[cfg(feature = "rustls")]
 async fn upgrade_rustls(stream: TcpStream, config: &Config) -> Result<AnyStream> {
-    use rustls::pki_types::{CertificateDer, ServerName};
+    use rustls::pki_types::{pem::PemObject, CertificateDer, ServerName};
     use rustls::{ClientConfig, RootCertStore};
     use tokio_rustls::TlsConnector;
 
@@ -187,8 +186,8 @@ async fn upgrade_rustls(stream: TcpStream, config: &Config) -> Result<AnyStream>
         let _ = roots.add(cert);
     }
     if let Some(path) = config.tls_root_cert_path_ref() {
-        let mut reader = BufReader::new(File::open(path).map_err(Error::Io)?);
-        let certs = rustls_pemfile::certs(&mut reader)
+        let file = File::open(path).map_err(Error::Io)?;
+        let certs = CertificateDer::pem_reader_iter(file)
             .collect::<std::result::Result<Vec<CertificateDer<'static>>, _>>()
             .map_err(|err| Error::Config(format!("failed to read PEM root certificate: {err}")))?;
         for cert in certs {

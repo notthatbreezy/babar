@@ -20,7 +20,6 @@ rustls = [
     "dep:rustls",
     "dep:tokio-rustls",
     "dep:rustls-native-certs",
-    "dep:rustls-pemfile",
 ]
 native-tls = ["dep:native-tls", "dep:tokio-native-tls"]
 uuid = ["dep:uuid"]
@@ -51,7 +50,6 @@ futures-core = { workspace = true }
 futures-util = { workspace = true, features = ["std"] }
 thiserror = { workspace = true }
 tracing = { workspace = true, features = ["attributes", "std"] }
-async_fn_traits = "0.1"
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
@@ -63,7 +61,6 @@ fallible-iterator = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 rustls-native-certs = { workspace = true, optional = true }
-rustls-pemfile = { workspace = true, optional = true }
 native-tls = { workspace = true, optional = true }
 tokio-native-tls = { workspace = true, optional = true }
 

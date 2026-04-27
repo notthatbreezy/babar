@@ -174,6 +174,8 @@
 
 extern crate self as babar;
 
+#[doc(hidden)]
+pub mod async_fn;
 pub(crate) mod auth;
 pub mod codec;
 mod config;

@@ -2,9 +2,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use async_fn_traits::AsyncFnOnce1;
 use tracing::Instrument as _;
 
+use crate::async_fn::AsyncFnOnce1;
 use crate::error::Result;
 use crate::query::{Command, Query};
 use crate::session::{PreparedCommand, PreparedQuery, RowStream, Session};

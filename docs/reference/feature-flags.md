@@ -13,7 +13,7 @@ ones listed in `default = [...]`.
 
 | Feature | What it enables | Default? |
 |---|---|---|
-| `rustls` | The pure-Rust TLS backend (`TlsBackend::Rustls`). Pulls in `rustls`, `tokio-rustls`, `rustls-native-certs`, `rustls-pemfile`. | **yes** |
+| `rustls` | The pure-Rust TLS backend (`TlsBackend::Rustls`). Pulls in `rustls`, `tokio-rustls`, and `rustls-native-certs`. | **yes** |
 | `native-tls` | Platform TLS via `native-tls` + `tokio-native-tls` (Schannel / Secure Transport / OpenSSL). Selectable via `TlsBackend::NativeTls`. | no |
 
 Only one TLS backend is needed at runtime; you can enable both if you
