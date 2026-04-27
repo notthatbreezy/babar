@@ -14,7 +14,21 @@ Typed, async PostgreSQL driver for Tokio that speaks the PostgreSQL wire protoco
 - OpenTelemetry-friendly `tracing` spans: `db.connect`, `db.prepare`, `db.execute`, `db.transaction`
 - TLS via `rustls` (default) or `native-tls`
 
-## Feature matrix
+## Built-in codecs
+
+These ship in the core crate with no extra Cargo feature flag:
+
+| Codec family | Included surface |
+| --- | --- |
+| integers | `int2`, `int4`, `int8` |
+| floating point | `float4`, `float8` |
+| booleans | `bool` |
+| text / strings | `text`, `varchar`, `bpchar` |
+| binary | `bytea` |
+| nullability | `nullable(codec)` |
+| composition | tuple codecs (arities 1-16) |
+
+## Optional feature flags
 
 | Feature | Purpose | Default |
 | --- | --- | --- |
