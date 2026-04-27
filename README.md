@@ -116,6 +116,29 @@ async fn main() -> babar::Result<()> {
 }
 ```
 
+## Tutorial
+
+For a guided build from an empty directory, start with
+[`docs/tutorials/postgres-api-from-scratch.md`](docs/tutorials/postgres-api-from-scratch.md).
+It is the long-form path for readers with basic Rust experience and little
+Tokio background who want to build a small Postgres-backed API with Axum,
+babar, and Dial9-backed observability. The README stays focused on reference
+material; the tutorial owns the end-to-end walkthrough.
+
+The same tutorial is published via GitHub Pages at
+[`https://babar.notthatbreezy.io`](https://babar.notthatbreezy.io).
+
+### GitHub Pages publishing notes
+
+Repository-side Pages publishing is configured in
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml) using mdBook and
+the custom-domain `CNAME` file. The remaining manual steps are:
+
+1. In GitHub repository settings, enable GitHub Pages and select **GitHub Actions** as the source.
+2. In the Pages settings, set and verify the custom domain `babar.notthatbreezy.io` if GitHub has not already picked it up from `CNAME`.
+3. In DNS for `notthatbreezy.io`, create the `CNAME`/alias for `babar.notthatbreezy.io` so it resolves to `notthatbreezy.github.io` (or the GitHub Pages target GitHub shows for the repo).
+4. After DNS propagates, confirm the Pages deployment succeeds and HTTPS is active for the custom domain.
+
 ## Compile-time SQL verification
 
 `babar` keeps `Query::raw` / `Command::raw` as the default runtime path, but it

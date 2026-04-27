@@ -1,0 +1,10 @@
+[book]
+authors = ["babar contributors"]
+language = "en"
+src = "docs"
+title = "babar tutorial"
+
+[output.html]
+default-theme = "navy"
+git-repository-url = "https://github.com/notthatbreezy/babar"
+site-url = "https://babar.notthatbreezy.io/"
