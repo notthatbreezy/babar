@@ -18,8 +18,10 @@ The key design constraint is that `Query::raw` and `Command::raw` are runtime co
 ## Key Decisions
 - **Online only for v1**: verification is available only when a database/config is provided at build time. No offline cache or generated schema snapshot in the first cut.
 - **Optional by configuration**: no DB config means macros fall back to today's normal behavior.
-- **Macro-backed typed verification**: compile-time verification for raw/prepared workflows should come from new typed macros, not from trying to retrofit runtime constructors.
-- **`sql!` stays narrower**: by itself it can verify fragment-level concerns and SQL validity, but full row-shape checking belongs on typed query/command macros that also see decoder metadata.
+- **Verification runs inside `babar-macros`** using a live PostgreSQL metadata probe rather than a separate companion crate in the first version.
+- **Macro-backed typed verification**: compile-time verification for raw/prepared workflows will come from new `query!` / `command!` macros that emit ordinary `Query` / `Command` values.
+- **Verifiable codec DSL in v1**: the verified macro path will initially support a parseable codec subset the proc macro can map to PostgreSQL OIDs (`int2`, `int4`, `int8`, `bool`, `text`, `varchar`, `bytea`, and `nullable(...)`, plus tuples of these). Existing arbitrary codec expressions and derived struct codecs remain usable through runtime APIs, but are not part of the first compile-time verification surface.
+- **`sql!` stays narrower**: by itself it can verify SQL parsing and parameter metadata only when its bindings are in the verifiable subset; full row-shape checking belongs on typed query/command macros that also see decoder metadata.
 
 ## Work Items
 
@@ -47,6 +49,12 @@ The key design constraint is that `Query::raw` and `Command::raw` are runtime co
 - Integrate optional verification into `sql!` for the subset of checks it can support cleanly.
 - Preserve origin metadata and existing codec ergonomics.
 
+### 3a. `sql-verify-sql-macro`
+- Extend `sql!` to invoke the same optional verifier when:
+  - a verification database URL is configured
+  - every bound codec expression is in the verifiable subset
+- Keep current expansion behavior unchanged when verification is unavailable or intentionally skipped.
+
 ### 4. `sql-verify-validation-docs`
 - Add trybuild and integration coverage for verified and unverified builds.
 - Add live-schema compile-fail tests for mismatched params and result shapes.
@@ -67,12 +75,18 @@ The key design constraint is that `Query::raw` and `Command::raw` are runtime co
 
 ### Phase 3: Typed verified macros
 - Ship macro-backed `Query` / `Command` construction.
-- Add best-effort verification to `sql!`.
 
-### Phase 4: Tests, examples, and docs
+### Phase 4: `sql!` verification integration
+- Add best-effort verification to `sql!` for supported binding codecs.
+
+### Phase 5: Tests, examples, and docs
 - Cover no-config fallback and verified mode.
 - Update repo docs to describe the new optional capability.
 
 ## Notes
 - The most important non-obvious constraint is that full compile-time verification cannot be bolted into `Query::raw` / `Command::raw` themselves. Those remain runtime APIs; the verified path must be macro-driven.
 - Prepared statements do not need their own separate compile-time surface if verified macros already produce ordinary `Query` / `Command` values.
+- The first shipping version deliberately optimizes for a coherent, verifiable typed macro DSL rather than universal support for arbitrary codec expressions at compile time.
+
+## Status Notes
+- 2026-04-27: Added typed-macro trybuild coverage for invalid configuration plus live parameter/row mismatches, and updated rustdoc / README / PLAN / MILESTONES / CLAUDE to describe optional online verification, the `query!` / `command!` surface, the v1 verifiable codec subset, and no-config fallback behavior.

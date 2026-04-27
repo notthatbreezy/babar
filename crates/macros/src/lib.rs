@@ -1,7 +1,8 @@
 //! Procedural macros for the `babar` PostgreSQL driver.
 //!
-//! The main entry points are [`sql!`](macro@sql) and the `#[derive(Codec)]`
-//! derive, both re-exported from the `babar` crate.
+//! The main entry points are [`sql!`](macro@sql), [`query!`](macro@query),
+//! [`command!`](macro@command), and the `#[derive(Codec)]` derive, all
+//! re-exported from the `babar` crate.
 
 use proc_macro::TokenStream;
 use std::collections::{HashMap, HashSet};
@@ -12,6 +13,15 @@ use syn::{
     parse_macro_input, Attribute, Data, DeriveInput, Expr, ExprMacro, Field, Fields,
     GenericArgument, Generics, Ident, LitStr, PathArguments, Result, Token, Type, TypePath,
 };
+use verify::{parse_declared_types, verify_param_metadata, verify_statement_against_probe, Probe};
+
+#[allow(dead_code)]
+mod verify;
+
+mod kw {
+    syn::custom_keyword!(params);
+    syn::custom_keyword!(row);
+}
 
 struct SqlInput {
     sql: LitStr,
@@ -26,6 +36,17 @@ struct Binding {
 struct CompiledSql {
     sql: String,
     codecs: Vec<Expr>,
+}
+
+struct QueryInput {
+    sql: LitStr,
+    params: Expr,
+    row: Expr,
+}
+
+struct CommandInput {
+    sql: LitStr,
+    params: Expr,
 }
 
 impl Parse for SqlInput {
@@ -53,12 +74,60 @@ impl Parse for SqlInput {
     }
 }
 
+impl Parse for QueryInput {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let sql = input.parse()?;
+        input.parse::<Token![,]>()?;
+        input.parse::<kw::params>()?;
+        input.parse::<Token![=]>()?;
+        let params = input.parse()?;
+        input.parse::<Token![,]>()?;
+        input.parse::<kw::row>()?;
+        input.parse::<Token![=]>()?;
+        let row = input.parse()?;
+        if !input.is_empty() {
+            input.parse::<Token![,]>()?;
+        }
+        if !input.is_empty() {
+            return Err(input.error("unexpected trailing tokens in query!"));
+        }
+        Ok(Self { sql, params, row })
+    }
+}
+
+impl Parse for CommandInput {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let sql = input.parse()?;
+        input.parse::<Token![,]>()?;
+        input.parse::<kw::params>()?;
+        input.parse::<Token![=]>()?;
+        let params = input.parse()?;
+        if !input.is_empty() {
+            input.parse::<Token![,]>()?;
+        }
+        if !input.is_empty() {
+            return Err(input.error("unexpected trailing tokens in command!"));
+        }
+        Ok(Self { sql, params })
+    }
+}
+
 /// Build a `babar::query::Fragment` from SQL that uses named placeholders.
+///
+/// When `BABAR_DATABASE_URL` or `DATABASE_URL` is set during macro expansion,
+/// the macro best-effort verifies parameter metadata against a live PostgreSQL
+/// server if every binding codec is in the v1 verifiable subset (`int2`,
+/// `int4`, `int8`, `bool`, `text`, `varchar`, `bytea`, `nullable(...)`, and
+/// tuples of those). Unsupported binding codecs fall back to the normal
+/// expansion path. v0.1 does not provide an offline verification cache.
 #[proc_macro]
 pub fn sql(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as SqlInput);
     match compile_input(&input) {
         Ok(compiled) => {
+            if let Err(err) = verify_sql_input(&input, &compiled) {
+                return err.into_compile_error().into();
+            }
             let sql = LitStr::new(&compiled.sql, input.sql.span());
             let codecs = compiled.codecs;
             let n_params = codecs.len();
@@ -78,6 +147,208 @@ pub fn sql(input: TokenStream) -> TokenStream {
         }
         Err(err) => err.into_compile_error().into(),
     }
+}
+
+/// Build a typed `babar::query::Query` directly from SQL plus explicit codec
+/// DSL.
+///
+/// The codec DSL is intentionally narrow in v0.1: `int2`, `int4`, `int8`,
+/// `bool`, `text`, `varchar`, `bytea`, `nullable(...)`, and tuples of those.
+/// When `BABAR_DATABASE_URL` or `DATABASE_URL` is set during macro expansion,
+/// the macro verifies both parameter and row metadata against a live PostgreSQL
+/// server. Without configuration, it still emits a normal `Query` value.
+#[proc_macro]
+pub fn query(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as QueryInput);
+    match compile_query_input(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.into_compile_error().into(),
+    }
+}
+
+/// Build a typed `babar::query::Command` directly from SQL plus explicit codec
+/// DSL.
+///
+/// The codec DSL is intentionally narrow in v0.1: `int2`, `int4`, `int8`,
+/// `bool`, `text`, `varchar`, `bytea`, `nullable(...)`, and tuples of those.
+/// When `BABAR_DATABASE_URL` or `DATABASE_URL` is set during macro expansion,
+/// the macro verifies parameter metadata against a live PostgreSQL server.
+/// Without configuration, it still emits a normal `Command` value.
+#[proc_macro]
+pub fn command(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as CommandInput);
+    match compile_command_input(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.into_compile_error().into(),
+    }
+}
+
+fn verify_sql_input(input: &SqlInput, compiled: &CompiledSql) -> Result<()> {
+    let Some(expected) = verifiable_param_types(&compiled.codecs) else {
+        return Ok(());
+    };
+
+    let Some(probe) = Probe::discover().map_err(|err| syn::Error::new(input.sql.span(), err))?
+    else {
+        return Ok(());
+    };
+
+    let statement = probe
+        .describe(&compiled.sql)
+        .map_err(|err| syn::Error::new(input.sql.span(), err))?;
+    verify_param_metadata(&statement.params, &expected)
+        .map_err(|err| syn::Error::new(input.sql.span(), err))
+}
+
+fn compile_query_input(input: &QueryInput) -> Result<proc_macro2::TokenStream> {
+    let sql_value = input.sql.value();
+    let params = parse_declared_types(&input.params).map_err(|err| err.into_syn_error())?;
+    let row = parse_declared_types(&input.row).map_err(|err| err.into_syn_error())?;
+    verify_statement_against_probe(&sql_value, &params, Some(&row))
+        .map_err(|err| syn::Error::new(input.sql.span(), err))?;
+
+    let sql = LitStr::new(&sql_value, input.sql.span());
+    let params_expr = compile_codec_dsl_expr(&input.params)?;
+    let row_expr = compile_codec_dsl_expr(&input.row)?;
+    let n_params = params.len();
+
+    Ok(quote! {{
+        let __babar_fragment = ::babar::query::Fragment::__from_parts(
+            #sql,
+            #params_expr,
+            #n_params,
+            ::core::option::Option::Some(::babar::query::Origin::new(
+                file!(),
+                line!(),
+                column!(),
+            )),
+        );
+        ::babar::query::Query::from_fragment(__babar_fragment, #row_expr)
+    }})
+}
+
+fn compile_command_input(input: &CommandInput) -> Result<proc_macro2::TokenStream> {
+    let sql_value = input.sql.value();
+    let params = parse_declared_types(&input.params).map_err(|err| err.into_syn_error())?;
+    verify_statement_against_probe(&sql_value, &params, None)
+        .map_err(|err| syn::Error::new(input.sql.span(), err))?;
+
+    let sql = LitStr::new(&sql_value, input.sql.span());
+    let params_expr = compile_codec_dsl_expr(&input.params)?;
+    let n_params = params.len();
+
+    Ok(quote! {{
+        let __babar_fragment = ::babar::query::Fragment::__from_parts(
+            #sql,
+            #params_expr,
+            #n_params,
+            ::core::option::Option::Some(::babar::query::Origin::new(
+                file!(),
+                line!(),
+                column!(),
+            )),
+        );
+        ::babar::query::Command::from_fragment(__babar_fragment)
+    }})
+}
+
+fn verifiable_param_types(codecs: &[Expr]) -> Option<Vec<verify::DeclaredType>> {
+    let mut types = Vec::new();
+    for codec in codecs {
+        let declared = parse_declared_types(codec).ok()?;
+        types.extend(declared);
+    }
+    Some(types)
+}
+
+fn compile_codec_dsl_expr(expr: &Expr) -> Result<proc_macro2::TokenStream> {
+    if let Expr::Tuple(tuple) = strip_expr(expr) {
+        let mut codecs = Vec::new();
+        for elem in &tuple.elems {
+            flatten_codec_dsl(elem, &mut codecs)?;
+        }
+        return Ok(quote! { (#(#codecs,)*) });
+    }
+
+    let mut codecs = Vec::new();
+    flatten_codec_dsl(expr, &mut codecs)?;
+    Ok(match codecs.as_slice() {
+        [] => quote! { () },
+        [codec] => quote! { #codec },
+        _ => quote! { (#(#codecs,)*) },
+    })
+}
+
+fn flatten_codec_dsl(expr: &Expr, codecs: &mut Vec<proc_macro2::TokenStream>) -> Result<()> {
+    let expr = strip_expr(expr);
+    match expr {
+        Expr::Tuple(tuple) => {
+            for elem in &tuple.elems {
+                flatten_codec_dsl(elem, codecs)?;
+            }
+            Ok(())
+        }
+        _ => {
+            codecs.push(compile_codec_dsl_scalar(expr)?);
+            Ok(())
+        }
+    }
+}
+
+fn compile_codec_dsl_scalar(expr: &Expr) -> Result<proc_macro2::TokenStream> {
+    let expr = strip_expr(expr);
+    if let Some(path) = as_path(expr) {
+        let Some(ident) = path.path.segments.last().map(|segment| &segment.ident) else {
+            return Err(syn::Error::new_spanned(
+                expr,
+                "unsupported empty codec path in verifiable codec DSL",
+            ));
+        };
+        return match ident.to_string().as_str() {
+            "int2" | "int4" | "int8" | "bool" | "text" | "varchar" | "bytea" => {
+                Ok(quote! { ::babar::codec::#ident })
+            }
+            _ => Err(syn::Error::new_spanned(
+                expr,
+                format!(
+                    "unsupported verifiable codec `{ident}`; expected int2, int4, int8, bool, text, varchar, bytea, nullable(...), or tuples of these"
+                ),
+            )),
+        };
+    }
+
+    let Expr::Call(call) = expr else {
+        return Err(syn::Error::new_spanned(
+            expr,
+            "unsupported verifiable codec DSL; expected a codec path, nullable(...), or a tuple of these",
+        ));
+    };
+    let Some(path) = as_path(&call.func) else {
+        return Err(syn::Error::new_spanned(
+            expr,
+            "unsupported verifiable codec DSL; expected nullable(...) around a supported codec",
+        ));
+    };
+    if !path
+        .path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "nullable")
+    {
+        return Err(syn::Error::new_spanned(
+            expr,
+            "unsupported verifiable codec call; only nullable(...) is supported",
+        ));
+    }
+    if call.args.len() != 1 {
+        return Err(syn::Error::new_spanned(
+            expr,
+            "nullable(...) in verifiable codec DSL must have exactly one argument",
+        ));
+    }
+
+    let inner = compile_codec_dsl_scalar(call.args.first().expect("nullable args length checked"))?;
+    Ok(quote! { ::babar::codec::nullable(#inner) })
 }
 
 /// Derive a `CODEC` associated constant for a named struct.
@@ -468,6 +739,23 @@ fn nested_sql(expr: &Expr) -> Result<Option<SqlInput>> {
         return Ok(None);
     }
     syn::parse2::<SqlInput>(mac.tokens.clone()).map(Some)
+}
+
+fn strip_expr(mut expr: &Expr) -> &Expr {
+    loop {
+        expr = match expr {
+            Expr::Paren(paren) => &paren.expr,
+            Expr::Group(group) => &group.expr,
+            _ => return expr,
+        };
+    }
+}
+
+fn as_path(expr: &Expr) -> Option<&syn::ExprPath> {
+    let Expr::Path(path) = strip_expr(expr) else {
+        return None;
+    };
+    Some(path)
 }
 
 fn path_ends_with_sql(path: &syn::Path) -> bool {

@@ -69,6 +69,38 @@ async fn main() -> babar::Result<()> {
 }
 ```
 
+## Compile-time SQL verification
+
+`babar` keeps `Query::raw` / `Command::raw` as the default runtime path, but it
+also offers optional macro-driven online verification:
+
+```rust
+use babar::codec::{int4, text};
+
+let lookup = babar::query!(
+    "SELECT id, name FROM users WHERE id = $1",
+    params = (int4,),
+    row = (int4, text),
+);
+
+let insert = babar::command!(
+    "INSERT INTO users (id, name) VALUES ($1, $2)",
+    params = (int4, text),
+);
+```
+
+During macro expansion, babar first checks `BABAR_DATABASE_URL`, then
+`DATABASE_URL`. If either is set, `query!` / `command!` verify declared
+parameter and row metadata against a live Postgres server, while `sql!`
+best-effort verifies parameter metadata when every binding uses the v1
+verifiable subset: `int2`, `int4`, `int8`, `bool`, `text`, `varchar`, `bytea`,
+`nullable(...)`, and tuples of those.
+
+Without config, the macros still compile and emit the same `Query`, `Command`,
+or `Fragment` values. For verified workflows, prefer `query!` / `command!`;
+`sql!` intentionally does not validate row shapes. v0.1 does not ship an
+offline cache or generated schema snapshot.
+
 ## TLS
 
 TLS is opt-in at runtime and explicit in configuration:
@@ -163,12 +195,12 @@ cargo run -p babar --example axum_service
 What `babar` does better:
 
 - explicit runtime codec values instead of trait-driven inference
-- no compile-time DB connectivity story to set up or cache
+- normal builds do not require a compile-time database connection or offline cache
 - SQL-origin-aware runtime errors with caret rendering
 
 What `sqlx` does better:
 
-- compile-time checked query macros
+- broader compile-time checked query macros, including offline-cache workflows
 - broader database coverage
 - much larger ecosystem and production maturity today
 

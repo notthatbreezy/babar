@@ -1,0 +1,5 @@
+error: compile-time SQL verification schema mismatch: parameter $1 has database type int4 (oid 23) but the declared codec DSL expects int8 (oid 20)
+ --> tests/ui/typed_macro/fail/verify_live_param_mismatch.rs:2:29
+  |
+2 |     let _ = babar::command!("SELECT $1::int4", params = (babar::codec::int8,));
+  |                             ^^^^^^^^^^^^^^^^^

@@ -25,8 +25,10 @@ Ship a driver where:
 Out of scope for the project's identity:
 
 - Pretending to be a general-purpose SQL library. This is Postgres only.
-- Compile-time schema verification against a live database (sqlx macro style).
-  Runtime verification at prepare time is the design choice.
+- Mandatory or offline compile-time schema verification. Runtime verification at
+  prepare time remains the default design choice, with optional online macro
+  verification available for the v1 verifiable subset when a database is
+  configured at build time.
 - Runtime abstraction over async executors. Tokio is the commitment.
 
 ## Design principles
@@ -192,7 +194,7 @@ Detail and acceptance criteria in `MILESTONES.md`.
 | M0 | Protocol foundation + auth | 1–2 |
 | M1 | Core type surface + primitive codecs (text format) | 3–4 |
 | M2 | Extended protocol + binary format + prepared statements | 5–7 |
-| M3 | `sql!` macro | 8–9 |
+| M3 | SQL macros + optional verification | 8–9 |
 | M4 | Transactions + connection pool | 10–11 |
 | M5 | Expanded type coverage + `#[derive(Codec)]` | 12–15 |
 | M6 | TLS, observability, error rendering polish, v0.1 release | 16–17 |

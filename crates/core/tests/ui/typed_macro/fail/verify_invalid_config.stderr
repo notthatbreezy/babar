@@ -1,0 +1,5 @@
+error: compile-time SQL verification configuration error: BABAR_DATABASE_URL does not contain a valid PostgreSQL connection string: invalid connection string
+ --> tests/ui/typed_macro/fail/verify_invalid_config.rs:3:9
+  |
+3 |         "SELECT $1::int4 AS id",
+  |         ^^^^^^^^^^^^^^^^^^^^^^^

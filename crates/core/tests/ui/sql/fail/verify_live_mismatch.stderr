@@ -1,0 +1,5 @@
+error: compile-time SQL verification schema mismatch: parameter $1 has database type int4 (oid 23) but the declared codec DSL expects int8 (oid 20)
+ --> tests/ui/sql/fail/verify_live_mismatch.rs:4:18
+  |
+4 |     let _ = sql!("SELECT $id::int4", id = babar::codec::int8);
+  |                  ^^^^^^^^^^^^^^^^^^

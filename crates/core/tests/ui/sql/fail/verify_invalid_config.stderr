@@ -1,0 +1,5 @@
+error: compile-time SQL verification configuration error: BABAR_DATABASE_URL does not contain a valid PostgreSQL connection string: invalid connection string
+ --> tests/ui/sql/fail/verify_invalid_config.rs:4:18
+  |
+4 |     let _ = sql!("SELECT $id::int4", id = babar::codec::int4);
+  |                  ^^^^^^^^^^^^^^^^^^

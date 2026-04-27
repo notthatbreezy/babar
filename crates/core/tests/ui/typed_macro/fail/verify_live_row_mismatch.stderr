@@ -1,0 +1,5 @@
+error: compile-time SQL verification schema mismatch: row column 1 `id` has database type int4 (oid 23) but the declared decoder expects text (oid 25)
+ --> tests/ui/typed_macro/fail/verify_live_row_mismatch.rs:3:9
+  |
+3 |         "SELECT 1::int4 AS id",
+  |         ^^^^^^^^^^^^^^^^^^^^^^

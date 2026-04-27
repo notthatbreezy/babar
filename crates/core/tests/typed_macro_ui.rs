@@ -1,4 +1,4 @@
-//! UI coverage for `sql!` diagnostics.
+//! UI coverage for `query!` / `command!` diagnostics.
 
 mod common;
 
@@ -57,21 +57,19 @@ fn require_docker() -> bool {
 }
 
 #[test]
-fn sql_macro_ui() {
+fn typed_macro_ui() {
     with_env(
         &[("BABAR_DATABASE_URL", None), ("DATABASE_URL", None)],
         || {
             let tests = trybuild::TestCases::new();
-            tests.pass("tests/ui/sql/pass/basic.rs");
-            tests.compile_fail("tests/ui/sql/fail/duplicate_binding.rs");
-            tests.compile_fail("tests/ui/sql/fail/missing_binding.rs");
-            tests.compile_fail("tests/ui/sql/fail/unused_binding.rs");
+            tests.pass("tests/ui/typed_macro/pass/basic.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/unsupported_codec.rs");
         },
     );
 }
 
 #[test]
-fn sql_macro_skips_verification_for_unsupported_codecs() {
+fn typed_macro_reports_configuration_errors_for_verifiable_codecs() {
     with_env(
         &[(
             "BABAR_DATABASE_URL",
@@ -79,27 +77,13 @@ fn sql_macro_skips_verification_for_unsupported_codecs() {
         )],
         || {
             let tests = trybuild::TestCases::new();
-            tests.pass("tests/ui/sql/pass/verify_skip_unsupported.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/verify_invalid_config.rs");
         },
     );
 }
 
 #[test]
-fn sql_macro_reports_configuration_errors_for_verifiable_codecs() {
-    with_env(
-        &[(
-            "BABAR_DATABASE_URL",
-            Some("definitely not a postgres url".into()),
-        )],
-        || {
-            let tests = trybuild::TestCases::new();
-            tests.compile_fail("tests/ui/sql/fail/verify_invalid_config.rs");
-        },
-    );
-}
-
-#[test]
-fn sql_macro_verifies_against_live_postgres_when_configured() {
+fn typed_macro_verifies_against_live_postgres_when_configured() {
     if !require_docker() {
         return;
     }
@@ -115,7 +99,8 @@ fn sql_macro_verifies_against_live_postgres_when_configured() {
 
     with_env(&[("BABAR_DATABASE_URL", Some(database_url))], || {
         let tests = trybuild::TestCases::new();
-        tests.pass("tests/ui/sql/pass/verify_live_ok.rs");
-        tests.compile_fail("tests/ui/sql/fail/verify_live_mismatch.rs");
+        tests.pass("tests/ui/typed_macro/pass/verify_live_ok.rs");
+        tests.compile_fail("tests/ui/typed_macro/fail/verify_live_param_mismatch.rs");
+        tests.compile_fail("tests/ui/typed_macro/fail/verify_live_row_mismatch.rs");
     });
 }

@@ -249,6 +249,7 @@ dependencies = [
 name = "babar-macros"
 version = "0.1.0"
 dependencies = [
+ "postgres",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -1750,6 +1751,20 @@ dependencies = [
  "bb8-postgres",
  "criterion",
  "sqlx",
+ "tokio",
+ "tokio-postgres",
+]
+
+[[package]]
+name = "postgres"
+version = "0.19.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacf632d0554ff75f58183694f41dc8999c8a3a43a386994d0ec2d034f1dfbe1"
+dependencies = [
+ "bytes",
+ "fallible-iterator",
+ "futures-util",
+ "log",
  "tokio",
  "tokio-postgres",
 ]

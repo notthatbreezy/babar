@@ -122,6 +122,36 @@ fn sql_macro_query_and_command_match_raw_builders() {
     assert_eq!(macro_command.param_oids(), raw_command.param_oids());
 }
 
+#[test]
+fn typed_query_and_command_macros_match_raw_builders() {
+    let macro_query: Query<(i32, bool), (i32, String)> = babar::query!(
+        "SELECT id, name FROM users WHERE id = $1 AND active = $2",
+        params = (int4, bool),
+        row = (int4, text),
+    );
+    let raw_query: Query<(i32, bool), (i32, String)> = Query::raw(
+        "SELECT id, name FROM users WHERE id = $1 AND active = $2",
+        (int4, bool),
+        (int4, text),
+    );
+    assert_eq!(macro_query.sql(), raw_query.sql());
+    assert_eq!(macro_query.param_oids(), raw_query.param_oids());
+    assert_eq!(macro_query.output_oids(), raw_query.output_oids());
+    let origin = macro_query.origin().expect("macro captures origin");
+    assert!(origin.file().ends_with("crates/core/tests/sql_macro.rs"));
+
+    let macro_command: Command<(i32, String)> = babar::command!(
+        "INSERT INTO users (id, name) VALUES ($1, $2)",
+        params = (int4, text),
+    );
+    let raw_command: Command<(i32, String)> =
+        Command::raw("INSERT INTO users (id, name) VALUES ($1, $2)", (int4, text));
+    assert_eq!(macro_command.sql(), raw_command.sql());
+    assert_eq!(macro_command.param_oids(), raw_command.param_oids());
+    let origin = macro_command.origin().expect("macro captures origin");
+    assert!(origin.file().ends_with("crates/core/tests/sql_macro.rs"));
+}
+
 #[tokio::test]
 async fn sql_macro_fragments_execute_against_postgres() {
     let Some((_pg, session)) = fresh_session().await else {
@@ -171,6 +201,52 @@ async fn sql_macro_fragments_execute_against_postgres() {
         .await
         .expect("select rows");
     assert_eq!(rows, vec![("alice".to_string(),), ("carol".to_string(),)]);
+
+    session.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn typed_query_and_command_macros_execute_against_postgres() {
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    session
+        .simple_query_raw(
+            "CREATE TEMP TABLE typed_macro_users (\
+                id int4 PRIMARY KEY, \
+                name text NOT NULL, \
+                note text NULL\
+            )",
+        )
+        .await
+        .expect("create table");
+
+    let insert: Command<(i32, String, Option<String>)> = babar::command!(
+        "INSERT INTO typed_macro_users (id, name, note) VALUES ($1, $2, $3)",
+        params = (int4, text, nullable(text)),
+    );
+    for row in [
+        (1, "alice".to_string(), Some("first".to_string())),
+        (2, "bob".to_string(), None),
+    ] {
+        let affected = session.execute(&insert, row).await.expect("insert row");
+        assert_eq!(affected, 1);
+    }
+
+    let select: Query<(i32,), (String, Option<String>)> = babar::query!(
+        "SELECT name, note FROM typed_macro_users WHERE id >= $1 ORDER BY id",
+        params = (int4,),
+        row = (text, nullable(text)),
+    );
+    let rows = session.query(&select, (1_i32,)).await.expect("select rows");
+    assert_eq!(
+        rows,
+        vec![
+            ("alice".to_string(), Some("first".to_string())),
+            ("bob".to_string(), None),
+        ]
+    );
 
     session.close().await.expect("close");
 }

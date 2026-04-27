@@ -87,6 +87,44 @@
 //! );
 //! ```
 //!
+//! ## `query!` and `command!` macros
+//!
+//! [`query!`] and [`command!`] build ordinary [`query::Query`] /
+//! [`query::Command`] values directly from positional SQL plus a narrow,
+//! explicit codec DSL:
+//!
+//! - scalars: `int2`, `int4`, `int8`, `bool`, `text`, `varchar`, `bytea`
+//! - nullable scalars: `nullable(...)`
+//! - tuples of the above, including `()` for zero parameters
+//!
+//! Compile-time verification is optional and online-only in v0.1:
+//!
+//! - `BABAR_DATABASE_URL` takes precedence over `DATABASE_URL`
+//! - [`query!`] / [`command!`] verify declared parameter and row shapes against a
+//!   live PostgreSQL server when either variable is set during macro expansion
+//! - [`sql!`] reuses the same probe for parameter metadata only, and only when
+//!   every binding codec is in the verifiable subset
+//! - without configuration, the macros still compile and emit the same runtime
+//!   statement values
+//! - there is no offline cache or generated schema snapshot in v0.1
+//!
+//! ```
+//! use babar::codec::{int4, text};
+//!
+//! let lookup = babar::query!(
+//!     "SELECT id, name FROM users WHERE id = $1",
+//!     params = (int4,),
+//!     row = (int4, text),
+//! );
+//! assert_eq!(lookup.sql(), "SELECT id, name FROM users WHERE id = $1");
+//!
+//! let insert = babar::command!(
+//!     "INSERT INTO users (id, name) VALUES ($1, $2)",
+//!     params = (int4, text),
+//! );
+//! assert_eq!(insert.sql(), "INSERT INTO users (id, name) VALUES ($1, $2)");
+//! ```
+//!
 //! ## TLS
 //!
 //! Enable the default `rustls` feature (or the optional `native-tls` feature),
@@ -144,9 +182,13 @@ pub mod types;
 /// the same parameter slot. Nested `sql!(...)` calls are allowed and flatten
 /// into one fragment with left-to-right parameter ordering.
 ///
-/// The macro only rewrites placeholders and captures source origin metadata. It
-/// does not connect to Postgres, infer codecs, quote identifiers, or validate
-/// output columns.
+/// The macro rewrites placeholders, captures source origin metadata, and — when
+/// compile-time verification is configured through `BABAR_DATABASE_URL` or
+/// `DATABASE_URL` and every binding codec is in the verifiable subset —
+/// validates parameter metadata against a live PostgreSQL server. Unsupported
+/// binding codecs simply skip verification. The macro does not infer codecs,
+/// quote identifiers, or validate output columns, and v0.1 does not ship an
+/// offline verification cache.
 ///
 /// ```
 /// use babar::codec::{bool, int4, text};
@@ -174,7 +216,7 @@ pub mod types;
 ///     "INSERT INTO users (id, name) VALUES ($1, $2)"
 /// );
 /// ```
-pub use babar_macros::{sql, Codec};
+pub use babar_macros::{command, query, sql, Codec};
 
 #[doc(hidden)]
 pub mod __private {

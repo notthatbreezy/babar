@@ -1,0 +1,5 @@
+error: unsupported verifiable codec `uuid`; expected int2, int4, int8, bool, text, varchar, bytea, nullable(...), or tuples of these
+ --> tests/ui/typed_macro/fail/unsupported_codec.rs:4:19
+  |
+4 |         params = (uuid,),
+  |                   ^^^^

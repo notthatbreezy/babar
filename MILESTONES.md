@@ -192,7 +192,7 @@ for all primitive codecs, and ship cursor/portal streaming.
 
 ---
 
-## M3 — The `sql!` macro
+## M3 — SQL macros and optional verification
 
 **Duration:** ~2 weeks
 **Depends on:** M2
@@ -200,12 +200,13 @@ for all primitive codecs, and ship cursor/portal streaming.
 ### Scope
 
 A declarative-style `sql!` macro that produces a `Fragment` with the correct
-inferred parameter type, delegating to the M1 builder API under the hood.
-For v0.1 this milestone adopts named placeholders: `sql!("SELECT ... WHERE x = $x", x = int4)`.
+inferred parameter type, plus typed `query!` / `command!` helpers for verified
+construction of ordinary `Query` / `Command` values. For v0.1 this milestone
+adopts named placeholders for `sql!`: `sql!("SELECT ... WHERE x = $x", x = int4)`.
 
 ### Deliverables
 
-- `macros/` crate exports `sql!`.
+- `macros/` crate exports `sql!`, `query!`, and `command!`.
 - `sql!(literal, name = codec_expr, ...)` produces `Fragment<A>` where `A` is
   the flat tuple type of the bound codecs' value types.
 - Source-span preservation: compile errors in the macro point at the user's
@@ -213,6 +214,10 @@ For v0.1 this milestone adopts named placeholders: `sql!("SELECT ... WHERE x = $
 - Nested fragments: `sql!("... ($filter)", filter = existing_fragment)` composes.
 - Origin tracking: each `Fragment` carries a `(file, line, column)` captured
   at macro-expansion time, used by error-rendering in M6.
+- Optional live verification: when `BABAR_DATABASE_URL` or `DATABASE_URL` is
+  set during macro expansion, `query!` / `command!` verify declared parameter /
+  row metadata against a live PostgreSQL server, and `sql!` best-effort verifies
+  parameter metadata when every binding is in the v1 verifiable codec subset.
 
 ### Tests
 
@@ -223,6 +228,8 @@ For v0.1 this milestone adopts named placeholders: `sql!("SELECT ... WHERE x = $
       user's call.
     - codec expression that doesn't satisfy the fragment/codec requirements →
       compile error.
+    - configured-verification failures (bad config, parameter mismatch, row
+      mismatch) → compile error pointing at the SQL literal.
     - correct usage compiles and produces a `Fragment<T>` of the expected type.
 - Doc tests on every macro invocation example.
 
@@ -239,7 +246,8 @@ For v0.1 this milestone adopts named placeholders: `sql!("SELECT ... WHERE x = $
 - [ ] Every `trybuild` test has a stable, reviewed error message.
 - [ ] `examples/quickstart.rs` is rewritten to use `sql!` throughout.
 - [ ] Documentation explains what the macro does *and* what it doesn't
-      (specifically: no compile-time schema check, no SQL parsing).
+      (specifically: optional online-only verification, v1 verifiable codec
+      subset limits, no offline cache, and no SQL parsing).
 
 ---
 

@@ -78,6 +78,7 @@ pub const text: TextCodec;
 
 - **No unsafe code** — enforced by Miri in CI.
 - **Validate early** — schema mismatch detected at prepare time, parameter count at bind time.
+- **Compile-time verification is opt-in** — `query!` / `command!` can verify against a live database during macro expansion when `BABAR_DATABASE_URL` or `DATABASE_URL` is set; `sql!` only best-effort verifies supported binding codecs.
 - **Binary format in M2** — text format ships in M1 as a stepping stone.
 - **Explicit codec composition** — callers name their codecs; no magic inference.
 - **One way to do things** — no multiple transaction styles, no generic abstraction over databases.
@@ -127,4 +128,4 @@ pub const text: TextCodec;
 
 ## Deferred post-v0.1
 
-LISTEN/NOTIFY, broader COPY coverage (`COPY TO`, text/CSV COPY, replication-style modes), out-of-band cancellation, logical replication, compile-time schema verification, SCRAM-SHA-256-PLUS.
+LISTEN/NOTIFY, broader COPY coverage (`COPY TO`, text/CSV COPY, replication-style modes), out-of-band cancellation, logical replication, offline cache / broader compile-time verification coverage, SCRAM-SHA-256-PLUS.
