@@ -47,14 +47,10 @@ When the type system says `Query<(i32,), (Uuid, String, i64)>`, the
 compiler knows the parameter shape, the row shape, and which codecs
 participate. There is no magic — `Query::raw` constructs one
 explicitly, and the `query!` macro builds the same thing with optional
-compile-time SQL verification (off by default).
+compile-time SQL verification.
 
 ## What babar deliberately does not do
 
-- It does not parse a DSN. `Config::new(host, port, user, db)` takes
-  the four required pieces by position, and you build it from
-  whichever source fits your service. Connection details are visible
-  in code review.
 - It does not require a compile-time database. `query!` against
   `BABAR_DATABASE_URL` is opt-in; the default `Query::raw` path runs
   without any dev-loop infrastructure.

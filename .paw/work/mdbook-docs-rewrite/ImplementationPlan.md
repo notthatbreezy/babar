@@ -73,7 +73,7 @@ From `Spec.md` and `CodeResearch.md`:
 - [x] **Phase 5: Book Production (Chapters 9–13)** — Error Handling, Custom Codecs / `derive(Codec)`, Web Service (Axum), TLS & Security, Observability/Tracing.
 - [x] **Phase 6: Reference Section** — Codec catalog, error catalog, feature flags, configuration knobs.
 - [x] **Phase 7: Explanation / Why Babar** — Design philosophy, comparison, background-driver-task model, no-unsafe / validate-early, roadmap.
-- [ ] **Phase 8: Polish, Voice Sweep & Documentation** — American-English/voice sweep across all new content, `mdbook build` green & warning-free with full content, Docs.md and CHANGELOG entry.
+- [x] **Phase 8: Polish, Voice Sweep & Documentation** — American-English/voice sweep across all new content, `mdbook build` green & warning-free with full content, Docs.md and CHANGELOG entry.
 
 ## Phase Candidates
 

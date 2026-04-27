@@ -1,6 +1,6 @@
 # 1. Connecting
 
-In this chapter we'll meet `Config`, `Session::connect`, and the
+In this chapter we'll use `Config`, `Session::connect`, and the
 background driver task that keeps every call you make
 cancellation-safe.
 
@@ -34,8 +34,7 @@ fields by position. Optional fields are added by chained methods —
 TLS settings, and so on. Because `Config` is a plain struct you can
 build it from any source you like (env vars, a config file, a
 `clap::Parser`); babar deliberately doesn't ship a DSN parser or a
-`Config::from_env()`. Connection details should be visible in code
-review.
+`Config::from_env()`. Connection details should be visible and explicit in code.
 
 ## What `Session::connect` actually does
 
@@ -76,7 +75,7 @@ observe a final `Result` if the server objected to anything.
 ## Recovering when the server is unreachable
 
 `Session::connect` returns `babar::Result<Session>`. The error is the
-same `babar::Error` enum you'll meet in
+same `babar::Error` enum reviewed in
 [Chapter 9](./09-error-handling.md); for connection failures you'll
 typically see `Error::Io(_)` (DNS, TCP, TLS) or `Error::Server {
 code, .. }` (auth rejected, database missing). Inspect the variant

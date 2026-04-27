@@ -1,8 +1,7 @@
 # 7. Bulk loads with COPY
 
 In this chapter we'll ingest many rows in a single round-trip with
-binary `COPY FROM STDIN`. We'll also be honest about what babar's
-COPY support doesn't do yet.
+binary `COPY FROM STDIN`. Current limitations are discussed as well.
 
 ## Setup
 
@@ -102,10 +101,6 @@ babar's COPY support is deliberately narrow at the moment:
   Use `BINARY` for now.
 - `COPY FROM PROGRAM` and `COPY ... FROM <file>` are server-side; they
   don't go through the driver and aren't part of babar's surface.
-
-If you need text/CSV ingest today, format the rows yourself and use
-`session.execute` with multi-row `INSERT`s. That's slower, but it
-works against the same `Session`.
 
 ## Next
 

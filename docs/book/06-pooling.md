@@ -1,7 +1,7 @@
 # 6. Pooling
 
 In this chapter we'll trade `Session::connect` for a `Pool` of warm
-connections, talk about the knobs that matter, and see how prepared
+connections, discuss the knobs that matter, and see how prepared
 statements live alongside pooled connections.
 
 ## Setup

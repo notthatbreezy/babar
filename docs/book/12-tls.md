@@ -42,7 +42,7 @@ async fn main() -> babar::Result<()> {
 | `Prefer` | Ask for TLS; if the server refuses, fall back to plain TCP. |
 | `Require` | Demand TLS. A server that refuses is a connection failure. |
 
-For anything outside `localhost`, prefer `TlsMode::Require`. `Prefer`
+For anything outside `localhost`, use `TlsMode::Require`. `Prefer`
 is convenient for development against a server you don't control;
 it's also the mode an attacker would love your production deploy to
 use.

@@ -2,12 +2,10 @@
 
 > See also: [Why babar](./why-babar.md), [Design principles](./design-principles.md), [Comparisons](./comparisons.md).
 
-If you only read one explanation page, read this one. The
-[Why babar](./why-babar.md) page is the elevator pitch and the
-[Design principles](./design-principles.md) page is the rule book; this
-page is the tour. We will look at *where* babar sits, *what* makes it
-distinctive, what it deliberately is **not**, and *when* it is the
-right tool to reach for.
+If you only read one explanation page, read this one. This page
+describes *where* babar sits, *what* makes it distinctive, what it
+deliberately is **not**, and *when* it is the right tool to reach
+for.
 
 ## Where babar sits
 
@@ -36,8 +34,7 @@ flattening it.
 
 ## What's distinctive
 
-Four properties show up everywhere in the API. Each one is the answer
-to a question we kept asking while we wrote the driver.
+Four properties show up everywhere in the API and why I created it.
 
 ### 1. The background driver task
 
@@ -61,12 +58,8 @@ hanging off your socket the next time you ask for a query.
 
 Second, there is exactly **one writer** to the socket. You can `clone`
 the `Session` handle, share it across tasks, and the driver still
-serializes commands. We did not have to invent any locking on top of
-the socket — the channel *is* the lock.
-
-Some other Postgres drivers expose the connection as a value you have
-to wrap in a mutex (or borrow exclusively) before you can use it from
-more than one task. babar trades that for a task and a channel. The
+serializes commands. There is no locking on top of
+the socket — the channel *is* the lock. The
 [Driver task](./driver-task.md) page goes into more depth on what the
 task owns and how shutdown works.
 
@@ -102,7 +95,7 @@ Transactions extend the same idea. `session.transaction(|tx| ...)`
 hands you a `Transaction<'_>` whose lifetime is tied to the closure
 body, and the borrow checker prevents you from using the underlying
 `Session` while the `Transaction` is alive. There is no "did I forget
-to commit?" question because the typestate answers it for you. See
+to commit?" question because the compiler verifies it for you. See
 [Transactions](../book/05-transactions.md) for the full pattern,
 including savepoints.
 
@@ -143,8 +136,7 @@ This means three things in practice:
   and know exactly what wire types it expects and what Rust types it
   produces, without leaving the file.
 
-The trade-off is honest: you write the codecs out. We think that's a
-good trade — the cost is paid once per query and the legibility is
+The trade-off is honest: the cost is paid once per query and the legibility is
 paid back every time you read it.
 
 ### 4. Validate early
@@ -153,17 +145,12 @@ babar pushes "is this query well-formed?" as far left as it can.
 
 - **At bind time**, the parameter codec tuple is statically the same
   shape as `P` in `Query<P, R>`. You cannot under- or over-bind.
-- **At prepare time** (M2 and later), `Session::prepare` cross-checks
+- **At prepare time** `Session::prepare` cross-checks
   the row codec tuple `(int4, text, nullable(int4))` against the
   `RowDescription` Postgres sends back. If the column types or order
   drifted, you get an `Error::SchemaMismatch { position, expected_oid,
   actual_oid, column_name, sql, origin }` at *prepare* time, not when
-  you decode a row in production. (See the
-  [Roadmap](./roadmap.md#milestones) for milestone boundaries — bind-
-  time validation is in M0; full prepare-time validation lands in M2.)
-- **At decode time**, every `Codec::decode` is `#[forbid(unsafe_code)]`
-  and the wire bytes are validated, not transmuted. There is no
-  `unsafe` in the entire crate.
+  you decode a row in production.
 - **At display time**, errors carry the `sql` and `origin` (file +
   line where you wrote the SQL). The `Display` impl renders a `^`
   caret under the offending byte for `Error::Server { position, .. }`
@@ -181,11 +168,9 @@ want.
 - **Not multi-database.** No MySQL, no SQLite, no MSSQL. If you need
   multi-database, reach for a multi-database driver. We point at
   `sqlx` in [Comparisons](./comparisons.md).
-- **Not synchronous.** babar is async-only on Tokio. We don't ship a
-  blocking facade. If you need sync Postgres, the `postgres` crate is
-  the standard answer.
+- **Not synchronous.** babar is async-only on Tokio.
 - **Not an ORM.** There is no `Queryable` derive, no `Insertable`, no
-  schema-aware DSL. SQL is SQL. If you want a DSL, reach for `diesel`.
+  schema-aware DSL. SQL is SQL.
 - **Not a query builder.** `Query::raw` and the `sql!` macro give you
   composable SQL fragments; we do not provide a typed AST you build up
   with `.select().from().where_(...)`.
@@ -193,13 +178,6 @@ want.
   the `embed_migrations!` workflow, but if you want a full migration
   CLI with rollbacks and squashing, `refinery` or `sqlx-cli` are
   better-fit tools.
-- **Not a drop-in replacement.** The API doesn't match
-  `tokio-postgres` or `sqlx`. Porting from either is a rewrite, not a
-  search-and-replace. We don't apologize for that — it's how the
-  typestate gets to be the API.
-
-If any of those "nots" rule babar out, we have done you a favor by
-saying so up front.
 
 ## When babar is the right pick
 
@@ -209,13 +187,9 @@ Reach for babar when:
   features (channel binding, binary `COPY`, prepared statements as a
   type) than have them hidden behind a generic abstraction.
 - You want **types on the query** — `Query<P, R>`, `Command<P>`,
-  `Transaction<'_>` — instead of a string and a vector of `dyn ToSql`.
+  `Transaction<'_>`.
 - You want **`validate-early` semantics**: schema drift surfaces at
   prepare time as `Error::SchemaMismatch`, not at row 4,723.
-- You want **one obvious way** to do each thing, and you're willing to
-  hand-write codecs to get it.
-- You want a driver with **no `unsafe`** and a small dependency
-  surface, audited under Miri.
 
 Reach for something else when you need multi-database support, a
 mature ORM, or a feature babar has [deferred](./roadmap.md) — those

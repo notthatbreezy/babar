@@ -1,7 +1,7 @@
 # 9. Error handling
 
-In this chapter we'll meet the `babar::Error` enum, classify failures
-by inspecting the variant directly, and pull out the SQLSTATE codes
+This chapter covers the `babar::Error` enum, classifying failures
+by inspecting the variant directly, and pulling out the SQLSTATE codes
 your retry logic actually wants.
 
 ## Setup
@@ -84,14 +84,13 @@ the variant:
 | `Error::SchemaMismatch { position, expected_oid, actual_oid, column_name, sql, origin }` | Decoder OID ≠ server's column type. |
 | `Error::Migration(MigrationError)` | The migrator's planning or apply step failed. |
 
-That's eleven. They cover everything. Build a small `classify`
-function — like the one in the example — once per service, and call
-it everywhere.
+That's eleven. They cover everything. You can build a small `classify`
+function once per service, and call it everywhere.
 
 ## Why SQLSTATE matters more than the message
 
 `Error::Server.message` is for humans. `Error::Server.code` (a
-five-character SQLSTATE) is for code. A few you'll reach for often:
+five-character SQLSTATE) is for code. A few you may see often:
 
 | SQLSTATE | Class | Meaning |
 |---|---|---|

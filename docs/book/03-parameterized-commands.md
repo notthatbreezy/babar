@@ -119,7 +119,7 @@ tuple's value-type, not some opaque `Row` shape.
 
 Codecs you'll reach for first: `int4`, `int8`, `text`, `bool`,
 `bytea`, `float4`, `float8`, `nullable(c)`. The full set lives in
-`babar::codec`; we walk through them in
+`babar::codec`; the full set is listed in
 [reference/codecs.md](../reference/codecs.md).
 
 ## Next

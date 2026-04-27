@@ -77,9 +77,9 @@ For result sets that don't fit comfortably in memory, swap
 returns a `RowStream<B>` (an `impl Stream<Item = babar::Result<B>>`)
 that pulls rows from the server `n` at a time using a Postgres portal.
 
-A few notes you'll want in your back pocket:
+A few things to note:
 
-- **Back-pressure is real**. The driver task only fetches the next
+- **Back-pressure**. The driver task only fetches the next
   batch when the consumer pulls. If you stop polling the stream, the
   server stops sending rows; nothing buffers indefinitely on either
   side.

@@ -68,7 +68,35 @@ let q: Query<(), (i32, Option<String>)> = Query::raw(
 
 If you forget the `nullable(...)` wrapper and Postgres sends a NULL,
 the codec returns a clear decode error rather than a panic or a silent
-`String::default()`.
+`String::default()`. For example, decoding the `note` column as plain
+`text` against a row where `note IS NULL`:
+
+```rust
+use babar::codec::{int4, text};
+
+// Wrong: `text` (not `nullable(text)`) and `String` (not `Option<String>`).
+let q: Query<(), (i32, String)> = Query::raw(
+    "SELECT id, note FROM users WHERE id = 1",
+    (),
+    (int4, text),
+);
+
+match session.query(&q, ()).await {
+    Ok(rows) => println!("{rows:?}"),
+    Err(e) => eprintln!("decode failed: {e}"),
+}
+```
+
+…prints something like:
+
+```text
+decode failed: decode error at column 1 ("note"): unexpected NULL for non-nullable codec `text`;
+  wrap it in `nullable(text)` and decode into `Option<String>`
+```
+
+The fix is the one-line change shown above: swap `text` for `nullable(text)`
+and `String` for `Option<String>` in the row tuple. babar would rather make
+you spell it out than quietly hand you an empty string.
 
 ## Multiple rows
 
