@@ -27,3 +27,6 @@ cobertura.xml
 
 # trybuild scratch
 **/wip/
+
+# mdbook build output
+/book/
