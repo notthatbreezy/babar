@@ -98,10 +98,6 @@ rather than a layer underneath a DSL.
 | Compile-time-verified SQL, multi-database support | `sqlx` |
 | A schema-aware ORM with a strong DSL | `diesel` |
 
-These are not mutually exclusive — services use babar for the data
-plane and `sqlx` for a one-off internal tool, or vice versa.
-Choosing tools is a question of fit, not allegiance.
-
 ## Where to read next
 
 - [Roadmap](./roadmap.md) — what's deferred (and therefore what
