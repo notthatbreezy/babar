@@ -18,8 +18,8 @@ When you call `Session::connect`, babar:
    `mpsc::Sender<Command>` — the channel into the driver task — plus
    a small amount of cached server state (parameters, backend keys).
 
-Every public call on `Session` — `query`, `execute`, `prepare`,
-`transaction`, `copy_in`, `close` — translates to a `Command` enum
+Every public call on `Session` — `query`, `execute`, `prepare_query`,
+`prepare_command`, `transaction`, `copy_in`, `close` — translates to a `Command` enum
 sent over that channel. Each `Command` carries a `oneshot::Sender`
 for its reply. The driver task pulls commands off the inbox, performs
 the protocol exchange against the server, and replies on the

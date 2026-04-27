@@ -64,8 +64,6 @@ That is the validate-early principle in operation. Concretely:
   immediately, again before any rows are processed.
 - The `query!` macro can validate SQL against a live database when
   `BABAR_DATABASE_URL` is set for opt-in compile-time validation.
-- `babar-cli verify` runs the catalog check against a fresh
-  database in CI.
 
 The cost is one round-trip on each prepare. The benefit is that
 schema drift surfaces as a Rust error at the boundary, with a

@@ -50,7 +50,7 @@ use.
 ## Two backends, pick one
 
 `TlsBackend::Rustls` is the pure-Rust default; the cargo feature is
-`tls-rustls`. `TlsBackend::NativeTls` (cargo feature `native-tls`)
+`rustls` (and it's in the default feature set). `TlsBackend::NativeTls` (cargo feature `native-tls`)
 uses the platform's TLS stack (Schannel on Windows, Secure Transport
 on macOS, OpenSSL on Linux). Pick `Rustls` unless you have a specific
 reason — system roots, FIPS mode, smartcard support — to reach for the

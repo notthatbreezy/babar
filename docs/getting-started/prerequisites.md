@@ -14,9 +14,7 @@ leaks past your tutorial session.
 docker run --rm -it \
   --name babar-pg \
   -p 5432:5432 \
-  -e POSTGRES_USER=babar \
-  -e POSTGRES_PASSWORD=babar \
-  -e POSTGRES_DB=babar \
+  -e POSTGRES_PASSWORD=postgres \
   postgres:17 \
   -c log_statement=all \
   -c log_min_duration_statement=0 \
@@ -29,8 +27,10 @@ What each flag is doing for you:
 - `--rm -it` — foreground, throwaway, `Ctrl-C` to stop. No daemon, no
   cleanup chores later.
 - `-p 5432:5432` — Postgres' default port, exposed on `localhost`.
-- The three `POSTGRES_*` env vars create a user, password, and
-  database all named `babar` on first boot.
+- `-e POSTGRES_PASSWORD=postgres` — sets the password for the default
+  `postgres` superuser. The `postgres:17` image already creates that
+  role and a database of the same name on first boot, so we just need
+  to give it a password.
 - `-c log_statement=all` — every SQL statement gets logged.
 - `-c log_min_duration_statement=0` — every statement also gets a
   duration logged, no threshold.
@@ -40,7 +40,7 @@ What each flag is doing for you:
 The connection string for everything that follows is:
 
 ```text
-postgres://babar:babar@localhost:5432/babar
+postgres://postgres:postgres@localhost:5432/postgres
 ```
 
 …which in `Config` form is:
@@ -48,8 +48,8 @@ postgres://babar:babar@localhost:5432/babar
 ```rust
 use babar::Config;
 
-let cfg = Config::new("localhost", 5432, "babar", "babar")  // type: Config
-    .password("babar")
+let cfg = Config::new("localhost", 5432, "postgres", "postgres")  // type: Config
+    .password("postgres")
     .application_name("first-query");
 ```
 

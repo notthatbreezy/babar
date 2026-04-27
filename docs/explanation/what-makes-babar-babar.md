@@ -70,7 +70,7 @@ The shape of every database operation is in the type signature.
 ```rust
 use babar::codec::{int4, text, nullable};
 use babar::query::Query;
-use babar::command::Command;
+use babar::query::Command;
 
 let select: Query<(i32,), (String, Option<i32>)> =        // type: Query<(i32,), (String, Option<i32>)>
     Query::raw(
@@ -102,8 +102,8 @@ including savepoints.
 Prepared queries are a separate type:
 
 ```rust
-let prepared: PreparedQuery<'_, (i32,), (String,)> =      // type: PreparedQuery<'_, (i32,), (String,)>
-    session.prepare(&select).await?;
+let prepared: PreparedQuery<(i32,), (String,)> =          // type: PreparedQuery<(i32,), (String,)>
+    session.prepare_query(&select).await?;
 ```
 
 A `PreparedQuery` is *not* a `Query`. The compiler knows it has been
@@ -117,7 +117,7 @@ when you've finalized it.
 ```rust
 use babar::codec::{int4, text, nullable};
 
-let row_codec = (int4, text, nullable(int4));   // type: (Int4, Text, Nullable<Int4>)
+let row_codec = (int4, text, nullable(int4));   // type: (Int4Codec, TextCodec, Nullable<Int4Codec>)
 ```
 
 Codecs are runtime values, not derived types. The tuple `(int4, text,

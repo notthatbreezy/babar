@@ -83,7 +83,7 @@ dropped, at which point the connections are closed.
 | `acquire_timeout` | How long `pool.acquire()` waits before returning `PoolError::Timeout`. |
 | `idle_timeout` | How long an idle connection lingers before being closed. |
 | `max_lifetime` | How long any connection (idle or in-use) lives before being recycled. |
-| `health_check` | Test to apply when checking out: `HealthCheck::None`, `HealthCheck::Ping`, or a custom probe. |
+| `health_check` | Test to apply when checking out: `HealthCheck::None`, `HealthCheck::Ping`, or `HealthCheck::ResetQuery(sql)` (runs an arbitrary SQL string on every checkout via the simple-query protocol). |
 
 A typical web service starts with `min_idle = 2`, `max_size = 16`,
 `acquire_timeout = 2s`, `idle_timeout = 30s`, `max_lifetime = 30min`,

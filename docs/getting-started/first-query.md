@@ -1,13 +1,13 @@
 # Your first query
 
-In this chapter we'll connect to a Postgres server, ask it a single
-question, and decode the answer into Rust values you can pattern-match
+In this chapter we'll connect to a Postgres server, run a single query, 
+and decode the response into Rust values you can pattern-match
 on. Three values do the work: a `Config`, a `Query`, and a `Session`.
 
 ## Setup
 
 Add `babar` and a Tokio runtime to your `Cargo.toml`, then drop the
-following into `src/main.rs`. We'll walk it line by line below.
+following into `src/main.rs`.
 
 ```rust
 use babar::codec::{int4, text};
@@ -51,9 +51,9 @@ cargo run
 # id=1 name=Ada
 ```
 
-## Let's break this down
+## Breaking this down
 
-**`Config::new(host, port, user, database)`** is a regular constructor
+**`Config::new(host, port, user, database)`** is a constructor
 that takes the four required fields by position. Optional fields are
 chained on after: `.password(...)`, `.application_name(...)`,
 `.connect_timeout(...)`. There is no `Config::from_env()` and no DSN
@@ -77,8 +77,7 @@ a `Query`. The `sql!` macro produces a different thing — a `Fragment`
 that knows about named placeholders — and you'd build a `Query` from it
 with `Query::from_fragment(fragment, decoder)`. The chain is always:
 **fragment → query → run**. You cannot pass a `Fragment` straight to
-`session.query` — the compiler will tell you so politely, but the
-phrase to remember is *"`sql!` is the schema, `Query` is the call"*.
+`session.query` — the phrase to remember is *"`sql!` is the schema, `Query` is the call"*.
 
 **`session.query(&q, args)`** is the run step. It returns
 `Vec<B>` — fully decoded rows, where each `B` is whatever your decoder
@@ -86,13 +85,11 @@ tuple produces. babar does not expose an intermediate `Row` type and
 there is no `.get::<T, _>()` accessor: by the time you have the `Vec`,
 the bytes are already typed Rust values.
 
-## What just happened
+## What happened
 
 You spoke the Postgres wire protocol, prepared a statement, bound zero
 parameters, fetched one row, decoded `int4` into `i32` and `text` into
-`String`, and closed the session — without `libpq`, without a
-connection string parser, and without a synchronous escape hatch
-anywhere in sight.
+`String`, and closed the session.
 
 ## Next
 

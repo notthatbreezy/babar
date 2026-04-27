@@ -18,7 +18,7 @@ methods. Build it from any source — env vars, a config file, a
 | Method | Required arguments |
 |---|---|
 | `Config::new(host, port, user, dbname)` | `impl Into<String>` for host/user/dbname, `u16` for port. Resolves `host` via DNS at connect time. |
-| `Config::with_addr(addr, user, dbname)` | `impl Into<SocketAddr>`. Skips DNS — useful for IP-direct deployments. |
+| `Config::with_addr(addr, port, user, dbname)` | `addr: IpAddr`, `port: u16`, `user`/`dbname` as `impl Into<String>`. Skips DNS — useful for IP-direct deployments. |
 
 ### Optional fields (chained, value-returning)
 
@@ -27,7 +27,7 @@ methods. Build it from any source — env vars, a config file, a
 | `.password(p)` | `impl Into<String>` | none | Sent to the server only as part of the auth handshake. |
 | `.application_name(n)` | `impl Into<String>` | none | Surfaces in `pg_stat_activity.application_name`. Cheapest observability win. |
 | `.connect_timeout(d)` | `Duration` | none | Wall-clock cap on `Session::connect`. |
-| `.tls_mode(m)` | `TlsMode` | `Prefer` | `Disable` / `Prefer` / `Require`. See ch12. |
+| `.tls_mode(m)` | `TlsMode` | `Disable` | `Disable` / `Prefer` / `Require`. Opt in to `Prefer` or `Require` explicitly. See ch12. |
 | `.require_tls()` | — | — | Sugar for `.tls_mode(TlsMode::Require)`. |
 | `.tls_backend(b)` | `TlsBackend` | `Rustls` (with `rustls` feature) | `Rustls` or `NativeTls`. |
 | `.tls_server_name(n)` | `impl Into<String>` | host | Override SNI / certificate-name match. |
@@ -55,7 +55,7 @@ value-returning methods.
 |---|---|---|---|
 | `.min_idle(n)` | `usize` | `0` | Keep at least `n` warm connections when traffic permits. |
 | `.max_size(n)` | `usize` | `16` | Hard cap on total connections in the pool. |
-| `.acquire_timeout(d)` | `Duration` | implementation default (~30s) | How long `pool.acquire()` waits before returning `PoolError::Timeout`. |
+| `.acquire_timeout(d)` | `Duration` | 30 seconds | How long `pool.acquire()` waits before returning `PoolError::Timeout`. |
 | `.idle_timeout(d)` | `Duration` | unset (no idle timeout) | Close idle connections older than this. |
 | `.max_lifetime(d)` | `Duration` | unset (no lifetime cap) | Recycle connections after this age regardless of idle state. |
 | `.health_check(h)` | `HealthCheck` | `HealthCheck::None` | Per-acquire validation policy (off by default). |

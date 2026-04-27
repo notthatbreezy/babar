@@ -113,7 +113,8 @@ streaming — see [Chapter 4](./04-prepared-and-streaming.md).
 ## When a row doesn't fit your tuple
 
 If your decoder asks for `(i32, String)` but the SQL returns three
-columns, decoding fails with a clear `Error::Codec(_)`. Make the
+columns, decoding fails with a clear `Error::ColumnAlignment { expected, actual, .. }`
+before any rows are decoded. Make the
 column list explicit (`SELECT id, name FROM ...`) so the row shape and
 the codec tuple stay in lockstep — `SELECT *` is allowed but a
 liability for typed code.
