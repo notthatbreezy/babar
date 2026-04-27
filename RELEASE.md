@@ -7,6 +7,13 @@
 - GitHub Actions green on the release commit.
 
 ## Validation checklist
+0. **MSRV verification** — stable `cargo check` does not catch transitive `rust-version` requirements; use the pinned toolchain:
+   ```bash
+   MSRV=$(grep '^rust-version' Cargo.toml | cut -d'"' -f2)
+   rustup toolchain install "${MSRV}"
+   cargo "+${MSRV}" check --workspace --all-features
+   cargo "+${MSRV}" test --workspace --no-run
+   ```
 1. `cargo fmt --check`
 2. `cargo clippy --all-targets --all-features -- -D warnings`
 3. `cargo test --all-features`
