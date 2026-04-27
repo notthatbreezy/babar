@@ -12,7 +12,7 @@ the variant directly.
 | Variant | Shape | When it fires |
 |---|---|---|
 | `Io` | `Io(std::io::Error)` | TCP, TLS, or socket I/O failure (DNS, refused, reset, EOF). |
-| `Closed` | `Closed { sql: Option<String>, origin: Option<&'static Origin> }` | The session was closed and the call lost its connection. `sql` and `origin` carry the in-flight statement. |
+| `Closed` | `Closed { sql: Option<String>, origin: Option<Origin> }` | The session was closed and the call lost its connection. `sql` and `origin` carry the in-flight statement. |
 | `Protocol` | `Protocol(String)` | The server sent something babar can't make sense of (framing error, unexpected message). |
 | `Auth` | `Auth(String)` | SCRAM rejected, password wrong, role can't log in, no password configured. |
 | `UnsupportedAuth` | `UnsupportedAuth(String)` | The server selected an auth method babar doesn't speak (e.g. `gss`, `sspi`, or any code babar hasn't implemented). |

@@ -66,7 +66,7 @@ value-returning methods.
 |---|---|
 | `PoolError::Timeout` | `acquire_timeout` elapsed before a slot freed up. |
 | `PoolError::AcquireFailed(babar::Error)` | The pool tried to open a fresh connection and the underlying `Session::connect` failed. |
-| `PoolError::Closed` | The pool itself has been closed. |
+| `PoolError::PoolClosed` | The pool itself has been closed. |
 
 ## Picking values
 
