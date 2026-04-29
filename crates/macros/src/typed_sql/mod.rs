@@ -164,6 +164,16 @@ impl TypedSqlError {
                     "rewrite the query to select directly from real tables with JOIN ... ON",
                 ))
             }
+            TypedSqlErrorKind::Unsupported if self.message.contains("`$value?`") => Some(
+                Cow::Borrowed(
+                    "attach `?` only to placeholders owned by a WHERE/JOIN comparison or a LIMIT/OFFSET expression",
+                ),
+            ),
+            TypedSqlErrorKind::Unsupported if self.message.contains("`(...)?`") => Some(
+                Cow::Borrowed(
+                    "wrap a parenthesized predicate expression inside WHERE/JOIN, for example `(users.id = $id?)?`",
+                ),
+            ),
             TypedSqlErrorKind::Type if self.message.contains("never constrained") => Some(
                 Cow::Borrowed(
                     "compare the placeholder against a qualified column, or use it in LIMIT/OFFSET so its SQL type becomes known",
@@ -278,6 +288,28 @@ mod tests {
             placeholder.occurrences[0].canonical_span,
             SourceSpan::new(44, 46)
         );
+        assert!(!placeholder.occurrences[0].optional);
+    }
+
+    #[test]
+    fn canonicalizes_optional_suffix_syntax() {
+        let parsed = parse_select(
+            "SELECT users.id FROM users WHERE (users.id = $user_id?)? LIMIT $limit?",
+        )
+        .expect("query parses");
+
+        assert_eq!(
+            parsed.source.canonical_sql,
+            "SELECT users.id FROM users WHERE (users.id = $1) LIMIT $2"
+        );
+        assert_eq!(parsed.source.placeholders.entries().len(), 2);
+        assert!(parsed.source.placeholders.entries()[0].occurrences[0].optional);
+        assert!(parsed.source.placeholders.entries()[1].occurrences[0].optional);
+        assert_eq!(parsed.source.optional_groups.entries().len(), 1);
+        assert_eq!(
+            parsed.source.optional_groups.entries()[0].original_span,
+            SourceSpan::new(33, 56)
+        );
     }
 
     #[test]
@@ -314,6 +346,45 @@ mod tests {
             terms[1],
             ParsedExpr::IsNull { negated: false, .. }
         ));
+    }
+
+    #[test]
+    fn normalizes_optional_placeholders_and_groups_into_ir() {
+        let parsed = parse_select(
+            "SELECT users.id FROM users WHERE (users.id = $user_id?)? LIMIT $limit?",
+        )
+        .expect("query parses");
+
+        let ParsedExpr::OptionalGroup(group) = parsed.select.filter.expect("where clause") else {
+            panic!("expected optional group")
+        };
+        let ParsedExpr::Binary { right, .. } = group.expr.as_ref() else {
+            panic!("expected optional comparison inside group")
+        };
+        let ParsedExpr::Placeholder(placeholder) = right.as_ref() else {
+            panic!("expected optional placeholder")
+        };
+        assert!(placeholder.optional);
+        assert_eq!(placeholder.span, SourceSpan::new(45, 54));
+        assert!(matches!(
+            parsed.select.limit.as_ref().map(|limit| &limit.expr),
+            Some(ParsedExpr::Placeholder(PlaceholderRef { optional: true, .. }))
+        ));
+    }
+
+    #[test]
+    fn rejects_optional_suffixes_in_unsupported_placements() {
+        let projection_error =
+            parse_select("SELECT $user_id? FROM users").expect_err("projection should fail");
+        assert_eq!(projection_error.kind, TypedSqlErrorKind::Unsupported);
+        assert!(projection_error.message.contains("`$value?`"));
+
+        let clause_group_error = parse_select(
+            "SELECT users.id FROM users (ORDER BY users.id)?",
+        )
+        .expect_err("clause group should fail");
+        assert_eq!(clause_group_error.kind, TypedSqlErrorKind::Unsupported);
+        assert!(clause_group_error.message.contains("`(...)?`"));
     }
 
     #[test]
@@ -573,7 +644,12 @@ mod tests {
             writeln!(
                 &mut out,
                 "  - ${} @ {}",
-                entry.name, entry.occurrences[0].original_span,
+                if entry.occurrences.iter().any(|occurrence| occurrence.optional) {
+                    format!("{}?", entry.name)
+                } else {
+                    entry.name.clone()
+                },
+                entry.occurrences[0].original_span,
             )
             .expect("write placeholder");
         }
@@ -680,13 +756,18 @@ mod tests {
             ParsedExpr::Column(column) => {
                 format!("{}.{}", column.binding.value, column.column.value)
             }
-            ParsedExpr::Placeholder(placeholder) => format!("${}", placeholder.name),
+            ParsedExpr::Placeholder(placeholder) => {
+                format!("${}{}", placeholder.name, if placeholder.optional { "?" } else { "" })
+            }
             ParsedExpr::Literal(literal) => match &literal.value {
                 Literal::Number(value) => value.clone(),
                 Literal::String(value) => format!("'{value}'"),
                 Literal::Boolean(value) => value.to_string(),
                 Literal::Null => "NULL".to_owned(),
             },
+            ParsedExpr::OptionalGroup(group) => {
+                format!("OPTIONAL({})", render_expr(&group.expr, source))
+            }
             ParsedExpr::Unary { op, expr, .. } => format!(
                 "({} {})",
                 match op {

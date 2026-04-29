@@ -745,9 +745,21 @@ fn resolve_expr(
             })
         }
         ParsedExpr::Placeholder(placeholder) => {
+            if placeholder.optional {
+                return Err(TypedSqlError::unsupported_at(
+                    "optional typed_query syntax is parsed but not lowered yet; complete phase 2 before executing queries with `$value?`",
+                    placeholder.span,
+                ));
+            }
             ResolvedExprNode::Placeholder(ResolvedPlaceholderRef::from_placeholder(placeholder))
         }
         ParsedExpr::Literal(literal) => ResolvedExprNode::Literal(literal.value.clone()),
+        ParsedExpr::OptionalGroup(group) => {
+            return Err(TypedSqlError::unsupported_at(
+                "optional typed_query syntax is parsed but not lowered yet; complete phase 2 before executing queries with `(...)?`",
+                group.span,
+            ));
+        }
         ParsedExpr::Unary { op, expr, .. } => ResolvedExprNode::Unary {
             op: *op,
             expr: Box::new(resolve_expr(expr, scope, bindings, catalog)?),
@@ -1480,6 +1492,7 @@ fn expr_span(expr: &ParsedExpr) -> SourceSpan {
         ParsedExpr::Column(column) => column.span,
         ParsedExpr::Placeholder(placeholder) => placeholder.span,
         ParsedExpr::Literal(literal) => literal.span,
+        ParsedExpr::OptionalGroup(group) => group.span,
         ParsedExpr::Unary { span, .. }
         | ParsedExpr::Binary { span, .. }
         | ParsedExpr::IsNull { span, .. }

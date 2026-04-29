@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use sqlparser::{
     ast::Spanned,
     ast::{
@@ -10,8 +12,8 @@ use sqlparser::{
 use crate::typed_sql::ir::{
     AstId, BinaryOp, BindingNameSyntax, BoolOp, ColumnRefSyntax, IdentSyntax, JoinKind, Literal,
     NullsOrder, ObjectNameSyntax, OrderDirection, OutputNameSyntax, ParsedExpr, ParsedFrom,
-    ParsedJoin, ParsedLimit, ParsedLiteral, ParsedOffset, ParsedOrderBy, ParsedProjection,
-    ParsedSelect, PlaceholderId, PlaceholderRef, SourceSpan, UnaryOp,
+    ParsedJoin, ParsedLimit, ParsedLiteral, ParsedOffset, ParsedOptionalGroup, ParsedOrderBy,
+    ParsedProjection, ParsedSelect, PlaceholderId, PlaceholderRef, SourceSpan, UnaryOp,
 };
 
 use super::{
@@ -26,12 +28,17 @@ pub(crate) fn normalize_select(source: &SqlSource, query: &Query) -> Result<Pars
 
 struct Normalizer<'a> {
     source: &'a SqlSource,
+    consumed_optional_groups: HashSet<SourceSpan>,
     next_id: u32,
 }
 
 impl<'a> Normalizer<'a> {
     fn new(source: &'a SqlSource) -> Self {
-        Self { source, next_id: 0 }
+        Self {
+            source,
+            consumed_optional_groups: HashSet::new(),
+            next_id: 0,
+        }
     }
 
     fn normalize_query(&mut self, query: &Query) -> Result<ParsedSelect> {
@@ -89,10 +96,11 @@ impl<'a> Normalizer<'a> {
         let filter = select
             .selection
             .as_ref()
-            .map(|expr| self.normalize_expr(expr))
+            .map(|expr| self.normalize_expr(expr, ExprContext::Predicate))
             .transpose()?;
         let order_by = self.normalize_order_by(query.order_by.as_ref())?;
         let (limit, offset) = self.normalize_limit_clause(query.limit_clause.as_ref())?;
+        self.reject_unconsumed_optional_groups()?;
 
         Ok(ParsedSelect {
             id: self.alloc_id(),
@@ -245,7 +253,7 @@ impl<'a> Normalizer<'a> {
             kind,
             right: self
                 .normalize_table_factor(&join.relation, self.source_span(&join.relation)?)?,
-            on: self.normalize_expr(on)?,
+            on: self.normalize_expr(on, ExprContext::Predicate)?,
         })
     }
 
@@ -256,14 +264,14 @@ impl<'a> Normalizer<'a> {
                 Ok(ParsedProjection {
                     id: self.alloc_id(),
                     span: self.source_span(item)?,
-                    expr: self.normalize_expr(expr)?,
+                    expr: self.normalize_expr(expr, ExprContext::Projection)?,
                     output_name,
                 })
             }
             SelectItem::ExprWithAlias { expr, alias } => Ok(ParsedProjection {
                 id: self.alloc_id(),
                 span: self.source_span(item)?,
-                expr: self.normalize_expr(expr)?,
+                expr: self.normalize_expr(expr, ExprContext::Projection)?,
                 output_name: OutputNameSyntax::Explicit(self.normalize_ident(alias)?),
             }),
             SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => {
@@ -306,7 +314,7 @@ impl<'a> Normalizer<'a> {
         Ok(ParsedOrderBy {
             id: self.alloc_id(),
             span: self.source_span(item)?,
-            expr: self.normalize_expr(&item.expr)?,
+            expr: self.normalize_expr(&item.expr, ExprContext::OrderBy)?,
             direction: if item.options.asc == Some(false) {
                 OrderDirection::Desc
             } else {
@@ -347,7 +355,7 @@ impl<'a> Normalizer<'a> {
                         Ok(ParsedLimit {
                             id: self.alloc_id(),
                             span: self.source_span(expr)?,
-                            expr: self.normalize_expr(expr)?,
+                            expr: self.normalize_expr(expr, ExprContext::Limit)?,
                         })
                     })
                     .transpose()?;
@@ -357,7 +365,7 @@ impl<'a> Normalizer<'a> {
                         Ok(ParsedOffset {
                             id: self.alloc_id(),
                             span: self.source_span(offset)?,
-                            expr: self.normalize_expr(&offset.value)?,
+                            expr: self.normalize_expr(&offset.value, ExprContext::Offset)?,
                         })
                     })
                     .transpose()?;
@@ -370,7 +378,7 @@ impl<'a> Normalizer<'a> {
         }
     }
 
-    fn normalize_expr(&mut self, expr: &Expr) -> Result<ParsedExpr> {
+    fn normalize_expr(&mut self, expr: &Expr, context: ExprContext) -> Result<ParsedExpr> {
         match expr {
             Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
                 let binding = self.normalize_ident(&parts[0])?;
@@ -386,7 +394,7 @@ impl<'a> Normalizer<'a> {
                 expr,
                 "typed_sql v1 requires fully qualified column references",
             )),
-            Expr::Value(value) => self.normalize_value(value),
+            Expr::Value(value) => self.normalize_value(value, context),
             Expr::UnaryOp { op, expr: inner } => {
                 let op = match op {
                     UnaryOperator::Not => UnaryOp::Not,
@@ -403,23 +411,25 @@ impl<'a> Normalizer<'a> {
                     id: self.alloc_id(),
                     span: self.source_span(expr)?,
                     op,
-                    expr: Box::new(self.normalize_expr(inner)?),
+                    expr: Box::new(self.normalize_expr(inner, context)?),
                 })
             }
-            Expr::BinaryOp { left, op, right } => self.normalize_binary_expr(expr, left, op, right),
+            Expr::BinaryOp { left, op, right } => {
+                self.normalize_binary_expr(expr, left, op, right, context)
+            }
             Expr::IsNull(inner) => Ok(ParsedExpr::IsNull {
                 id: self.alloc_id(),
                 span: self.source_span(expr)?,
                 negated: false,
-                expr: Box::new(self.normalize_expr(inner)?),
+                expr: Box::new(self.normalize_expr(inner, context)?),
             }),
             Expr::IsNotNull(inner) => Ok(ParsedExpr::IsNull {
                 id: self.alloc_id(),
                 span: self.source_span(expr)?,
                 negated: true,
-                expr: Box::new(self.normalize_expr(inner)?),
+                expr: Box::new(self.normalize_expr(inner, context)?),
             }),
-            Expr::Nested(inner) => self.normalize_expr(inner),
+            Expr::Nested(inner) => self.normalize_nested_expr(expr, inner, context),
             _ => {
                 Err(self
                     .unsupported_node(expr, "typed_sql v1 does not support this expression form"))
@@ -433,6 +443,7 @@ impl<'a> Normalizer<'a> {
         left: &Expr,
         op: &BinaryOperator,
         right: &Expr,
+        context: ExprContext,
     ) -> Result<ParsedExpr> {
         match op {
             BinaryOperator::And => {
@@ -466,8 +477,14 @@ impl<'a> Normalizer<'a> {
                         "typed_sql v1 only supports simple comparison operators",
                     )
                 })?,
-                left: Box::new(self.normalize_expr(left)?),
-                right: Box::new(self.normalize_expr(right)?),
+                left: Box::new(self.normalize_expr(
+                    left,
+                    context.comparison_operand_context(),
+                )?),
+                right: Box::new(self.normalize_expr(
+                    right,
+                    context.comparison_operand_context(),
+                )?),
             }),
         }
     }
@@ -494,11 +511,11 @@ impl<'a> Normalizer<'a> {
                 return Ok(());
             }
         }
-        terms.push(self.normalize_expr(expr)?);
+        terms.push(self.normalize_expr(expr, ExprContext::Predicate)?);
         Ok(())
     }
 
-    fn normalize_value(&mut self, value: &ValueWithSpan) -> Result<ParsedExpr> {
+    fn normalize_value(&mut self, value: &ValueWithSpan, context: ExprContext) -> Result<ParsedExpr> {
         match &value.value {
             Value::Placeholder(token) => {
                 let Some(entry) = self.source.placeholders.entry_for_token(token) else {
@@ -507,7 +524,7 @@ impl<'a> Normalizer<'a> {
                     )));
                 };
                 Ok(ParsedExpr::Placeholder(
-                    self.normalize_placeholder(value, entry)?,
+                    self.normalize_placeholder(value, entry, context)?,
                 ))
             }
             Value::Number(number, _) => Ok(ParsedExpr::Literal(ParsedLiteral {
@@ -552,14 +569,58 @@ impl<'a> Normalizer<'a> {
         &mut self,
         value: &ValueWithSpan,
         entry: &PlaceholderEntry,
+        context: ExprContext,
     ) -> Result<PlaceholderRef> {
+        let canonical_span = self.source.canonical_span_for_parser(value.span)?;
+        let occurrence = entry
+            .occurrences
+            .iter()
+            .find(|occurrence| occurrence.canonical_span == canonical_span)
+            .ok_or_else(|| {
+                TypedSqlError::internal(format!(
+                    "parser span {canonical_span} did not match placeholder occurrence for `${}`",
+                    entry.name
+                ))
+            })?;
+        if occurrence.optional && !context.allows_optional_placeholder() {
+            return Err(TypedSqlError::unsupported_at(
+                "typed_sql v1 only supports `$value?` in WHERE/JOIN comparison predicates and LIMIT/OFFSET expressions",
+                occurrence.original_span,
+            ));
+        }
         Ok(PlaceholderRef {
             id: self.alloc_id(),
-            span: self.source_span(value)?,
+            span: occurrence.original_span,
             placeholder_id: PlaceholderId(entry.id.0),
             name: entry.name.clone(),
             slot: entry.slot,
+            optional: occurrence.optional,
         })
+    }
+
+    fn normalize_nested_expr(
+        &mut self,
+        expr: &Expr,
+        inner: &Expr,
+        context: ExprContext,
+    ) -> Result<ParsedExpr> {
+        let canonical_span = self.source.canonical_span_for_parser(expr.span())?;
+        let inner_expr = self.normalize_expr(inner, context)?;
+        let Some(group) = self.source.optional_groups.entry_for_canonical_span(canonical_span) else {
+            return Ok(inner_expr);
+        };
+        self.consumed_optional_groups.insert(group.original_span);
+        if !context.allows_optional_group() {
+            return Err(TypedSqlError::unsupported_at(
+                "typed_sql v1 only supports `(...)?` around parenthesized WHERE/JOIN predicate expressions",
+                group.original_span,
+            ));
+        }
+        Ok(ParsedExpr::OptionalGroup(ParsedOptionalGroup {
+            id: self.alloc_id(),
+            span: group.original_span,
+            expr: Box::new(inner_expr),
+        }))
     }
 
     fn normalize_object_name(&self, name: &ObjectName) -> Result<ObjectNameSyntax> {
@@ -606,6 +667,49 @@ impl<'a> Normalizer<'a> {
     fn unsupported_node<T: Spanned>(&self, node: &T, message: impl Into<String>) -> TypedSqlError {
         let span = self.source_span(node).ok();
         TypedSqlError::unsupported_with_optional_span(message.into(), span)
+    }
+
+    fn reject_unconsumed_optional_groups(&self) -> Result<()> {
+        let Some(group) = self
+            .source
+            .optional_groups
+            .entries()
+            .iter()
+            .find(|group| !self.consumed_optional_groups.contains(&group.original_span))
+        else {
+            return Ok(());
+        };
+        Err(TypedSqlError::unsupported_at(
+            "typed_sql v1 only supports `(...)?` around parenthesized WHERE/JOIN predicate expressions",
+            group.original_span,
+        ))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ExprContext {
+    Projection,
+    Predicate,
+    ComparisonOperand,
+    OrderBy,
+    Limit,
+    Offset,
+}
+
+impl ExprContext {
+    fn allows_optional_placeholder(self) -> bool {
+        matches!(self, Self::ComparisonOperand | Self::Limit | Self::Offset)
+    }
+
+    fn allows_optional_group(self) -> bool {
+        matches!(self, Self::Predicate)
+    }
+
+    fn comparison_operand_context(self) -> Self {
+        match self {
+            Self::Predicate | Self::ComparisonOperand => Self::ComparisonOperand,
+            other => other,
+        }
     }
 }
 

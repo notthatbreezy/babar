@@ -23,7 +23,7 @@ The main gap is that the pipeline currently models only ordinary named placehold
 - Replacing SQL-first authoring with a fluent query-builder API
 
 ## Phase Status
-- [ ] **Phase 1: Optional Syntax Frontend** - Extend the public macro frontend and normalized IR to represent `$value?` and `(...)?` as explicit optional syntax.
+- [x] **Phase 1: Optional Syntax Frontend** - Extend the public macro frontend and normalized IR to represent `$value?` and `(...)?` as explicit optional syntax.
 - [ ] **Phase 2: Omission Semantics and SQL Emission** - Define and implement structure-aware omission rules through resolution and final SQL generation.
 - [ ] **Phase 3: Diagnostics and Coverage** - Add end-to-end diagnostics, UI coverage, execution-focused tests, and example validation for supported and unsupported optional patterns.
 - [ ] **Phase 4: Documentation** - Document the completed read-query API and optional suffix semantics across PAW docs and project docs.
@@ -49,12 +49,12 @@ The main gap is that the pipeline currently models only ordinary named placehold
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] Tests pass: `cargo test -p babar-macros typed_sql --all-features`
-- [ ] Lint/typecheck: `cargo clippy -p babar-macros --lib -- -D warnings`
+- [x] Tests pass: `cargo test -p babar-macros typed_sql --all-features`
+- [x] Lint/typecheck: `cargo clippy -p babar-macros --lib -- -D warnings`
 
 #### Manual Verification:
-- [ ] A supported token-style query using `$value?` and `(...)?` parses as typed-query input without degrading source-span diagnostics.
-- [ ] Unsupported suffix placements fail in the frontend/normalization path rather than leaking as opaque downstream parse failures.
+- [x] A supported token-style query using `$value?` and `(...)?` parses as typed-query input without degrading source-span diagnostics.
+- [x] Unsupported suffix placements fail in the frontend/normalization path rather than leaking as opaque downstream parse failures.
 
 ---
 

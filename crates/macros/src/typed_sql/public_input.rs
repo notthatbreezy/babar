@@ -65,7 +65,18 @@ impl SqlTextBuilder {
         let mut tokens = stream.into_iter().peekable();
         while let Some(token) = tokens.next() {
             match token {
-                TokenTree::Group(group) => self.push_group(group)?,
+                TokenTree::Group(group) => {
+                    let optional_suffix = if matches!(tokens.peek(), Some(TokenTree::Punct(punct)) if punct.as_char() == '?')
+                    {
+                        let Some(TokenTree::Punct(punct)) = tokens.next() else {
+                            unreachable!("peeked optional suffix");
+                        };
+                        Some(punct.span())
+                    } else {
+                        None
+                    };
+                    self.push_group(group, optional_suffix)?
+                }
                 TokenTree::Ident(ident) => {
                     self.push_piece(&ident.to_string(), ident.span(), PieceKind::Word)?
                 }
@@ -76,12 +87,15 @@ impl SqlTextBuilder {
         Ok(())
     }
 
-    fn push_group(&mut self, group: Group) -> syn::Result<()> {
+    fn push_group(&mut self, group: Group, optional_suffix: Option<Span>) -> syn::Result<()> {
         match group.delimiter() {
             Delimiter::Parenthesis => {
                 self.push_piece("(", group.span_open(), PieceKind::OpenDelim)?;
                 self.push_stream(group.stream())?;
                 self.push_piece(")", group.span_close(), PieceKind::CloseDelim)?;
+                if let Some(optional_span) = optional_suffix {
+                    self.push_piece("?", optional_span, PieceKind::SuffixMarker)?;
+                }
                 Ok(())
             }
             Delimiter::None => self.push_stream(group.stream()),
@@ -149,7 +163,20 @@ impl SqlTextBuilder {
                 .span()
                 .join(ident.span())
                 .unwrap_or_else(|| punct.span());
-            return self.push_piece(&format!("${ident}"), span, PieceKind::Word);
+            let optional = matches!(tokens.peek(), Some(TokenTree::Punct(punct)) if punct.as_char() == '?');
+            let span = if optional {
+                let Some(TokenTree::Punct(optional_punct)) = tokens.next() else {
+                    unreachable!("peeked optional suffix");
+                };
+                span.join(optional_punct.span()).unwrap_or(span)
+            } else {
+                span
+            };
+            return self.push_piece(
+                &format!("${ident}{}", if optional { "?" } else { "" }),
+                span,
+                PieceKind::Word,
+            );
         }
 
         if let Some((text, span, kind)) = try_compose_punct(ch, punct.span(), tokens) {
@@ -230,6 +257,7 @@ enum PieceKind {
     Word,
     OpenDelim,
     CloseDelim,
+    SuffixMarker,
     Dot,
     Comma,
     TightOperator,
@@ -325,7 +353,7 @@ fn needs_space(previous: Option<PieceKind>, next: PieceKind) -> bool {
     };
     if matches!(
         next,
-        PieceKind::CloseDelim | PieceKind::Comma | PieceKind::Dot
+        PieceKind::CloseDelim | PieceKind::Comma | PieceKind::Dot | PieceKind::SuffixMarker
     ) || matches!(previous, PieceKind::OpenDelim | PieceKind::Dot)
     {
         return false;
@@ -386,6 +414,26 @@ mod tests {
         assert_eq!(
             input.source.canonical_sql,
             "SELECT users.id FROM users WHERE users.id = $1"
+        );
+    }
+
+    #[test]
+    fn preserves_optional_suffix_syntax_in_token_sql() {
+        let input = PublicSqlInput::parse(quote! {
+            SELECT users.id
+            FROM users
+            WHERE (users.id = $id?)?
+            LIMIT $limit?
+        })
+        .expect("token SQL parses");
+
+        assert_eq!(
+            input.source.original_sql,
+            "SELECT users.id FROM users WHERE (users.id = $id?)? LIMIT $limit?"
+        );
+        assert_eq!(
+            input.source.canonical_sql,
+            "SELECT users.id FROM users WHERE (users.id = $1) LIMIT $2"
         );
     }
 

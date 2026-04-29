@@ -1,0 +1,12 @@
+select 0..70
+placeholders:
+  - $user_id? @ 45..54
+  - $limit? @ 63..70
+projections:
+  - users.id -> id
+from: users as users
+joins:
+where: OPTIONAL((users.id = $user_id?))
+order_by:
+limit: $limit?
+offset: <none>

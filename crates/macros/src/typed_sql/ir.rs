@@ -123,10 +123,18 @@ pub(crate) struct ParsedOffset {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParsedOptionalGroup {
+    pub(crate) id: AstId,
+    pub(crate) span: SourceSpan,
+    pub(crate) expr: Box<ParsedExpr>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ParsedExpr {
     Column(ColumnRefSyntax),
     Placeholder(PlaceholderRef),
     Literal(ParsedLiteral),
+    OptionalGroup(ParsedOptionalGroup),
     Unary {
         id: AstId,
         span: SourceSpan,
@@ -169,6 +177,7 @@ pub(crate) struct PlaceholderRef {
     pub(crate) placeholder_id: PlaceholderId,
     pub(crate) name: String,
     pub(crate) slot: u32,
+    pub(crate) optional: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

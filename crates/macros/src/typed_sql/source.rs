@@ -15,6 +15,7 @@ pub(crate) struct SqlSource {
     pub(crate) canonical_sql: String,
     pub(crate) source_map: SourceMap,
     pub(crate) placeholders: PlaceholderTable,
+    pub(crate) optional_groups: OptionalGroupTable,
     line_starts: Vec<usize>,
 }
 
@@ -221,6 +222,30 @@ pub(crate) struct PlaceholderEntry {
 pub(crate) struct PlaceholderOccurrence {
     pub(crate) original_span: SourceSpan,
     pub(crate) canonical_span: SourceSpan,
+    pub(crate) optional: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OptionalGroupTable {
+    entries: Vec<OptionalGroup>,
+}
+
+impl OptionalGroupTable {
+    pub(crate) fn entries(&self) -> &[OptionalGroup] {
+        &self.entries
+    }
+
+    pub(crate) fn entry_for_canonical_span(&self, span: SourceSpan) -> Option<&OptionalGroup> {
+        self.entries.iter().find(|entry| {
+            entry.canonical_span.start <= span.start && span.end <= entry.canonical_span.end
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OptionalGroup {
+    pub(crate) original_span: SourceSpan,
+    pub(crate) canonical_span: SourceSpan,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -272,6 +297,8 @@ pub(crate) fn canonicalize(sql: &str) -> Result<SqlSource> {
     let mut replacements = Vec::new();
     let mut placeholder_slots = HashMap::<String, usize>::new();
     let mut placeholders = Vec::<PlaceholderEntry>::new();
+    let mut optional_groups = Vec::<OptionalGroup>::new();
+    let mut paren_stack = Vec::<ParenFrame>::new();
 
     let chars: Vec<(usize, char)> = sql.char_indices().collect();
     let mut i = 0;
@@ -324,7 +351,12 @@ pub(crate) fn canonicalize(sql: &str) -> Result<SqlSource> {
                                 }
                                 j += 1;
                             }
-                            let original_end = chars.get(j).map_or(sql.len(), |(idx, _)| *idx);
+                            let optional = matches!(chars.get(j), Some((_, '?')));
+                            let original_end = if optional {
+                                chars.get(j + 1).map_or(sql.len(), |(idx, _)| *idx)
+                            } else {
+                                chars.get(j).map_or(sql.len(), |(idx, _)| *idx)
+                            };
                             let name: String = chars[i + 1..j].iter().map(|(_, ch)| *ch).collect();
                             let canonical_start = canonical_sql.len();
                             let entry_index =
@@ -351,6 +383,7 @@ pub(crate) fn canonicalize(sql: &str) -> Result<SqlSource> {
                                     to_u32(canonical_start)?,
                                     to_u32(canonical_end)?,
                                 ),
+                                optional,
                             };
                             placeholders[entry_index]
                                 .occurrences
@@ -359,10 +392,63 @@ pub(crate) fn canonicalize(sql: &str) -> Result<SqlSource> {
                                 canonical: occurrence.canonical_span,
                                 original: occurrence.original_span,
                             });
-                            i = j;
+                            i = if optional { j + 1 } else { j };
                             continue;
                         }
                     }
+                }
+
+                if ch == '(' {
+                    paren_stack.push(ParenFrame {
+                        original_start: byte_idx,
+                        canonical_start: canonical_sql.len(),
+                    });
+                    canonical_sql.push(ch);
+                    i += 1;
+                    continue;
+                }
+
+                if ch == ')' {
+                    canonical_sql.push(ch);
+                    let canonical_end = canonical_sql.len();
+                    let original_end = byte_idx + 1;
+                    let frame = paren_stack.pop();
+                    if matches!(chars.get(i + 1), Some((_, '?'))) {
+                        let original_with_suffix_end =
+                            chars.get(i + 2).map_or(sql.len(), |(idx, _)| *idx);
+                        let span = SourceSpan::new(
+                            to_u32(frame.map_or(byte_idx, |frame| frame.original_start))?,
+                            to_u32(original_with_suffix_end)?,
+                        );
+                        let inner = &sql[span.start as usize + 1..original_end];
+                        if starts_with_optional_clause_keyword(inner) {
+                            return Err(TypedSqlError::unsupported_at(
+                                "typed_sql v1 only supports `(...)?` around predicate expressions, not whole clauses",
+                                span,
+                            ));
+                        }
+                        optional_groups.push(OptionalGroup {
+                            original_span: span,
+                            canonical_span: SourceSpan::new(
+                                to_u32(frame.map_or(canonical_end - 1, |frame| frame.canonical_start))?,
+                                to_u32(canonical_end)?,
+                            ),
+                        });
+                        replacements.push(ReplacementSpan {
+                            canonical: SourceSpan::new(
+                                to_u32(canonical_end)?,
+                                to_u32(canonical_end)?,
+                            ),
+                            original: SourceSpan::new(
+                                to_u32(original_end)?,
+                                to_u32(original_with_suffix_end)?,
+                            ),
+                        });
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    continue;
                 }
 
                 canonical_sql.push(ch);
@@ -435,6 +521,9 @@ pub(crate) fn canonicalize(sql: &str) -> Result<SqlSource> {
         placeholders: PlaceholderTable {
             entries: placeholders,
         },
+        optional_groups: OptionalGroupTable {
+            entries: optional_groups,
+        },
         line_starts,
     })
 }
@@ -446,6 +535,12 @@ enum ScanState {
     DoubleQuoted,
     LineComment,
     BlockComment { depth: usize },
+}
+
+#[derive(Clone, Copy)]
+struct ParenFrame {
+    original_start: usize,
+    canonical_start: usize,
 }
 
 fn is_ident_start(ch: char) -> bool {
@@ -488,4 +583,17 @@ fn is_clause_keyword(token: &str) -> bool {
         token,
         "WHERE" | "GROUP" | "ORDER" | "LIMIT" | "OFFSET" | "JOIN"
     )
+}
+
+fn starts_with_optional_clause_keyword(input: &str) -> bool {
+    let trimmed = input.trim_start();
+    let upper = trimmed.to_ascii_uppercase();
+    upper.starts_with("WHERE ")
+        || upper == "WHERE"
+        || upper.starts_with("ORDER BY ")
+        || upper == "ORDER BY"
+        || upper.starts_with("LIMIT ")
+        || upper == "LIMIT"
+        || upper.starts_with("OFFSET ")
+        || upper == "OFFSET"
 }
