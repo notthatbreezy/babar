@@ -2,14 +2,14 @@
 
 Typed, async PostgreSQL driver for Tokio that speaks the PostgreSQL wire protocol directly.
 
-`babar` is explicit: queries and commands are typed values, codecs are imported values, SQL composition is opt-in via `sql!`, `#[derive(Codec)]` infers common struct fields and lets `#[pg(codec = "...")]` override the outliers, and a background driver task owns the socket so public API calls stay cancellation-safe.
+`babar` is explicit: queries and commands are typed values, codecs are imported values, SQL composition is opt-in via `sql!`, `query!`, `command!`, and the new `typed_query!` POC, `#[derive(Codec)]` infers common struct fields and lets `#[pg(codec = "...")]` override the outliers, and a background driver task owns the socket so public API calls stay cancellation-safe.
 
 ## Highlights
 
 - direct wire-protocol implementation on Tokio — no `libpq`, no `tokio-postgres`
 - typed `Query`, `Command`, `PreparedQuery`, `PreparedCommand`, `Transaction`/`Savepoint`, and `Pool` APIs
 - typed binary `CopyIn<T>` for `COPY FROM STDIN` bulk ingest from `Vec<T>` / iterators
-- SQL composition with `sql!` and `#[derive(Codec)]` (inference first, explicit overrides when needed)
+- SQL composition with `sql!`, `query!`, `command!`, and the inline-schema `typed_query!` POC
 - rich errors with SQLSTATE fields plus SQL/caret rendering
 - OpenTelemetry-friendly `tracing` spans: `db.connect`, `db.prepare`, `db.execute`, `db.transaction`
 - TLS via `rustls` (default) or `native-tls`
@@ -255,10 +255,11 @@ The same tutorial is published via GitHub Pages at
 ## Compile-time SQL verification
 
 `babar` keeps `Query::raw` / `Command::raw` as the default runtime path, but it
-also offers optional macro-driven online verification:
+also offers optional macro-driven query surfaces:
 
 ```rust
 use babar::codec::{int4, text};
+use babar::query::Query;
 
 let lookup = babar::query!(
     "SELECT id, name FROM users WHERE id = $1",
@@ -269,6 +270,19 @@ let lookup = babar::query!(
 let insert = babar::command!(
     "INSERT INTO users (id, name) VALUES ($1, $2)",
     params = (int4, text),
+);
+
+let typed_lookup: Query<(i32,), (i32, String)> = babar::typed_query!(
+    schema = {
+        table public.users {
+            id: int4,
+            name: text,
+            active: bool,
+        },
+    },
+    SELECT users.id, users.name
+    FROM users
+    WHERE users.id >= $min_id AND users.active = true
 );
 ```
 
@@ -283,6 +297,21 @@ Without config, the macros still compile and emit the same `Query`, `Command`,
 or `Fragment` values. For verified workflows, prefer `query!` / `command!`;
 `sql!` intentionally does not validate row shapes. v0.1 does not ship an
 offline cache or generated schema snapshot.
+
+`typed_query!` is a narrower greenfield POC rather than the final schema or
+codegen story. Instead of probing a live database, it reads an inline
+`schema = { ... }` DSL during macro expansion, then type-checks token-style SQL
+against that schema and emits an ordinary `Query<Params, Row>`.
+
+- `query!` / `command!` take positional SQL plus explicit codec tuples.
+- `typed_query!` takes token-style SQL plus an inline table schema, and uses
+  named placeholders like `$min_id` that lower to positional SQL (`$1`, `$2`,
+  ...) in the generated query.
+- Repeating the same named placeholder reuses the same parameter slot, similar
+  to `sql!`.
+- Today this surface is intentionally narrow: query-only, inline-schema-only,
+  and limited to the currently supported schema scalar types rather than a full
+  database introspection or generated-schema workflow.
 
 ## TLS
 

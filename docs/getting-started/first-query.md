@@ -71,11 +71,18 @@ SQL has no parameters, and `(i32, String)` because the codec tuple
 `(int4, text)` decodes each row into `(i32, String)`.
 
 **`Query::raw(sql, encoder, decoder)`** is the most direct way to build
-a `Query`. The `sql!` macro produces a different thing — a `Fragment`
-that knows about named placeholders — and you'd build a `Query` from it
-with `Query::from_fragment(fragment, decoder)`. The chain is always:
+a `Query`, which is why this guide starts there. The `sql!` macro
+produces a different thing — a `Fragment` that knows about named
+placeholders — and you'd build a `Query` from it with
+`Query::from_fragment(fragment, decoder)`. The chain is always:
 **fragment → query → run**. You cannot pass a `Fragment` straight to
-`session.query` — the phrase to remember is *"`sql!` is the schema, `Query` is the call"*.
+`session.query`.
+
+There is also a newer `typed_query!` path: an early, narrow POC that
+takes token-style `SELECT` input plus an inline schema DSL and expands
+directly to a `Query<P, R>`. It is deliberately small-scope today, so
+for a first read the explicit `Query::raw(...)` form remains the best
+foundation.
 
 **`session.query(&q, args)`** is the run step. It returns
 `Vec<B>` — fully decoded rows, where each `B` is whatever your decoder
@@ -85,7 +92,7 @@ the bytes are already typed Rust values.
 
 ## What happened
 
-You connected to PostgrSQL via the wire protocol, prepared a statement, bound zero
+You connected to PostgreSQL via the wire protocol, prepared a statement, bound zero
 parameters, fetched one row, decoded `int4` into `i32` and `text` into
 `String`, and closed the session.
 

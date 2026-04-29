@@ -1,7 +1,9 @@
 # 3. Parameterized commands
 
 In this chapter we'll bind parameters, write to the database, and meet
-the `Encoder<A>` / `Decoder<A>` codec traits behind the scenes.
+the `Encoder<A>` / `Decoder<A>` codec traits behind the scenes. We'll
+also place the classic `raw` / `sql!` surfaces next to the newer
+`typed_query!` POC so the trade-offs are visible.
 
 ## Setup
 
@@ -69,10 +71,12 @@ A `Query<A, B>` describes a round-trip that returns typed rows.
 `session.query(&q, args).await?` returns `Vec<B>`.
 
 Both take the same `A` type parameter for parameters: a tuple of
-encoders for `Command::raw` / `Query::raw`, or a fragment that knows
-its own parameter shape if you use the `sql!` macro.
+encoders for `Command::raw` / `Query::raw`, a fragment that knows its
+own parameter shape if you use the `sql!` macro, or an inline-schema
+macro that infers the runnable `Query<A, B>` if you use
+`typed_query!`.
 
-## Two ways to spell the SQL
+## Three query-building surfaces
 
 ### `Command::raw` and `Query::raw`
 
@@ -101,6 +105,38 @@ let insert: Command<(i32, String)> = Command::from_fragment(f);
 A `Fragment` on its own is *not* runnable — you cannot call
 `session.execute(sql!(...))` or `session.query(sql!(...))` directly.
 The chain is always **fragment → command/query → run**.
+
+### The `typed_query!` macro
+
+`typed_query!` is a newer, query-only proof of concept. It accepts
+token-style SQL plus a small inline schema DSL and expands straight to a
+`Query<A, B>`:
+
+```rust
+use babar::query::Query;
+
+let lookup: Query<(i32,), (i32, String)> = babar::typed_query!(
+    schema = {
+        table public.todo {
+            id: int4,
+            title: text,
+            done: bool,
+        },
+    },
+    SELECT todo.id, todo.title FROM todo
+    WHERE todo.id = $id AND todo.done = false
+);
+```
+
+Keep the scope in mind:
+
+- it is currently for a supported `SELECT` subset, not writes,
+- the schema lives inline in the macro call,
+- it does **not** promise generated schema modules, codegen, or full SQL
+  coverage.
+
+For `INSERT`, `UPDATE`, `DELETE`, and DDL, the `Command<A>` + `raw` /
+`sql!` surfaces are still the story.
 
 ## What the codec types are doing
 

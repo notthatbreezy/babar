@@ -23,9 +23,9 @@ Every `babar::Error` variant match on error directly.
 | `Migration` | `Migration(MigrationError)` | A migration step failed; the inner enum carries the migration-specific cause. |
 
 `Closed`, `Server`, `ColumnAlignment`, and `SchemaMismatch` carry an
-`origin` field that, with the `sql!` macro, points at the call site
-(file:line:col). Surfacing it in your logs almost always pays for
-itself the first time.
+`origin` field that, with macros like `sql!`, `query!`, `command!`, and
+`typed_query!`, points at the call site (file:line:col). Surfacing it
+in your logs almost always pays for itself the first time.
 
 ## SQLSTATE patterns
 

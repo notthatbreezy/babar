@@ -50,6 +50,32 @@ intermediate `Row` type and no `.get::<T, _>()` accessor: by the time
 `session.query(...).await?` returns, the bytes are already typed
 values.
 
+`Query::raw` is still the clearest baseline and the rest of this chapter
+sticks with it. babar also now has an early `typed_query!` proof of
+concept for a narrower, schema-aware path to the same `Query<P, R>`
+value:
+
+```rust
+use babar::query::Query;
+
+let q: Query<(i32,), (i32, String)> = babar::typed_query!(
+    schema = {
+        table public.users {
+            id: int4,
+            name: text,
+            active: bool,
+        },
+    },
+    SELECT users.id, users.name FROM users
+    WHERE users.id = $id AND users.active = true
+);
+```
+
+Today that macro is intentionally small-scope: token-style SQL input,
+an inline schema block, and a supported `SELECT` subset only. It is not
+a generated schema module, a general query builder, or full-SQL
+coverage.
+
 ## Nullable columns
 
 Postgres columns are nullable by default. babar refuses to guess: if

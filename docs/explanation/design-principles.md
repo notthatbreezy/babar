@@ -64,6 +64,10 @@ That is the validate-early principle in operation. Concretely:
   immediately, again before any rows are processed.
 - The `query!` macro can validate SQL against a live database when
   `BABAR_DATABASE_URL` is set for opt-in compile-time validation.
+- The `typed_query!` macro is a narrower, opt-in inline-schema POC: it
+  resolves a supported `SELECT` subset at macro expansion time without
+  claiming generated schema modules, offline caches, or full SQL
+  coverage.
 
 The cost is one round-trip on each prepare. The benefit is that
 schema drift surfaces as a Rust error at the boundary, with a
