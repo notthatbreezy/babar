@@ -902,12 +902,9 @@ fn analyze_expr(
                 Nullability::NonNull
             },
         }),
-        ResolvedExprNode::OptionalGroup { expr: inner, .. } => analyze_expr(
-            inner,
-            env,
-            catalog,
-            inference,
-        ),
+        ResolvedExprNode::OptionalGroup { expr: inner, .. } => {
+            analyze_expr(inner, env, catalog, inference)
+        }
         ResolvedExprNode::Unary { op, expr: inner } => {
             let inner = analyze_expr(inner, env, catalog, inference)?;
             match op {
@@ -1707,7 +1704,10 @@ mod tests {
         .expect("optional query resolves");
 
         assert_eq!(checked.parameters.len(), 2);
-        assert!(checked.parameters.iter().all(|parameter| parameter.optional));
+        assert!(checked
+            .parameters
+            .iter()
+            .all(|parameter| parameter.optional));
         let Some(CheckedExpr {
             node:
                 CheckedExprNode::OptionalGroup {
@@ -1719,18 +1719,23 @@ mod tests {
         else {
             panic!("expected optional group filter")
         };
-        assert_eq!(required_placeholders, vec![PlaceholderId(0), PlaceholderId(1)]);
+        assert_eq!(
+            required_placeholders,
+            vec![PlaceholderId(0), PlaceholderId(1)]
+        );
     }
 
     #[test]
     fn resolves_optional_limit_and_offset_placeholders() {
-        let checked = parse_and_resolve(
-            "SELECT u.id FROM users AS u LIMIT $limit? OFFSET $offset?",
-        )
-        .expect("optional limit/offset resolve");
+        let checked =
+            parse_and_resolve("SELECT u.id FROM users AS u LIMIT $limit? OFFSET $offset?")
+                .expect("optional limit/offset resolve");
 
         assert_eq!(checked.parameters.len(), 2);
-        assert!(checked.parameters.iter().all(|parameter| parameter.optional));
+        assert!(checked
+            .parameters
+            .iter()
+            .all(|parameter| parameter.optional));
         assert!(checked.limit.is_some());
         assert!(checked.offset.is_some());
     }

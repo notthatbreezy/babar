@@ -10,7 +10,7 @@
 
 use std::net::SocketAddr;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query as AxumQuery, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -35,6 +35,16 @@ struct CreateWidget {
     id: i32,
     name: String,
 }
+
+#[derive(Debug, Default, Deserialize)]
+struct ListWidgetsParams {
+    name: Option<String>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+type OptionalWidgetListingParams = (Option<String>, Option<i64>, Option<i64>);
+type WidgetRow = (i32, String);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -91,20 +101,14 @@ async fn healthz() -> &'static str {
 
 async fn list_widgets(
     State(state): State<AppState>,
+    AxumQuery(params): AxumQuery<ListWidgetsParams>,
 ) -> Result<Json<Vec<Widget>>, (StatusCode, String)> {
     let conn = state.pool.acquire().await.map_err(pool_error_http)?;
-    let select = babar::typed_query!(
-        schema = {
-            table public.widgets {
-                id: int4,
-                name: text,
-            },
-        },
-        SELECT widgets.id, widgets.name
-        FROM widgets
-        ORDER BY widgets.id
-    );
-    let rows = conn.query(&select, ()).await.map_err(db_error)?;
+    let select = optional_widget_listing_query();
+    let rows = conn
+        .query(&select, (params.name, params.limit, params.offset))
+        .await
+        .map_err(db_error)?;
     let widgets = rows
         .into_iter()
         .map(|(id, name)| Widget { id, name })
@@ -112,8 +116,7 @@ async fn list_widgets(
     Ok(Json(widgets))
 }
 
-#[allow(dead_code)]
-fn optional_widget_listing_query() -> Query<(String, i64, i64), (i32, String)> {
+fn optional_widget_listing_query() -> Query<OptionalWidgetListingParams, WidgetRow> {
     babar::typed_query!(
         schema = {
             table public.widgets {

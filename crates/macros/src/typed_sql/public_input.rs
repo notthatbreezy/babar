@@ -163,7 +163,8 @@ impl SqlTextBuilder {
                 .span()
                 .join(ident.span())
                 .unwrap_or_else(|| punct.span());
-            let optional = matches!(tokens.peek(), Some(TokenTree::Punct(punct)) if punct.as_char() == '?');
+            let optional =
+                matches!(tokens.peek(), Some(TokenTree::Punct(punct)) if punct.as_char() == '?');
             let span = if optional {
                 let Some(TokenTree::Punct(optional_punct)) = tokens.next() else {
                     unreachable!("peeked optional suffix");

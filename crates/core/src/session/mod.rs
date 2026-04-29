@@ -83,28 +83,26 @@ impl Session {
     pub async fn execute<A>(&self, cmd: &QueryCommand<A>, args: A) -> Result<u64> {
         let span = telemetry::execute_span(cmd.sql());
         async {
-            let mut params: Vec<Option<Vec<u8>>> =
-                Vec::with_capacity(cmd.fragment.encoder.oids().len());
-            cmd.fragment
-                .encoder
-                .encode(&args, &mut params)
+            let bound = cmd
+                .fragment
+                .bind_runtime(&args)
                 .map_err(|err| err.with_sql(cmd.sql(), cmd.origin()))?;
-            let param_formats = cmd.fragment.encoder.format_codes().to_vec();
+            let sql = bound.sql;
             let (reply_tx, reply_rx) = oneshot::channel();
             self.tx
                 .send(Command::ExtendedQuery {
-                    sql: cmd.sql().to_string(),
-                    params,
-                    param_formats,
+                    sql: sql.clone(),
+                    params: bound.params,
+                    param_formats: bound.param_formats,
                     result_formats: Vec::new(),
                     expected_columns: None,
                     reply: reply_tx,
                 })
                 .await
-                .map_err(|_| Error::closed().with_sql(cmd.sql(), cmd.origin()))?;
+                .map_err(|_| Error::closed().with_sql(&sql, cmd.origin()))?;
             let outcome = match reply_rx.await {
-                Ok(result) => result.map_err(|err| err.with_sql(cmd.sql(), cmd.origin()))?,
-                Err(_) => return Err(Error::closed().with_sql(cmd.sql(), cmd.origin())),
+                Ok(result) => result.map_err(|err| err.with_sql(&sql, cmd.origin()))?,
+                Err(_) => return Err(Error::closed().with_sql(&sql, cmd.origin())),
             };
             Ok(parse_affected_rows(outcome.command_tag.as_deref()))
         }
@@ -153,30 +151,27 @@ impl Session {
     pub async fn query<A, B>(&self, query: &Query<A, B>, args: A) -> Result<Vec<B>> {
         let span = telemetry::execute_span(query.sql());
         async {
-            let mut params: Vec<Option<Vec<u8>>> =
-                Vec::with_capacity(query.fragment.encoder.oids().len());
-            query
+            let bound = query
                 .fragment
-                .encoder
-                .encode(&args, &mut params)
+                .bind_runtime(&args)
                 .map_err(|err| err.with_sql(query.sql(), query.origin()))?;
-            let param_formats = query.fragment.encoder.format_codes().to_vec();
+            let sql = bound.sql;
             let result_formats = query.decoder.format_codes().to_vec();
             let (reply_tx, reply_rx) = oneshot::channel();
             self.tx
                 .send(Command::ExtendedQuery {
-                    sql: query.sql().to_string(),
-                    params,
-                    param_formats,
+                    sql: sql.clone(),
+                    params: bound.params,
+                    param_formats: bound.param_formats,
                     result_formats,
                     expected_columns: Some(query.decoder.n_columns()),
                     reply: reply_tx,
                 })
                 .await
-                .map_err(|_| Error::closed().with_sql(query.sql(), query.origin()))?;
+                .map_err(|_| Error::closed().with_sql(&sql, query.origin()))?;
             let outcome = match reply_rx.await {
-                Ok(result) => result.map_err(|err| err.with_sql(query.sql(), query.origin()))?,
-                Err(_) => return Err(Error::closed().with_sql(query.sql(), query.origin())),
+                Ok(result) => result.map_err(|err| err.with_sql(&sql, query.origin()))?,
+                Err(_) => return Err(Error::closed().with_sql(&sql, query.origin())),
             };
             let mut rows = Vec::with_capacity(outcome.rows.len());
             for cols in outcome.rows {
@@ -184,7 +179,7 @@ impl Session {
                     query
                         .decoder
                         .decode(&cols)
-                        .map_err(|err| err.with_sql(query.sql(), query.origin()))?,
+                        .map_err(|err| err.with_sql(&sql, query.origin()))?,
                 );
             }
             Ok(rows)
@@ -215,50 +210,47 @@ impl Session {
     {
         let span = telemetry::execute_span(query.sql());
         async {
-            let mut params: Vec<Option<Vec<u8>>> =
-                Vec::with_capacity(query.fragment.encoder.oids().len());
-            query
+            let bound = query
                 .fragment
-                .encoder
-                .encode(&args, &mut params)
+                .bind_runtime(&args)
                 .map_err(|err| err.with_sql(query.sql(), query.origin()))?;
-            let param_formats = query.fragment.encoder.format_codes().to_vec();
+            let sql = bound.sql;
             let stmt_name = next_name("babar_stream_stmt");
-            let param_oids = self.resolve_type_oids(query.fragment.param_types()).await?;
+            let param_oids = self.resolve_type_oids(&bound.param_types).await?;
             let output_oids = self.resolve_type_oids(query.decoder.types()).await?;
             let (reply_tx, reply_rx) = oneshot::channel();
             self.tx
                 .send(Command::Prepare {
                     name: stmt_name.clone(),
-                    sql: query.sql().to_string(),
+                    sql: sql.clone(),
                     param_oids,
                     reply: reply_tx,
                 })
                 .await
-                .map_err(|_| Error::closed().with_sql(query.sql(), query.origin()))?;
+                .map_err(|_| Error::closed().with_sql(&sql, query.origin()))?;
             let outcome = match reply_rx.await {
-                Ok(result) => result.map_err(|err| err.with_sql(query.sql(), query.origin()))?,
-                Err(_) => return Err(Error::closed().with_sql(query.sql(), query.origin())),
+                Ok(result) => result.map_err(|err| err.with_sql(&sql, query.origin()))?,
+                Err(_) => return Err(Error::closed().with_sql(&sql, query.origin())),
             };
 
             if let Err(err) =
                 validate_row_description(&query.decoder, &outcome.row_fields, &output_oids)
             {
                 close_statement_best_effort(&self.tx, stmt_name).await;
-                return Err(err.with_sql(query.sql(), query.origin()));
+                return Err(err.with_sql(&sql, query.origin()));
             }
 
             if let Err(err) = begin_transaction(&self.tx).await {
                 close_statement_best_effort(&self.tx, stmt_name).await;
-                return Err(err.with_sql(query.sql(), query.origin()));
+                return Err(err.with_sql(&sql, query.origin()));
             }
 
             RowStream::start(
                 self.tx.clone(),
                 StreamConfig {
                     stmt_name,
-                    params,
-                    param_formats,
+                    params: bound.params,
+                    param_formats: bound.param_formats,
                     decoder: Arc::clone(&query.decoder),
                     batch_rows,
                     close_statement_on_finish: true,
@@ -266,7 +258,7 @@ impl Session {
                 },
             )
             .await
-            .map_err(|err| err.with_sql(query.sql(), query.origin()))
+            .map_err(|err| err.with_sql(&sql, query.origin()))
         }
         .instrument(span)
         .await
@@ -280,6 +272,12 @@ impl Session {
     {
         let span = telemetry::prepare_span(query.sql());
         async {
+            if query.fragment.dynamic.is_some() {
+                return Err(Error::Codec(
+                    "queries with runtime-dependent optional typed_query! SQL cannot be prepared; call Session::query or Session::stream with arguments instead".into(),
+                )
+                .with_sql(query.sql(), query.origin()));
+            }
             let param_types = query.fragment.param_types();
             let key = CacheKey::new(query.sql(), param_types);
 
@@ -347,6 +345,12 @@ impl Session {
     {
         let span = telemetry::prepare_span(cmd.sql());
         async {
+            if cmd.fragment.dynamic.is_some() {
+                return Err(Error::Codec(
+                    "commands with runtime-dependent SQL cannot be prepared".into(),
+                )
+                .with_sql(cmd.sql(), cmd.origin()));
+            }
             let param_types = cmd.fragment.param_types();
             let key = CacheKey::new(cmd.sql(), param_types);
 

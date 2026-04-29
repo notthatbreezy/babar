@@ -6,10 +6,13 @@ use syn::LitStr;
 
 use super::ir::{
     AstId, BinaryOp, BoolOp, ColumnRefSyntax, JoinKind, Literal, NullsOrder, ObjectNameSyntax,
-    OrderDirection, OutputNameSyntax, ParsedExpr, ParsedFrom, ParsedOrderBy,
-    ParsedProjection, ParsedSelect, PlaceholderId, PlaceholderRef, UnaryOp,
+    OrderDirection, OutputNameSyntax, ParsedExpr, ParsedFrom, ParsedOrderBy, ParsedProjection,
+    ParsedSelect, PlaceholderId, PlaceholderRef, UnaryOp,
 };
-use super::resolver::{CheckedParameter, CheckedProjection, CheckedSelect, Nullability, SqlType};
+use super::resolver::{
+    CheckedExpr, CheckedExprNode, CheckedParameter, CheckedProjection, CheckedSelect, Nullability,
+    SqlType,
+};
 use super::{ParsedSql, Result, SourceSpan, TypedSqlError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,16 +21,22 @@ pub(crate) struct LoweredQuery {
     pub(crate) parameters: Vec<LoweredParameter>,
     pub(crate) columns: Vec<LoweredColumn>,
     renderer: SqlRenderer,
+    toggle_group_ids: Vec<AstId>,
 }
 
 impl LoweredQuery {
     pub(crate) fn parameter_codec_tokens(&self) -> TokenStream {
-        tuple_codec_tokens(
-            self.parameters
-                .iter()
-                .map(|parameter| parameter.codec)
-                .collect(),
-        )
+        let tokens = self
+            .parameters
+            .iter()
+            .map(LoweredParameter::template_codec_tokens)
+            .chain(
+                self.toggle_group_ids
+                    .iter()
+                    .map(|_| quote! { ::babar::__private::toggle }),
+            )
+            .collect::<Vec<_>>();
+        quote! { (#(#tokens,)*) }
     }
 
     pub(crate) fn row_codec_tokens(&self) -> TokenStream {
@@ -35,6 +44,12 @@ impl LoweredQuery {
     }
 
     pub(crate) fn emit_query_tokens(&self) -> TokenStream {
+        if self.parameters.iter().any(|parameter| parameter.optional)
+            || !self.toggle_group_ids.is_empty()
+        {
+            return self.emit_dynamic_query_tokens();
+        }
+
         let sql = LitStr::new(&self.sql, Span::call_site());
         let params = self.parameter_codec_tokens();
         let row = self.row_codec_tokens();
@@ -55,16 +70,47 @@ impl LoweredQuery {
         }}
     }
 
+    fn emit_dynamic_query_tokens(&self) -> TokenStream {
+        let sql = LitStr::new(&self.sql, Span::call_site());
+        let params = self.parameter_codec_tokens();
+        let row = self.row_codec_tokens();
+        let n_params = self.parameters.len();
+        let renderer = self.runtime_sql_renderer_tokens();
+
+        quote! {{
+            let __babar_fragment = ::babar::query::Fragment::__from_dynamic_parts(
+                #sql,
+                #params,
+                #n_params,
+                ::core::option::Option::Some(::babar::query::Origin::new(
+                    file!(),
+                    line!(),
+                    column!(),
+                )),
+                #renderer,
+            );
+            ::babar::query::Query::from_fragment(__babar_fragment, #row)
+        }}
+    }
+
     #[cfg(test)]
     fn render_sql_for(
         &self,
         active_placeholders: impl IntoIterator<Item = PlaceholderId>,
         active_groups: impl IntoIterator<Item = AstId>,
     ) -> Result<String> {
-        self.renderer.render(
-            active_placeholders.into_iter().collect(),
+        let active_placeholders = active_placeholders.into_iter().collect::<HashSet<_>>();
+        let sql = self.renderer.render(
+            active_placeholders.clone(),
             active_groups.into_iter().collect(),
-        )
+        )?;
+        let active_slots = self
+            .parameters
+            .iter()
+            .filter(|parameter| !parameter.optional || active_placeholders.contains(&parameter.id))
+            .map(|parameter| parameter.position)
+            .collect::<Vec<_>>();
+        Ok(renumber_sql_placeholders(&sql, &active_slots))
     }
 
     #[cfg(test)]
@@ -80,6 +126,161 @@ impl LoweredQuery {
     fn optional_group_ids(&self) -> Vec<AstId> {
         self.renderer.optional_group_ids()
     }
+
+    fn runtime_sql_renderer_tokens(&self) -> TokenStream {
+        let optional_parameters = self
+            .parameters
+            .iter()
+            .enumerate()
+            .filter_map(|(index, parameter)| parameter.optional.then_some((index, parameter.id)))
+            .collect::<Vec<_>>();
+        let flag_exprs = optional_parameters
+            .iter()
+            .map(|(index, _)| {
+                let index = syn::Index::from(*index);
+                quote! { __babar_args.#index.is_some() }
+            })
+            .chain(self.toggle_group_ids.iter().enumerate().map(|(offset, _)| {
+                let index = syn::Index::from(self.parameters.len() + offset);
+                quote! { __babar_args.#index }
+            }))
+            .collect::<Vec<_>>();
+        let arg_types = self
+            .parameters
+            .iter()
+            .map(LoweredParameter::template_value_type_tokens)
+            .chain(self.toggle_group_ids.iter().map(|_| quote! { bool }))
+            .collect::<Vec<_>>();
+        let shapes = runtime_sql_shapes(self, &optional_parameters);
+
+        let arms = shapes
+            .iter()
+            .map(|shape| {
+                let pattern = shape
+                    .flags
+                    .iter()
+                    .map(|flag| if *flag { quote! { true } } else { quote! { false } })
+                    .collect::<Vec<_>>();
+                let sql = LitStr::new(&shape.sql, Span::call_site());
+                let capacity = shape.active_parameter_indexes.len();
+                let pushes = shape
+                    .active_parameter_indexes
+                    .iter()
+                    .map(|index| {
+                        let parameter = &self.parameters[*index];
+                        let index = syn::Index::from(*index);
+                        let codec = parameter.codec.tokens();
+                        if parameter.optional {
+                            quote! {
+                                let __babar_value = __babar_args.#index.as_ref().expect("shape matched active optional input");
+                                ::babar::__private::push_bound_param(
+                                    &#codec,
+                                    __babar_value,
+                                    &mut __babar_params,
+                                    &mut __babar_param_types,
+                                    &mut __babar_param_formats,
+                                )?;
+                            }
+                        } else {
+                            quote! {
+                                ::babar::__private::push_bound_param(
+                                    &#codec,
+                                    &__babar_args.#index,
+                                    &mut __babar_params,
+                                    &mut __babar_param_types,
+                                    &mut __babar_param_formats,
+                                )?;
+                            }
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                quote! {
+                    (#(#pattern,)*) => {
+                        let mut __babar_params = ::std::vec::Vec::with_capacity(#capacity);
+                        let mut __babar_param_types = ::std::vec::Vec::with_capacity(#capacity);
+                        let mut __babar_param_formats = ::std::vec::Vec::with_capacity(#capacity);
+                        #(#pushes)*
+                        ::core::result::Result::Ok(::babar::__private::BoundStatement::new(
+                            ::std::string::String::from(#sql),
+                            __babar_params,
+                            __babar_param_types,
+                            __babar_param_formats,
+                        ))
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+
+        quote! {
+            move |__babar_args: &(#(#arg_types,)*)| {
+                match (#(#flag_exprs,)*) {
+                    #(#arms)*
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeSqlShape {
+    flags: Vec<bool>,
+    sql: String,
+    active_parameter_indexes: Vec<usize>,
+}
+
+fn runtime_sql_shapes(
+    query: &LoweredQuery,
+    optional_parameters: &[(usize, PlaceholderId)],
+) -> Vec<RuntimeSqlShape> {
+    let total_flags = optional_parameters.len() + query.toggle_group_ids.len();
+    let mut shapes = Vec::with_capacity(1_usize << total_flags);
+    for mask in 0..(1_usize << total_flags) {
+        let mut flags = Vec::with_capacity(total_flags);
+        let mut active_placeholders = HashSet::new();
+        let mut active_groups = HashSet::new();
+
+        for (bit_index, (_, placeholder_id)) in optional_parameters.iter().enumerate() {
+            let active = (mask & (1 << bit_index)) != 0;
+            flags.push(active);
+            if active {
+                active_placeholders.insert(*placeholder_id);
+            }
+        }
+
+        for (offset, group_id) in query.toggle_group_ids.iter().enumerate() {
+            let bit_index = optional_parameters.len() + offset;
+            let active = (mask & (1 << bit_index)) != 0;
+            flags.push(active);
+            if active {
+                active_groups.insert(*group_id);
+            }
+        }
+
+        let sql = query
+            .renderer
+            .render(active_placeholders.clone(), active_groups)
+            .expect("runtime SQL variants should render");
+        let active_parameter_indexes = query
+            .parameters
+            .iter()
+            .enumerate()
+            .filter_map(|(index, parameter)| {
+                (!parameter.optional || active_placeholders.contains(&parameter.id))
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let active_slots = active_parameter_indexes
+            .iter()
+            .map(|index| query.parameters[*index].position)
+            .collect::<Vec<_>>();
+        let sql = renumber_sql_placeholders(&sql, &active_slots);
+        shapes.push(RuntimeSqlShape {
+            flags,
+            sql,
+            active_parameter_indexes,
+        });
+    }
+    shapes
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -89,6 +290,7 @@ pub(crate) struct LoweredParameter {
     pub(crate) position: u32,
     pub(crate) sql_type: SqlType,
     pub(crate) nullability: Nullability,
+    pub(crate) optional: bool,
     codec: RuntimeCodec,
 }
 
@@ -145,6 +347,43 @@ impl RuntimeCodec {
         let inner = base.tokens();
         quote! { ::babar::codec::nullable(#inner) }
     }
+
+    fn value_type_tokens(self) -> TokenStream {
+        let base = match self {
+            Self::Bool => return quote! { bool },
+            Self::Bytea => return quote! { ::std::vec::Vec<u8> },
+            Self::Varchar | Self::Text => return quote! { ::std::string::String },
+            Self::Int2 => return quote! { i16 },
+            Self::Int4 => return quote! { i32 },
+            Self::Int8 => return quote! { i64 },
+            Self::Float4 => return quote! { f32 },
+            Self::Float8 => return quote! { f64 },
+            Self::Nullable(base) => base,
+        };
+
+        let inner = base.value_type_tokens();
+        quote! { ::core::option::Option<#inner> }
+    }
+}
+
+impl LoweredParameter {
+    fn template_codec_tokens(&self) -> TokenStream {
+        let codec = self.codec.tokens();
+        if self.optional {
+            quote! { ::babar::codec::nullable(#codec) }
+        } else {
+            codec
+        }
+    }
+
+    fn template_value_type_tokens(&self) -> TokenStream {
+        let value = self.codec.value_type_tokens();
+        if self.optional {
+            quote! { ::core::option::Option<#value> }
+        } else {
+            value
+        }
+    }
 }
 
 impl BaseRuntimeCodec {
@@ -161,6 +400,19 @@ impl BaseRuntimeCodec {
             Self::Float8 => quote! { ::babar::codec::float8 },
         }
     }
+
+    fn value_type_tokens(self) -> TokenStream {
+        match self {
+            Self::Bool => quote! { bool },
+            Self::Bytea => quote! { ::std::vec::Vec<u8> },
+            Self::Varchar | Self::Text => quote! { ::std::string::String },
+            Self::Int2 => quote! { i16 },
+            Self::Int4 => quote! { i32 },
+            Self::Int8 => quote! { i64 },
+            Self::Float4 => quote! { f32 },
+            Self::Float8 => quote! { f64 },
+        }
+    }
 }
 
 pub(crate) fn lower_select(parsed: &ParsedSql, checked: &CheckedSelect) -> Result<LoweredQuery> {
@@ -175,6 +427,7 @@ pub(crate) fn lower_select(parsed: &ParsedSql, checked: &CheckedSelect) -> Resul
         .map(lower_projection)
         .collect::<Result<Vec<_>>>()?;
     let renderer = SqlRenderer::new(&parsed.select);
+    let toggle_group_ids = collect_toggle_group_ids_select(checked);
     let sql = renderer.render(
         parameters.iter().map(|parameter| parameter.id).collect(),
         renderer.optional_group_ids().into_iter().collect(),
@@ -185,6 +438,7 @@ pub(crate) fn lower_select(parsed: &ParsedSql, checked: &CheckedSelect) -> Resul
         parameters,
         columns,
         renderer,
+        toggle_group_ids,
     })
 }
 
@@ -204,6 +458,7 @@ fn lower_parameter(parsed: &ParsedSql, parameter: &CheckedParameter) -> Result<L
         position: parameter.slot,
         sql_type: parameter.sql_type,
         nullability: parameter.nullability,
+        optional: parameter.optional,
         codec,
     })
 }
@@ -265,7 +520,9 @@ impl SqlRenderer {
             }
         }
         if let Some(filter) = &self.select.filter {
-            if let Some(filter) = render_predicate_expr(filter, &active_placeholders, &active_groups)? {
+            if let Some(filter) =
+                render_predicate_expr(filter, &active_placeholders, &active_groups)?
+            {
                 sql.push_str(" WHERE ");
                 sql.push_str(&filter);
             }
@@ -273,7 +530,8 @@ impl SqlRenderer {
 
         let mut order_by = Vec::new();
         for item in &self.select.order_by {
-            if let Some(rendered) = render_order_by_item(item, &active_placeholders, &active_groups)?
+            if let Some(rendered) =
+                render_order_by_item(item, &active_placeholders, &active_groups)?
             {
                 order_by.push(rendered);
             }
@@ -284,7 +542,9 @@ impl SqlRenderer {
         }
 
         if let Some(limit) = &self.select.limit {
-            if let Some(limit_sql) = render_value_expr(&limit.expr, &active_placeholders, &active_groups)? {
+            if let Some(limit_sql) =
+                render_value_expr(&limit.expr, &active_placeholders, &active_groups)?
+            {
                 sql.push_str(" LIMIT ");
                 sql.push_str(&limit_sql);
             }
@@ -379,7 +639,12 @@ fn render_predicate_expr(
     active_placeholders: &HashSet<PlaceholderId>,
     active_groups: &HashSet<AstId>,
 ) -> Result<Option<String>> {
-    render_expr(expr, active_placeholders, active_groups, ExprRenderKind::Predicate)
+    render_expr(
+        expr,
+        active_placeholders,
+        active_groups,
+        ExprRenderKind::Predicate,
+    )
 }
 
 fn render_value_expr(
@@ -387,7 +652,12 @@ fn render_value_expr(
     active_placeholders: &HashSet<PlaceholderId>,
     active_groups: &HashSet<AstId>,
 ) -> Result<Option<String>> {
-    render_expr(expr, active_placeholders, active_groups, ExprRenderKind::Value)
+    render_expr(
+        expr,
+        active_placeholders,
+        active_groups,
+        ExprRenderKind::Value,
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -418,10 +688,20 @@ fn render_expr(
             Ok(Some(render_placeholder(placeholder)))
         }
         ParsedExpr::OptionalGroup(group) => {
-            if !group_active(group.expr.as_ref(), group.id, active_placeholders, active_groups) {
+            if !group_active(
+                group.expr.as_ref(),
+                group.id,
+                active_placeholders,
+                active_groups,
+            ) {
                 return Ok(None);
             }
-            let inner = render_expr(group.expr.as_ref(), active_placeholders, active_groups, kind)?;
+            let inner = render_expr(
+                group.expr.as_ref(),
+                active_placeholders,
+                active_groups,
+                kind,
+            )?;
             Ok(inner.map(|inner| format!("({inner})")))
         }
     }
@@ -434,7 +714,9 @@ fn render_non_optional_expr(
     kind: ExprRenderKind,
 ) -> Result<Option<String>> {
     Ok(match expr {
-        ParsedExpr::Column(column) => Some(format!("{}.{}", column.binding.value, column.column.value)),
+        ParsedExpr::Column(column) => {
+            Some(format!("{}.{}", column.binding.value, column.column.value))
+        }
         ParsedExpr::Placeholder(placeholder) => Some(render_placeholder(placeholder)),
         ParsedExpr::Literal(literal) => Some(render_literal(literal.value.clone())),
         ParsedExpr::OptionalGroup(_) => unreachable!("optional groups handled by render_expr"),
@@ -446,27 +728,50 @@ fn render_non_optional_expr(
                 UnaryOp::Minus => format!("(- {inner})"),
             })
         }
-        ParsedExpr::Binary { op, left, right, .. } => {
-            let left = render_expr(left, active_placeholders, active_groups, ExprRenderKind::Value)?;
-            let right = render_expr(right, active_placeholders, active_groups, ExprRenderKind::Value)?;
+        ParsedExpr::Binary {
+            op, left, right, ..
+        } => {
+            let left = render_expr(
+                left,
+                active_placeholders,
+                active_groups,
+                ExprRenderKind::Value,
+            )?;
+            let right = render_expr(
+                right,
+                active_placeholders,
+                active_groups,
+                ExprRenderKind::Value,
+            )?;
             match (left, right) {
-                (Some(left), Some(right)) => Some(format!("({left} {} {right})", render_binary_op(op))),
+                (Some(left), Some(right)) => {
+                    Some(format!("({left} {} {right})", render_binary_op(op)))
+                }
                 _ => None,
             }
         }
         ParsedExpr::IsNull {
-            negated, expr: inner, ..
+            negated,
+            expr: inner,
+            ..
         } => {
-            let inner =
-                render_expr(inner, active_placeholders, active_groups, ExprRenderKind::Value)?;
+            let inner = render_expr(
+                inner,
+                active_placeholders,
+                active_groups,
+                ExprRenderKind::Value,
+            )?;
             inner.map(|inner| format!("({inner} IS {}NULL)", if *negated { "NOT " } else { "" }))
         }
         ParsedExpr::BoolChain { op, terms, .. } => {
             let mut rendered_terms = Vec::new();
             for term in terms {
-                if let Some(rendered) =
-                    render_expr(term, active_placeholders, active_groups, ExprRenderKind::Predicate)?
-                {
+                if let Some(rendered) = render_expr(
+                    term,
+                    active_placeholders,
+                    active_groups,
+                    ExprRenderKind::Predicate,
+                )? {
                     rendered_terms.push(rendered);
                 }
             }
@@ -496,7 +801,9 @@ fn render_expr_sql(expr: &ParsedExpr) -> String {
             UnaryOp::Plus => format!("(+ {})", render_expr_sql(expr)),
             UnaryOp::Minus => format!("(- {})", render_expr_sql(expr)),
         },
-        ParsedExpr::Binary { op, left, right, .. } => {
+        ParsedExpr::Binary {
+            op, left, right, ..
+        } => {
             format!(
                 "({} {} {})",
                 render_expr_sql(left),
@@ -505,7 +812,9 @@ fn render_expr_sql(expr: &ParsedExpr) -> String {
             )
         }
         ParsedExpr::IsNull {
-            negated, expr: inner, ..
+            negated,
+            expr: inner,
+            ..
         } => format!(
             "({} IS {}NULL)",
             render_expr_sql(inner),
@@ -513,7 +822,8 @@ fn render_expr_sql(expr: &ParsedExpr) -> String {
         ),
         ParsedExpr::BoolChain { op, terms, .. } => format!(
             "({})",
-            terms.iter()
+            terms
+                .iter()
                 .map(render_expr_sql)
                 .collect::<Vec<_>>()
                 .join(match op {
@@ -526,6 +836,41 @@ fn render_expr_sql(expr: &ParsedExpr) -> String {
 
 fn render_placeholder(placeholder: &PlaceholderRef) -> String {
     format!("${}", placeholder.slot)
+}
+
+fn renumber_sql_placeholders(sql: &str, active_slots: &[u32]) -> String {
+    if active_slots.is_empty() {
+        return sql.to_owned();
+    }
+
+    let slot_map = active_slots
+        .iter()
+        .enumerate()
+        .map(|(index, slot)| (*slot, index + 1))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut out = String::with_capacity(sql.len());
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            let slot = std::str::from_utf8(&bytes[i + 1..j])
+                .expect("ascii digits")
+                .parse::<u32>()
+                .expect("ascii digits parse");
+            let mapped = slot_map.get(&slot).copied().expect("active slot present");
+            out.push('$');
+            out.push_str(&mapped.to_string());
+            i = j;
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn render_literal(literal: Literal) -> String {
@@ -639,6 +984,58 @@ fn collect_optional_group_ids_expr(expr: &ParsedExpr, ids: &mut Vec<AstId>) {
             }
         }
         ParsedExpr::Column(_) | ParsedExpr::Placeholder(_) | ParsedExpr::Literal(_) => {}
+    }
+}
+
+fn collect_toggle_group_ids_select(select: &CheckedSelect) -> Vec<AstId> {
+    let mut ids = Vec::new();
+    if let Some(filter) = &select.filter {
+        collect_toggle_group_ids_expr(filter, &mut ids);
+    }
+    for join in &select.joins {
+        collect_toggle_group_ids_expr(&join.on, &mut ids);
+    }
+    for order_by in &select.order_by {
+        collect_toggle_group_ids_expr(&order_by.expr, &mut ids);
+    }
+    if let Some(limit) = &select.limit {
+        collect_toggle_group_ids_expr(limit, &mut ids);
+    }
+    if let Some(offset) = &select.offset {
+        collect_toggle_group_ids_expr(offset, &mut ids);
+    }
+    ids.sort_by_key(|id| id.0);
+    ids.dedup();
+    ids
+}
+
+fn collect_toggle_group_ids_expr(expr: &CheckedExpr, ids: &mut Vec<AstId>) {
+    match &expr.node {
+        CheckedExprNode::OptionalGroup {
+            id,
+            expr,
+            required_placeholders,
+        } => {
+            if required_placeholders.is_empty() {
+                ids.push(*id);
+            }
+            collect_toggle_group_ids_expr(expr, ids);
+        }
+        CheckedExprNode::Unary { expr, .. } | CheckedExprNode::IsNull { expr, .. } => {
+            collect_toggle_group_ids_expr(expr, ids);
+        }
+        CheckedExprNode::Binary { left, right, .. } => {
+            collect_toggle_group_ids_expr(left, ids);
+            collect_toggle_group_ids_expr(right, ids);
+        }
+        CheckedExprNode::BoolChain { terms, .. } => {
+            for term in terms {
+                collect_toggle_group_ids_expr(term, ids);
+            }
+        }
+        CheckedExprNode::Column(_)
+        | CheckedExprNode::Placeholder(_)
+        | CheckedExprNode::Literal(_) => {}
     }
 }
 
@@ -806,7 +1203,7 @@ mod tests {
             lowered
                 .render_sql_for(lowered.activate_parameter_names(&["active"]), [])
                 .expect("renders active filter"),
-            "SELECT u.id FROM users AS u WHERE (u.active = $2)"
+            "SELECT u.id FROM users AS u WHERE (u.active = $1)"
         );
     }
 
@@ -833,14 +1230,15 @@ mod tests {
 
     #[test]
     fn omits_optional_order_by_groups() {
-        let lowered = parse_resolve_and_lower(
-            "SELECT u.id FROM users AS u ORDER BY (u.name)? DESC",
-        )
-        .expect("query lowers");
+        let lowered =
+            parse_resolve_and_lower("SELECT u.id FROM users AS u ORDER BY (u.name)? DESC")
+                .expect("query lowers");
         let group_id = lowered.optional_group_ids()[0];
 
         assert_eq!(
-            lowered.render_sql_for([], []).expect("renders without ordering"),
+            lowered
+                .render_sql_for([], [])
+                .expect("renders without ordering"),
             "SELECT u.id FROM users AS u"
         );
         assert_eq!(
@@ -853,10 +1251,9 @@ mod tests {
 
     #[test]
     fn omits_optional_limit_and_offset_clauses() {
-        let lowered = parse_resolve_and_lower(
-            "SELECT u.id FROM users AS u LIMIT $limit? OFFSET $offset?",
-        )
-        .expect("query lowers");
+        let lowered =
+            parse_resolve_and_lower("SELECT u.id FROM users AS u LIMIT $limit? OFFSET $offset?")
+                .expect("query lowers");
 
         assert_eq!(
             lowered.render_sql_for([], []).expect("renders base query"),
@@ -872,7 +1269,7 @@ mod tests {
             lowered
                 .render_sql_for(lowered.activate_parameter_names(&["offset"]), [])
                 .expect("renders offset only"),
-            "SELECT u.id FROM users AS u OFFSET $2"
+            "SELECT u.id FROM users AS u OFFSET $1"
         );
     }
 
@@ -890,7 +1287,9 @@ mod tests {
             "SELECT u.id FROM users AS u WHERE ((u.id = $1) OR (u.manager_id = $1))"
         );
         assert_eq!(
-            lowered.render_sql_for([], []).expect("renders without predicate"),
+            lowered
+                .render_sql_for([], [])
+                .expect("renders without predicate"),
             "SELECT u.id FROM users AS u"
         );
     }

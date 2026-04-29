@@ -263,6 +263,7 @@ pub use babar_macros::{command, query, sql, typed_query, Codec};
 
 #[doc(hidden)]
 pub mod __private {
+    pub use crate::query::{push_bound_param, push_null_param, toggle, BoundStatement, Toggle};
     pub use bytes::Bytes;
 }
 

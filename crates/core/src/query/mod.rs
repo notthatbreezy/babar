@@ -13,7 +13,9 @@
 
 mod fragment;
 
-pub use fragment::{Fragment, Origin};
+pub use fragment::{
+    push_bound_param, push_null_param, toggle, BoundStatement, Fragment, Origin, Toggle,
+};
 
 use std::sync::Arc;
 
@@ -68,6 +70,12 @@ impl<A, B> Query<A, B> {
     /// SQL text exactly as it will be sent to the server.
     pub fn sql(&self) -> &str {
         self.fragment.sql()
+    }
+
+    /// SQL text for a specific argument set, after optional typed-query inputs
+    /// are applied.
+    pub fn sql_for(&self, args: &A) -> crate::error::Result<String> {
+        self.fragment.sql_for(args)
     }
 
     /// Macro callsite captured by [`crate::sql!`], when available.
@@ -135,6 +143,12 @@ impl<A> Command<A> {
     /// SQL text exactly as it will be sent to the server.
     pub fn sql(&self) -> &str {
         self.fragment.sql()
+    }
+
+    /// SQL text for a specific argument set, after optional typed-query inputs
+    /// are applied.
+    pub fn sql_for(&self, args: &A) -> crate::error::Result<String> {
+        self.fragment.sql_for(args)
     }
 
     /// Macro callsite captured by [`crate::sql!`], when available.

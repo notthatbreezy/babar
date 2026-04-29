@@ -2,12 +2,21 @@
 
 mod common;
 
-use babar::codec::{bool, int4, int8, text};
+use babar::codec::{bool, int4, text};
 use babar::query::{Command, Fragment, Query};
 use babar::sql;
 use babar::types;
 use babar::Session;
 use common::{AuthMode, PgContainer};
+
+type OptionalUserFilterParams = (
+    Option<i32>,
+    Option<i32>,
+    Option<bool>,
+    Option<i64>,
+    Option<i64>,
+    bool,
+);
 
 fn require_docker() -> bool {
     let ok = std::process::Command::new("docker")
@@ -177,8 +186,8 @@ fn typed_query_macro_matches_raw_builder() {
 }
 
 #[test]
-fn typed_query_optional_suffixes_match_all_active_raw_builder() {
-    let macro_query: Query<(i32, i32, bool, i64, i64), (String,)> = babar::typed_query!(
+fn typed_query_optional_suffixes_render_sql_for_active_inputs() {
+    let macro_query: Query<OptionalUserFilterParams, (String,)> = babar::typed_query!(
         schema = {
             table public.users {
                 id: int4,
@@ -190,19 +199,40 @@ fn typed_query_optional_suffixes_match_all_active_raw_builder() {
         FROM users
         WHERE (users.id >= $min_id? AND users.id <= $max_id?)?
           AND (users.active = $active?)?
-        ORDER BY users.id
+        ORDER BY (users.id)? DESC
         LIMIT $limit?
         OFFSET $offset?
     );
-    let raw_query: Query<(i32, i32, bool, i64, i64), (String,)> = Query::raw(
-        "SELECT users.name FROM users AS users WHERE ((((users.id >= $1) AND (users.id <= $2))) AND ((users.active = $3))) ORDER BY users.id LIMIT $4 OFFSET $5",
-        (int4, int4, bool, int8, int8),
-        (text,),
-    );
 
-    assert_eq!(macro_query.sql(), raw_query.sql());
-    assert_eq!(macro_query.param_oids(), raw_query.param_oids());
-    assert_eq!(macro_query.output_oids(), raw_query.output_oids());
+    assert_eq!(
+        macro_query
+            .sql_for(&(None, None, None, None, None, false))
+            .expect("render base query"),
+        "SELECT users.name FROM users AS users"
+    );
+    assert_eq!(
+        macro_query
+            .sql_for(&(Some(2), Some(4), Some(true), Some(10), None, false))
+            .expect("render filtered limit query"),
+        "SELECT users.name FROM users AS users WHERE ((((users.id >= $1) AND (users.id <= $2))) AND ((users.active = $3))) LIMIT $4"
+    );
+    assert_eq!(
+        macro_query
+            .sql_for(&(None, None, None, Some(2), None, true))
+            .expect("render ordered limit query"),
+        "SELECT users.name FROM users AS users ORDER BY (users.id) DESC LIMIT $1"
+    );
+    assert_eq!(
+        macro_query.param_oids(),
+        &[
+            types::INT4,
+            types::INT4,
+            types::BOOL,
+            types::INT8,
+            types::INT8
+        ],
+    );
+    assert_eq!(macro_query.output_oids(), &[types::TEXT]);
 }
 
 #[tokio::test]
@@ -384,7 +414,7 @@ async fn typed_query_optional_suffixes_execute_against_postgres() {
         assert_eq!(affected, 1);
     }
 
-    let select: Query<(i32, i32, bool, i64, i64), (String,)> = babar::typed_query!(
+    let select: Query<OptionalUserFilterParams, (String,)> = babar::typed_query!(
         schema = {
             table typed_query_optional_users {
                 id: int4,
@@ -396,24 +426,38 @@ async fn typed_query_optional_suffixes_execute_against_postgres() {
         FROM typed_query_optional_users
         WHERE (typed_query_optional_users.id >= $min_id? AND typed_query_optional_users.id <= $max_id?)?
           AND (typed_query_optional_users.active = $active?)?
-        ORDER BY typed_query_optional_users.id
+        ORDER BY (typed_query_optional_users.id)? DESC
         LIMIT $limit?
         OFFSET $offset?
     );
-    let raw_select: Query<(i32, i32, bool, i64, i64), (String,)> = Query::raw(
-        "SELECT typed_query_optional_users.name FROM typed_query_optional_users AS typed_query_optional_users WHERE ((((typed_query_optional_users.id >= $1) AND (typed_query_optional_users.id <= $2))) AND ((typed_query_optional_users.active = $3))) ORDER BY typed_query_optional_users.id LIMIT $4 OFFSET $5",
-        (int4, int4, bool, int8, int8),
-        (text,),
+
+    assert_eq!(
+        select
+            .sql_for(&(None, None, None, None, None, false))
+            .expect("render unfiltered query"),
+        "SELECT typed_query_optional_users.name FROM typed_query_optional_users AS typed_query_optional_users"
     );
-
-    assert_eq!(select.sql(), raw_select.sql());
-    assert_eq!(select.param_oids(), raw_select.param_oids());
-
     let rows = session
-        .query(&select, (2_i32, 4_i32, true, 10_i64, 0_i64))
+        .query(
+            &select,
+            (
+                Some(2_i32),
+                Some(4_i32),
+                Some(true),
+                Some(10_i64),
+                None,
+                true,
+            ),
+        )
         .await
         .expect("select rows");
-    assert_eq!(rows, vec![("carol".to_string(),), ("dave".to_string(),)]);
+    assert_eq!(rows, vec![("dave".to_string(),), ("carol".to_string(),)]);
+
+    let rows = session
+        .query(&select, (None, None, None, Some(2_i64), None, true))
+        .await
+        .expect("select limited rows");
+    assert_eq!(rows, vec![("dave".to_string(),), ("carol".to_string(),)]);
 
     session.close().await.expect("close");
 }

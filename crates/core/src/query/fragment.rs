@@ -44,6 +44,101 @@ impl Origin {
     }
 }
 
+#[doc(hidden)]
+pub struct BoundStatement {
+    pub sql: String,
+    pub params: Vec<Option<Vec<u8>>>,
+    pub param_types: Vec<Type>,
+    pub param_formats: Vec<i16>,
+}
+
+impl BoundStatement {
+    #[doc(hidden)]
+    pub fn new(
+        sql: String,
+        params: Vec<Option<Vec<u8>>>,
+        param_types: Vec<Type>,
+        param_formats: Vec<i16>,
+    ) -> Self {
+        Self {
+            sql,
+            params,
+            param_types,
+            param_formats,
+        }
+    }
+}
+
+#[doc(hidden)]
+pub fn push_bound_param<C, A>(
+    codec: &C,
+    value: &A,
+    params: &mut Vec<Option<Vec<u8>>>,
+    param_types: &mut Vec<Type>,
+    param_formats: &mut Vec<i16>,
+) -> Result<()>
+where
+    C: Encoder<A>,
+{
+    codec.encode(value, params)?;
+    param_types.extend_from_slice(codec.types());
+    param_formats.extend_from_slice(codec.format_codes());
+    Ok(())
+}
+
+#[doc(hidden)]
+pub fn push_null_param<C, A>(
+    codec: &C,
+    params: &mut Vec<Option<Vec<u8>>>,
+    param_types: &mut Vec<Type>,
+    param_formats: &mut Vec<i16>,
+) where
+    C: Encoder<A>,
+{
+    for _ in 0..codec.oids().len() {
+        params.push(None);
+    }
+    param_types.extend_from_slice(codec.types());
+    param_formats.extend_from_slice(codec.format_codes());
+}
+
+#[doc(hidden)]
+pub trait DynamicStatement<A>: Send + Sync {
+    fn bind(&self, args: &A) -> Result<BoundStatement>;
+}
+
+impl<A, F> DynamicStatement<A> for F
+where
+    F: Fn(&A) -> Result<BoundStatement> + Send + Sync,
+{
+    fn bind(&self, args: &A) -> Result<BoundStatement> {
+        self(args)
+    }
+}
+
+/// Hidden zero-slot encoder used by proc macros for optional group toggles.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Toggle;
+
+#[doc(hidden)]
+#[allow(non_upper_case_globals)]
+pub const toggle: Toggle = Toggle;
+
+impl Encoder<bool> for Toggle {
+    fn encode(&self, _value: &bool, _params: &mut Vec<Option<Vec<u8>>>) -> Result<()> {
+        Ok(())
+    }
+
+    fn oids(&self) -> &'static [Oid] {
+        &[]
+    }
+
+    fn types(&self) -> &'static [Type] {
+        &[]
+    }
+}
+
 /// SQL with embedded parameter placeholders, parameterized by the tuple
 /// of parameter values it expects.
 pub struct Fragment<A> {
@@ -51,6 +146,7 @@ pub struct Fragment<A> {
     pub(crate) encoder: Arc<dyn Encoder<A> + Send + Sync>,
     pub(crate) n_params: usize,
     pub(crate) origin: Option<Origin>,
+    pub(crate) dynamic: Option<Arc<dyn DynamicStatement<A>>>,
 }
 
 impl<A> Clone for Fragment<A> {
@@ -60,6 +156,7 @@ impl<A> Clone for Fragment<A> {
             encoder: Arc::clone(&self.encoder),
             n_params: self.n_params,
             origin: self.origin,
+            dynamic: self.dynamic.as_ref().map(Arc::clone),
         }
     }
 }
@@ -74,6 +171,7 @@ impl Fragment<()> {
             encoder: Arc::new(()),
             n_params: 0,
             origin: None,
+            dynamic: None,
         }
     }
 }
@@ -136,6 +234,7 @@ impl<A: 'static> Fragment<A> {
             encoder: Arc::new(new_encoder),
             n_params: self.n_params,
             origin: self.origin,
+            dynamic: None,
         }
     }
 
@@ -162,6 +261,7 @@ impl<A: 'static> Fragment<A> {
             encoder: Arc::new(combined),
             n_params: self.n_params + other.n_params,
             origin: self.origin.or(other.origin),
+            dynamic: None,
         }
     }
 }
@@ -183,6 +283,25 @@ impl<A> Fragment<A> {
     /// SQL exactly as it will be sent.
     pub fn sql(&self) -> &str {
         &self.sql
+    }
+
+    pub(crate) fn sql_for(&self, args: &A) -> Result<String> {
+        Ok(self.bind_runtime(args)?.sql)
+    }
+
+    pub(crate) fn bind_runtime(&self, args: &A) -> Result<BoundStatement> {
+        if let Some(dynamic) = &self.dynamic {
+            dynamic.bind(args)
+        } else {
+            let mut params = Vec::with_capacity(self.encoder.oids().len());
+            self.encoder.encode(args, &mut params)?;
+            Ok(BoundStatement::new(
+                self.sql.clone(),
+                params,
+                self.encoder.types().to_vec(),
+                self.encoder.format_codes().to_vec(),
+            ))
+        }
     }
 
     /// Postgres OIDs the encoder declares, in placeholder order.
@@ -228,6 +347,29 @@ impl<A> Fragment<A> {
             encoder: Arc::new(encoder),
             n_params,
             origin,
+            dynamic: None,
+        }
+    }
+
+    /// Construct a fragment whose final SQL depends on the runtime arguments.
+    #[doc(hidden)]
+    pub fn __from_dynamic_parts<E, D>(
+        sql: impl Into<String>,
+        encoder: E,
+        n_params: usize,
+        origin: Option<Origin>,
+        dynamic: D,
+    ) -> Self
+    where
+        E: Encoder<A> + Send + Sync + 'static,
+        D: DynamicStatement<A> + 'static,
+    {
+        Self {
+            sql: sql.into(),
+            encoder: Arc::new(encoder),
+            n_params,
+            origin,
+            dynamic: Some(Arc::new(dynamic)),
         }
     }
 }
