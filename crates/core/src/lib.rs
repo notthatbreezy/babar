@@ -164,6 +164,29 @@
 //! );
 //! ```
 //!
+//! For reusable authored declarations, [`schema!`] can define Rust-visible schema
+//! modules with multiple tables and narrow field markers:
+//!
+//! ```
+//! babar::schema! {
+//!     pub mod app_schema {
+//!         table public.users {
+//!             id: primary_key(int4),
+//!             name: text,
+//!             deleted_at: nullable(timestamptz),
+//!         },
+//!         table public.posts {
+//!             id: pk(int8),
+//!             author_id: int4,
+//!         },
+//!     }
+//! }
+//!
+//! assert!(app_schema::users::id().is_primary_key());
+//! assert_eq!(app_schema::posts::author_id().sql_type(), babar::schema::SqlType::INT4);
+//! assert_eq!(app_schema::SCHEMA.tables().len(), 2);
+//! ```
+//!
 //! ## TLS
 //!
 //! Enable the default `rustls` feature (or the optional `native-tls` feature),
@@ -259,7 +282,7 @@ pub mod types;
 ///     "INSERT INTO users (id, name) VALUES ($1, $2)"
 /// );
 /// ```
-pub use babar_macros::{command, query, sql, typed_query, Codec};
+pub use babar_macros::{command, query, schema, sql, typed_query, Codec};
 
 #[doc(hidden)]
 pub mod __private {

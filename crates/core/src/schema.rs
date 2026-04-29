@@ -143,6 +143,153 @@ impl Nullability {
     }
 }
 
+/// Narrow semantic markers carried by authored schema declarations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ColumnSemantics {
+    /// No additional semantic marker.
+    Ordinary,
+    /// The column is the table's primary key.
+    PrimaryKey,
+}
+
+impl ColumnSemantics {
+    /// Whether this column is marked as a primary key.
+    pub const fn is_primary_key(self) -> bool {
+        matches!(self, Self::PrimaryKey)
+    }
+}
+
+/// Schema declaration metadata for a single column.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct ColumnDef {
+    name: &'static str,
+    sql_type: SqlType,
+    nullability: Nullability,
+    semantics: ColumnSemantics,
+}
+
+impl ColumnDef {
+    /// Create a column definition without additional semantic markers.
+    pub const fn new(name: &'static str, sql_type: SqlType, nullability: Nullability) -> Self {
+        Self::with_semantics(name, sql_type, nullability, ColumnSemantics::Ordinary)
+    }
+
+    /// Create a column definition with an explicit semantic marker.
+    pub const fn with_semantics(
+        name: &'static str,
+        sql_type: SqlType,
+        nullability: Nullability,
+        semantics: ColumnSemantics,
+    ) -> Self {
+        Self {
+            name,
+            sql_type,
+            nullability,
+            semantics,
+        }
+    }
+
+    /// Column name.
+    pub const fn name(self) -> &'static str {
+        self.name
+    }
+
+    /// Declared SQL type.
+    pub const fn sql_type(self) -> SqlType {
+        self.sql_type
+    }
+
+    /// Column nullability.
+    pub const fn nullability(self) -> Nullability {
+        self.nullability
+    }
+
+    /// Field-level semantic marker.
+    pub const fn semantics(self) -> ColumnSemantics {
+        self.semantics
+    }
+
+    /// Materialize a table-bound column symbol from this definition.
+    pub const fn materialize<T>(self, table: TableRef<T>) -> Column<T> {
+        Column::with_semantics(
+            table,
+            self.name,
+            self.sql_type,
+            self.nullability,
+            self.semantics,
+        )
+    }
+}
+
+/// Schema declaration metadata for a single table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct TableDef {
+    schema: Option<&'static str>,
+    name: &'static str,
+    columns: &'static [ColumnDef],
+}
+
+impl TableDef {
+    /// Create a table definition from authored column metadata.
+    pub const fn new(
+        schema: Option<&'static str>,
+        name: &'static str,
+        columns: &'static [ColumnDef],
+    ) -> Self {
+        Self {
+            schema,
+            name,
+            columns,
+        }
+    }
+
+    /// Optional schema name such as `public`.
+    pub const fn schema_name(self) -> Option<&'static str> {
+        self.schema
+    }
+
+    /// Unqualified table name such as `users`.
+    pub const fn name(self) -> &'static str {
+        self.name
+    }
+
+    /// Authored column definitions for this table.
+    pub const fn columns(self) -> &'static [ColumnDef] {
+        self.columns
+    }
+
+    /// Materialize a typed table symbol from this definition.
+    pub const fn table_ref<T>(self) -> TableRef<T> {
+        TableRef::new(self.schema, self.name)
+    }
+}
+
+/// Schema declaration metadata for an authored schema module.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct SchemaDef {
+    tables: &'static [TableDef],
+}
+
+impl SchemaDef {
+    /// Create a schema definition from authored table metadata.
+    pub const fn new(tables: &'static [TableDef]) -> Self {
+        Self { tables }
+    }
+
+    /// Authored table definitions.
+    pub const fn tables(self) -> &'static [TableDef] {
+        self.tables
+    }
+
+    /// Look up a table by optional schema and table name.
+    pub fn find_table(self, schema: Option<&str>, table_name: &str) -> Option<TableDef> {
+        self.tables
+            .iter()
+            .copied()
+            .find(|table| table.schema_name() == schema && table.name() == table_name)
+    }
+}
+
 /// A schema table symbol.
 pub struct TableRef<T> {
     schema: Option<&'static str>,
@@ -228,6 +375,7 @@ pub struct Column<T> {
     name: &'static str,
     sql_type: SqlType,
     nullability: Nullability,
+    semantics: ColumnSemantics,
 }
 
 impl<T> Copy for Column<T> {}
@@ -246,11 +394,29 @@ impl<T> Column<T> {
         sql_type: SqlType,
         nullability: Nullability,
     ) -> Self {
+        Self::with_semantics(
+            table,
+            name,
+            sql_type,
+            nullability,
+            ColumnSemantics::Ordinary,
+        )
+    }
+
+    /// Create a column symbol with an explicit semantic marker.
+    pub const fn with_semantics(
+        table: TableRef<T>,
+        name: &'static str,
+        sql_type: SqlType,
+        nullability: Nullability,
+        semantics: ColumnSemantics,
+    ) -> Self {
         Self {
             table,
             name,
             sql_type,
             nullability,
+            semantics,
         }
     }
 
@@ -274,6 +440,16 @@ impl<T> Column<T> {
         self.nullability
     }
 
+    /// Field-level semantic marker.
+    pub const fn semantics(self) -> ColumnSemantics {
+        self.semantics
+    }
+
+    /// Whether the column is marked as a primary key.
+    pub const fn is_primary_key(self) -> bool {
+        self.semantics.is_primary_key()
+    }
+
     /// Qualify this column with the table's default binding name.
     pub const fn qualified(self) -> QualifiedColumn<T> {
         self.table.bind().column(self)
@@ -292,6 +468,7 @@ impl<T> fmt::Debug for Column<T> {
             .field("name", &self.name)
             .field("sql_type", &self.sql_type)
             .field("nullability", &self.nullability)
+            .field("semantics", &self.semantics)
             .finish()
     }
 }
@@ -302,6 +479,7 @@ impl<T> PartialEq for Column<T> {
             && self.name == other.name
             && self.sql_type == other.sql_type
             && self.nullability == other.nullability
+            && self.semantics == other.semantics
     }
 }
 
@@ -313,6 +491,7 @@ impl<T> core::hash::Hash for Column<T> {
         self.name.hash(state);
         self.sql_type.hash(state);
         self.nullability.hash(state);
+        self.semantics.hash(state);
     }
 }
 
@@ -512,6 +691,21 @@ impl<T> fmt::Display for QualifiedColumn<T> {
 mod tests {
     use super::*;
 
+    crate::schema! {
+        mod authored {
+            table public.users {
+                id: primary_key(int4),
+                name: text,
+                deleted_at: nullable(timestamptz),
+            },
+            table public.posts {
+                id: pk(int8),
+                author_id: int4,
+                title: text,
+            },
+        }
+    }
+
     mod fixture {
         use super::*;
 
@@ -570,6 +764,8 @@ mod tests {
         assert_eq!(fixture::USER_ID.sql_type().oid(), types::INT4);
         assert_eq!(fixture::USER_ID.sql_type().name(), "int4");
         assert!(fixture::USER_ID.sql_type().is_resolved());
+        assert_eq!(fixture::USER_ID.semantics(), ColumnSemantics::Ordinary);
+        assert!(!fixture::USER_ID.is_primary_key());
 
         assert_eq!(
             fixture::USER_DELETED_AT.nullability(),
@@ -603,5 +799,43 @@ mod tests {
             fixture::POSTS.bind().column(fixture::POST_AUTHOR_ID)
         );
         assert_eq!(fixture::POST_ID.sql_type(), SqlType::INT8);
+    }
+
+    #[test]
+    fn authored_schema_macro_emits_multi_table_symbols() {
+        assert_eq!(authored::SCHEMA.tables().len(), 2);
+        assert_eq!(authored::users::TABLE.schema_name(), Some("public"));
+        assert_eq!(authored::users::TABLE.name(), "users");
+        assert_eq!(authored::posts::TABLE.schema_name(), Some("public"));
+        assert_eq!(authored::posts::TABLE.name(), "posts");
+
+        assert_eq!(authored::users::id().sql_type(), SqlType::INT4);
+        assert_eq!(authored::users::name().sql_type(), SqlType::TEXT);
+        assert_eq!(
+            authored::users::deleted_at().nullability(),
+            Nullability::Nullable
+        );
+        assert_eq!(authored::posts::id().sql_type(), SqlType::INT8);
+        assert_eq!(authored::posts::author_id().sql_type(), SqlType::INT4);
+        assert_eq!(authored::posts::title().sql_type(), SqlType::TEXT);
+    }
+
+    #[test]
+    fn authored_schema_macro_preserves_definition_metadata() {
+        let users = authored::SCHEMA
+            .find_table(Some("public"), "users")
+            .expect("users table exists");
+        assert_eq!(users.columns().len(), 3);
+        assert_eq!(users.columns()[0].name(), "id");
+        assert!(users.columns()[0].semantics().is_primary_key());
+        assert_eq!(users.columns()[1].semantics(), ColumnSemantics::Ordinary);
+        assert_eq!(users.columns()[2].nullability(), Nullability::Nullable);
+
+        assert!(authored::users::id().is_primary_key());
+        assert!(authored::posts::id().is_primary_key());
+        assert!(!authored::posts::author_id().is_primary_key());
+
+        let rematerialized = users.columns()[0].materialize(authored::users::TABLE);
+        assert_eq!(rematerialized, authored::users::id());
     }
 }

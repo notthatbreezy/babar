@@ -16,6 +16,8 @@ use syn::{
 use verify::{parse_declared_types, verify_param_metadata, verify_statement_against_probe, Probe};
 
 #[allow(dead_code)]
+mod schema_decl;
+#[allow(dead_code)]
 mod typed_sql;
 #[allow(dead_code)]
 mod verify;
@@ -204,6 +206,23 @@ pub fn command(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn typed_query(input: TokenStream) -> TokenStream {
     typed_sql::expand_typed_query(input)
+}
+
+/// Declare an authored schema module with reusable table and column symbols.
+///
+/// The v0.1 surface is intentionally small:
+///
+/// - `schema! { pub mod app_schema { table public.users { id: primary_key(int4) } } }`
+/// - one schema module can contain multiple `table` declarations
+/// - field markers currently support `nullable(...)`, `primary_key(...)`, and
+///   `pk(...)`
+/// - SQL type names match the inline `typed_query!` schema type surface
+///
+/// The generated module exposes one nested module per table with `TABLE`,
+/// per-column symbols, and authored declaration metadata through `SCHEMA`.
+#[proc_macro]
+pub fn schema(input: TokenStream) -> TokenStream {
+    schema_decl::expand_schema(input)
 }
 
 fn verify_sql_input(input: &SqlInput, compiled: &CompiledSql) -> Result<()> {
