@@ -1,0 +1,8 @@
+error: this SQL construct is outside the typed_sql v1 subset: authored external schema declarations can express this type, but typed_sql v1 runtime lowering does not yet support SQL type `timestamptz`; supported lowered codecs are bool, bytea, varchar, text, int2, int4, int8, float4, and float8
+          |
+        1 | SELECT users.deleted_at FROM users
+          |        ^^^^^^^^^^^^^^^^
+  --> tests/ui/typed_query/fail/authored_unsupported_declared_type.rs:11:50
+   |
+11 |     let _query = app_schema::typed_query!(SELECT users.deleted_at FROM users);
+   |                                                  ^^^^^

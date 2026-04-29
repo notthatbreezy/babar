@@ -1,0 +1,5 @@
+error: unsupported authored schema field marker `indexed`; supported markers are nullable(...), primary_key(...), and pk(...)
+ --> tests/ui/typed_query/fail/authored_unsupported_marker.rs:4:17
+  |
+4 |             id: indexed(int4),
+  |                 ^^^^^^^

@@ -703,6 +703,11 @@ mod tests {
                 author_id: int4,
                 title: text,
             },
+            table service.widgets {
+                id: pk(int4),
+                name: text,
+                active: bool,
+            },
         }
     }
 
@@ -803,11 +808,13 @@ mod tests {
 
     #[test]
     fn authored_schema_macro_emits_multi_table_symbols() {
-        assert_eq!(authored::SCHEMA.tables().len(), 2);
+        assert_eq!(authored::SCHEMA.tables().len(), 3);
         assert_eq!(authored::users::TABLE.schema_name(), Some("public"));
         assert_eq!(authored::users::TABLE.name(), "users");
         assert_eq!(authored::posts::TABLE.schema_name(), Some("public"));
         assert_eq!(authored::posts::TABLE.name(), "posts");
+        assert_eq!(authored::widgets::TABLE.schema_name(), Some("service"));
+        assert_eq!(authored::widgets::TABLE.name(), "widgets");
 
         assert_eq!(authored::users::id().sql_type(), SqlType::INT4);
         assert_eq!(authored::users::name().sql_type(), SqlType::TEXT);
@@ -818,6 +825,9 @@ mod tests {
         assert_eq!(authored::posts::id().sql_type(), SqlType::INT8);
         assert_eq!(authored::posts::author_id().sql_type(), SqlType::INT4);
         assert_eq!(authored::posts::title().sql_type(), SqlType::TEXT);
+        assert_eq!(authored::widgets::id().sql_type(), SqlType::INT4);
+        assert_eq!(authored::widgets::name().sql_type(), SqlType::TEXT);
+        assert_eq!(authored::widgets::active().sql_type(), SqlType::BOOL);
     }
 
     #[test]
@@ -833,9 +843,31 @@ mod tests {
 
         assert!(authored::users::id().is_primary_key());
         assert!(authored::posts::id().is_primary_key());
+        assert!(authored::widgets::id().is_primary_key());
         assert!(!authored::posts::author_id().is_primary_key());
 
         let rematerialized = users.columns()[0].materialize(authored::users::TABLE);
         assert_eq!(rematerialized, authored::users::id());
+    }
+
+    #[test]
+    fn authored_schema_symbols_are_reusable_across_bindings() {
+        let widgets = authored::widgets::TABLE.bind();
+        let alias = authored::widgets::TABLE.alias("w");
+
+        let widget_id = authored::widgets::id();
+        let widget_name = authored::widgets::name();
+
+        assert_eq!(widgets.column(widget_id).to_string(), "widgets.id");
+        assert_eq!(widgets.column(widget_name).to_string(), "widgets.name");
+        assert_eq!(alias.column(widget_id).to_string(), "w.id");
+        assert_eq!(alias.column(widget_name).to_string(), "w.name");
+
+        let widgets_table = authored::SCHEMA
+            .find_table(Some("service"), "widgets")
+            .expect("widgets table exists");
+        assert_eq!(widgets_table.columns().len(), 3);
+        assert_eq!(widgets_table.columns()[2].name(), "active");
+        assert_eq!(widgets_table.columns()[2].sql_type(), SqlType::BOOL);
     }
 }

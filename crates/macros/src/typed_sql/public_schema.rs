@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
+use proc_macro2::{TokenStream as TokenStream2, TokenTree};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::{braced, parenthesized, parse_macro_input, token, Error, Ident, Result, Token};
@@ -9,6 +9,7 @@ use syn::{braced, parenthesized, parse_macro_input, token, Error, Ident, Result,
 use super::lower;
 use super::public_input::PublicSqlInput;
 use super::resolver::{self, Nullability, SchemaCatalog, SchemaColumn, SchemaTable, SqlType};
+use super::{TypedSqlError, TypedSqlErrorKind};
 
 mod kw {
     syn::custom_keyword!(schema);
@@ -25,35 +26,77 @@ pub(crate) fn expand_typed_query(input: TokenStream) -> TokenStream {
 }
 
 fn compile_typed_query(input: TypedQueryInput) -> Result<proc_macro2::TokenStream> {
-    let catalog = input.schema.into_catalog()?;
-    let parsed = input.sql.parse_select()?;
+    let TypedQueryInput {
+        source_kind,
+        schema,
+        sql,
+    } = input;
+    let catalog = schema.into_catalog()?;
+    let parsed = sql.parse_select()?;
     let checked = resolver::resolve_select(&parsed.select, &catalog)
-        .map_err(|err| input.sql.syn_error(err))?;
-    let lowered = lower::lower_select(&parsed, &checked).map_err(|err| input.sql.syn_error(err))?;
+        .map_err(|err| sql.syn_error(decorate_error(source_kind, err)))?;
+    let lowered = lower::lower_select(&parsed, &checked)
+        .map_err(|err| sql.syn_error(decorate_error(source_kind, err)))?;
     Ok(lowered.emit_query_tokens())
 }
 
 struct TypedQueryInput {
+    source_kind: SchemaSourceKind,
     schema: SchemaInput,
     sql: PublicSqlInput,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SchemaSourceKind {
+    Inline,
+    AuthoredBridge,
+}
+
 impl Parse for TypedQueryInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        if input.peek(kw::schema) {
+        let source_kind = if input.peek(kw::schema) {
             input.parse::<kw::schema>()?;
+            SchemaSourceKind::Inline
         } else if input.peek(kw::__babar_schema) {
             input.parse::<kw::__babar_schema>()?;
+            SchemaSourceKind::AuthoredBridge
         } else {
             return Err(input.error("expected `schema = { ... }` before typed_query SQL"));
-        }
+        };
         input.parse::<Token![=]>()?;
         let schema = input.parse()?;
         input.parse::<Token![,]>()?;
-        let sql =
-            PublicSqlInput::parse(trim_optional_trailing_comma(input.parse::<TokenStream2>()?))?;
-        Ok(Self { schema, sql })
+        let sql_tokens = trim_optional_trailing_comma(input.parse::<TokenStream2>()?);
+        reject_extra_schema_argument(&sql_tokens, source_kind)?;
+        let sql = PublicSqlInput::parse(sql_tokens)?;
+        Ok(Self {
+            source_kind,
+            schema,
+            sql,
+        })
     }
+}
+
+fn decorate_error(source_kind: SchemaSourceKind, mut err: TypedSqlError) -> TypedSqlError {
+    if source_kind == SchemaSourceKind::AuthoredBridge {
+        match err.kind {
+            TypedSqlErrorKind::Resolve => {
+                err.message = format!("authored external schema lookup failed: {}", err.message);
+            }
+            TypedSqlErrorKind::Unsupported
+                if err
+                    .message
+                    .contains("runtime lowering does not yet support SQL type") =>
+            {
+                err.message = format!(
+                    "authored external schema declarations can express this type, but {}",
+                    err.message
+                );
+            }
+            _ => {}
+        }
+    }
+    err
 }
 
 fn trim_optional_trailing_comma(tokens: TokenStream2) -> TokenStream2 {
@@ -66,6 +109,44 @@ fn trim_optional_trailing_comma(tokens: TokenStream2) -> TokenStream2 {
         tokens.pop();
     }
     tokens.into_iter().collect()
+}
+
+fn reject_extra_schema_argument(
+    tokens: &TokenStream2,
+    source_kind: SchemaSourceKind,
+) -> Result<()> {
+    let mut tokens = tokens.clone().into_iter();
+    let Some(TokenTree::Ident(ident)) = tokens.next() else {
+        return Ok(());
+    };
+    let name = ident_name(&ident);
+    if name != "schema" && name != "__babar_schema" {
+        return Ok(());
+    }
+    let Some(TokenTree::Punct(punct)) = tokens.next() else {
+        return Ok(());
+    };
+    if punct.as_char() != '=' {
+        return Ok(());
+    }
+
+    let message = match (source_kind, name.as_str()) {
+        (SchemaSourceKind::AuthoredBridge, "schema") => {
+            "schema-scoped authored `typed_query!` already supplies the external schema; inline `schema = { ... }` blocks cannot be mixed into this call"
+        }
+        (SchemaSourceKind::AuthoredBridge, "__babar_schema") => {
+            "schema-scoped authored `typed_query!` already supplies its internal schema bridge; do not pass `__babar_schema = { ... }` manually"
+        }
+        (SchemaSourceKind::Inline, "__babar_schema") => {
+            "cannot mix inline `schema = { ... }` with the authored external schema bridge `__babar_schema = { ... }` in one typed_query! call"
+        }
+        (SchemaSourceKind::Inline, "schema") => {
+            "typed_query! accepts only one `schema = { ... }` block before the SQL input"
+        }
+        _ => unreachable!("schema argument name was validated above"),
+    };
+
+    Err(Error::new(ident.span(), message))
 }
 
 struct SchemaInput {
@@ -313,5 +394,53 @@ mod tests {
             SELECT users.id, users.name FROM users WHERE users.id = $id
         })
         .expect("typed_query input parses with authored bridge");
+    }
+
+    #[test]
+    fn typed_query_rejects_inline_schema_after_authored_bridge() {
+        let err = match parse2::<TypedQueryInput>(quote! {
+            __babar_schema = {
+                table public.users {
+                    id: int4,
+                },
+            },
+            schema = {
+                table public.users {
+                    id: int4,
+                },
+            },
+            SELECT users.id FROM users
+        }) {
+            Ok(_) => panic!("mixed schema arguments should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains(
+            "schema-scoped authored `typed_query!` already supplies the external schema"
+        ));
+    }
+
+    #[test]
+    fn typed_query_rejects_authored_bridge_after_inline_schema() {
+        let err = match parse2::<TypedQueryInput>(quote! {
+            schema = {
+                table public.users {
+                    id: int4,
+                },
+            },
+            __babar_schema = {
+                table public.users {
+                    id: int4,
+                },
+            },
+            SELECT users.id FROM users
+        }) {
+            Ok(_) => panic!("duplicate schema arguments should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains(
+            "cannot mix inline `schema = { ... }` with the authored external schema bridge"
+        ));
     }
 }

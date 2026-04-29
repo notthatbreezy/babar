@@ -1,8 +1,8 @@
 //! Tiny Axum service backed by babar's connection pool.
 //!
-//! This example uses the query-only `typed_query!` style for read queries.
-//! Writes still use `Command::raw` because the macro intentionally covers a
-//! narrow `SELECT` subset.
+//! This example uses a reusable schema-scoped `typed_query!` wrapper for read
+//! queries. Writes still use `Command::raw` because the macro intentionally
+//! covers a narrow `SELECT` subset.
 //!
 //! ```text
 //! cargo run -p babar --example axum_service
@@ -45,6 +45,15 @@ struct ListWidgetsParams {
 
 type OptionalWidgetListingParams = (Option<String>, Option<i64>, Option<i64>);
 type WidgetRow = (i32, String);
+
+babar::schema! {
+    mod service_schema {
+        table public.widgets {
+            id: primary_key(int4),
+            name: text,
+        },
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -117,13 +126,7 @@ async fn list_widgets(
 }
 
 fn optional_widget_listing_query() -> Query<OptionalWidgetListingParams, WidgetRow> {
-    babar::typed_query!(
-        schema = {
-            table public.widgets {
-                id: int4,
-                name: text,
-            },
-        },
+    service_schema::typed_query!(
         SELECT widgets.id, widgets.name
         FROM widgets
         WHERE (widgets.name = $name?)?
@@ -159,13 +162,7 @@ async fn get_widget(
     Path(id): Path<i32>,
 ) -> Result<Json<Widget>, (StatusCode, String)> {
     let conn = state.pool.acquire().await.map_err(pool_error_http)?;
-    let select = babar::typed_query!(
-        schema = {
-            table public.widgets {
-                id: int4,
-                name: text,
-            },
-        },
+    let select = service_schema::typed_query!(
         SELECT widgets.id, widgets.name
         FROM widgets
         WHERE widgets.id = $widget_id

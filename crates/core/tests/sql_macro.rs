@@ -200,6 +200,31 @@ babar::schema! {
     }
 }
 
+babar::schema! {
+    mod authored_schema_qualified_query_schema {
+        table public.users {
+            id: primary_key(int4),
+            name: text,
+            active: bool,
+        },
+        table reporting.widgets {
+            id: pk(int4),
+            title: text,
+            active: bool,
+        },
+    }
+}
+
+babar::schema! {
+    mod authored_runtime_schema {
+        table babar_authored.widgets {
+            id: primary_key(int4),
+            name: text,
+            active: bool,
+        },
+    }
+}
+
 #[test]
 fn schema_scoped_typed_query_matches_inline_pipeline() {
     let schema_scoped: Query<(i32,), (i32, String)> = authored_typed_query_schema::typed_query!(
@@ -224,6 +249,56 @@ fn schema_scoped_typed_query_matches_inline_pipeline() {
     assert_eq!(schema_scoped.sql(), inline.sql());
     assert_eq!(schema_scoped.param_oids(), inline.param_oids());
     assert_eq!(schema_scoped.output_oids(), inline.output_oids());
+}
+
+#[test]
+fn schema_scoped_typed_query_supports_schema_qualified_reuse() {
+    let public_query: Query<(bool,), (String,)> = authored_schema_qualified_query_schema::typed_query!(
+        SELECT users.name FROM public.users WHERE users.active = $active ORDER BY users.id
+    );
+    let public_inline: Query<(bool,), (String,)> = babar::typed_query!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+            table reporting.widgets {
+                id: int4,
+                title: text,
+                active: bool,
+            },
+        },
+        SELECT users.name FROM public.users WHERE users.active = $active ORDER BY users.id
+    );
+    assert_eq!(public_query.sql(), public_inline.sql());
+    assert_eq!(public_query.param_oids(), public_inline.param_oids());
+    assert_eq!(public_query.output_oids(), public_inline.output_oids());
+
+    let reporting_query: Query<(bool,), (String,)> = authored_schema_qualified_query_schema::typed_query!(
+        SELECT widgets.title FROM reporting.widgets WHERE widgets.active = $active ORDER BY widgets.id
+    );
+    let reporting_inline: Query<(bool,), (String,)> = babar::typed_query!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+            table reporting.widgets {
+                id: int4,
+                title: text,
+                active: bool,
+            },
+        },
+        SELECT widgets.title FROM reporting.widgets WHERE widgets.active = $active ORDER BY widgets.id
+    );
+    assert_eq!(reporting_query.sql(), reporting_inline.sql());
+    assert_eq!(reporting_query.param_oids(), reporting_inline.param_oids());
+    assert_eq!(
+        reporting_query.output_oids(),
+        reporting_inline.output_oids()
+    );
 }
 
 #[test]
@@ -420,6 +495,73 @@ async fn typed_query_macro_executes_against_postgres() {
     );
     let rows = session.query(&select, (1_i32,)).await.expect("select rows");
     assert_eq!(rows, vec![("alice".to_string(),), ("carol".to_string(),)]);
+
+    session.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn schema_scoped_typed_query_executes_against_schema_qualified_tables() {
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    session
+        .simple_query_raw(
+            "DROP SCHEMA IF EXISTS babar_authored CASCADE;\
+             CREATE SCHEMA babar_authored;\
+             CREATE TABLE babar_authored.widgets (\
+                 id int4 PRIMARY KEY, \
+                 name text NOT NULL, \
+                 active bool NOT NULL\
+             )",
+        )
+        .await
+        .expect("create schema-qualified table");
+
+    let insert: Command<(i32, String, bool)> = Command::raw(
+        "INSERT INTO babar_authored.widgets (id, name, active) VALUES ($1, $2, $3)",
+        (int4, text, bool),
+    );
+    for row in [
+        (1, "alpha".to_string(), true),
+        (2, "beta".to_string(), false),
+        (3, "gamma".to_string(), true),
+    ] {
+        let affected = session.execute(&insert, row).await.expect("insert row");
+        assert_eq!(affected, 1);
+    }
+
+    let schema_scoped: Query<(bool,), (String,)> = authored_runtime_schema::typed_query!(
+        SELECT widgets.name FROM babar_authored.widgets WHERE widgets.active = $active ORDER BY widgets.id
+    );
+    let inline: Query<(bool,), (String,)> = babar::typed_query!(
+        schema = {
+            table babar_authored.widgets {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        SELECT widgets.name FROM babar_authored.widgets WHERE widgets.active = $active ORDER BY widgets.id
+    );
+    assert_eq!(schema_scoped.sql(), inline.sql());
+    assert_eq!(schema_scoped.param_oids(), inline.param_oids());
+    assert_eq!(schema_scoped.output_oids(), inline.output_oids());
+
+    let rows = session
+        .query(&schema_scoped, (true,))
+        .await
+        .expect("select active rows");
+    assert_eq!(rows, vec![("alpha".to_string(),), ("gamma".to_string(),)]);
+
+    let lookup: Query<(i32,), (String,)> = authored_runtime_schema::typed_query!(
+        SELECT widgets.name FROM babar_authored.widgets WHERE widgets.id = $widget_id
+    );
+    let rows = session
+        .query(&lookup, (2_i32,))
+        .await
+        .expect("lookup widget");
+    assert_eq!(rows, vec![("beta".to_string(),)]);
 
     session.close().await.expect("close");
 }

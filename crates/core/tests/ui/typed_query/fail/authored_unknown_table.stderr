@@ -1,0 +1,8 @@
+error: could not resolve a table or column in typed_sql v1: authored external schema lookup failed: unknown table `service.users`
+          |
+        1 | SELECT users.id FROM service.users
+          |                      ^^^^^^^^^^^^^
+  --> tests/ui/typed_query/fail/authored_unknown_table.rs:14:30
+   |
+14 |         SELECT users.id FROM service.users
+   |                              ^^^^^^^
