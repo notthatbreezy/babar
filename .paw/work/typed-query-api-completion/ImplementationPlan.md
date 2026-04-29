@@ -24,7 +24,7 @@ The main gap is that the pipeline currently models only ordinary named placehold
 
 ## Phase Status
 - [x] **Phase 1: Optional Syntax Frontend** - Extend the public macro frontend and normalized IR to represent `$value?` and `(...)?` as explicit optional syntax.
-- [ ] **Phase 2: Omission Semantics and SQL Emission** - Define and implement structure-aware omission rules through resolution and final SQL generation.
+- [x] **Phase 2: Omission Semantics and SQL Emission** - Define and implement structure-aware omission rules through resolution and final SQL generation.
 - [ ] **Phase 3: Diagnostics and Coverage** - Add end-to-end diagnostics, UI coverage, execution-focused tests, and example validation for supported and unsupported optional patterns.
 - [ ] **Phase 4: Documentation** - Document the completed read-query API and optional suffix semantics across PAW docs and project docs.
 
@@ -70,12 +70,12 @@ The main gap is that the pipeline currently models only ordinary named placehold
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] Tests pass: `cargo test -p babar-macros --all-features`
-- [ ] Lint/typecheck: `cargo clippy -p babar-macros --all-features -- -D warnings`
+- [x] Tests pass: `cargo test -p babar-macros --all-features`
+- [x] Lint/typecheck: `cargo clippy -p babar-macros --all-features -- -D warnings`
 
 #### Manual Verification:
-- [ ] A listing-style query with several optional filters emits valid SQL when only a subset of inputs is active.
-- [ ] A grouped optional predicate is omitted as a whole when its required grouped inputs are incomplete, with no partial-condition emission.
+- [x] A listing-style query with several optional filters emits valid SQL when only a subset of inputs is active.
+- [x] A grouped optional predicate is omitted as a whole when its required grouped inputs are incomplete, with no partial-condition emission.
 
 ---
 

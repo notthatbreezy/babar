@@ -612,7 +612,7 @@ impl<'a> Normalizer<'a> {
         self.consumed_optional_groups.insert(group.original_span);
         if !context.allows_optional_group() {
             return Err(TypedSqlError::unsupported_at(
-                "typed_sql v1 only supports `(...)?` around parenthesized WHERE/JOIN predicate expressions",
+                "typed_sql v1 only supports `(...)?` around parenthesized WHERE/JOIN predicate expressions and ORDER BY expressions",
                 group.original_span,
             ));
         }
@@ -680,7 +680,7 @@ impl<'a> Normalizer<'a> {
             return Ok(());
         };
         Err(TypedSqlError::unsupported_at(
-            "typed_sql v1 only supports `(...)?` around parenthesized WHERE/JOIN predicate expressions",
+            "typed_sql v1 only supports `(...)?` around parenthesized WHERE/JOIN predicate expressions and ORDER BY expressions",
             group.original_span,
         ))
     }
@@ -702,7 +702,7 @@ impl ExprContext {
     }
 
     fn allows_optional_group(self) -> bool {
-        matches!(self, Self::Predicate)
+        matches!(self, Self::Predicate | Self::OrderBy)
     }
 
     fn comparison_operand_context(self) -> Self {

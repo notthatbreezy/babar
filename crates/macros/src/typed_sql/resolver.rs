@@ -1,7 +1,7 @@
 use std::collections::{hash_map::Entry, HashMap};
 
 use crate::typed_sql::ir::{
-    BinaryOp, BoolOp, JoinKind, Literal, OutputNameSyntax, ParsedExpr, ParsedOrderBy,
+    AstId, BinaryOp, BoolOp, JoinKind, Literal, OutputNameSyntax, ParsedExpr, ParsedOrderBy,
     ParsedProjection, ParsedSelect, PlaceholderId, PlaceholderRef, SourceSpan, UnaryOp,
 };
 
@@ -296,6 +296,7 @@ pub(crate) struct CheckedParameter {
     pub(crate) slot: u32,
     pub(crate) sql_type: SqlType,
     pub(crate) nullability: Nullability,
+    pub(crate) optional: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -318,6 +319,11 @@ pub(crate) enum CheckedExprNode {
     Column(ResolvedColumnRef),
     Placeholder(ResolvedPlaceholderRef),
     Literal(Literal),
+    OptionalGroup {
+        id: AstId,
+        expr: Box<CheckedExpr>,
+        required_placeholders: Vec<PlaceholderId>,
+    },
     Unary {
         op: UnaryOp,
         expr: Box<CheckedExpr>,
@@ -608,6 +614,10 @@ enum ResolvedExprNode {
     Column(ResolvedColumnRef),
     Placeholder(ResolvedPlaceholderRef),
     Literal(Literal),
+    OptionalGroup {
+        id: AstId,
+        expr: Box<ResolvedExpr>,
+    },
     Unary {
         op: UnaryOp,
         expr: Box<ResolvedExpr>,
@@ -641,6 +651,7 @@ pub(crate) struct ResolvedPlaceholderRef {
     pub(crate) name: String,
     pub(crate) slot: u32,
     pub(crate) span: SourceSpan,
+    pub(crate) optional: bool,
 }
 
 fn resolve_from(
@@ -745,21 +756,13 @@ fn resolve_expr(
             })
         }
         ParsedExpr::Placeholder(placeholder) => {
-            if placeholder.optional {
-                return Err(TypedSqlError::unsupported_at(
-                    "optional typed_query syntax is parsed but not lowered yet; complete phase 2 before executing queries with `$value?`",
-                    placeholder.span,
-                ));
-            }
             ResolvedExprNode::Placeholder(ResolvedPlaceholderRef::from_placeholder(placeholder))
         }
         ParsedExpr::Literal(literal) => ResolvedExprNode::Literal(literal.value.clone()),
-        ParsedExpr::OptionalGroup(group) => {
-            return Err(TypedSqlError::unsupported_at(
-                "optional typed_query syntax is parsed but not lowered yet; complete phase 2 before executing queries with `(...)?`",
-                group.span,
-            ));
-        }
+        ParsedExpr::OptionalGroup(group) => ResolvedExprNode::OptionalGroup {
+            id: group.id,
+            expr: Box::new(resolve_expr(&group.expr, scope, bindings, catalog)?),
+        },
         ParsedExpr::Unary { op, expr, .. } => ResolvedExprNode::Unary {
             op: *op,
             expr: Box::new(resolve_expr(expr, scope, bindings, catalog)?),
@@ -793,6 +796,7 @@ impl ResolvedPlaceholderRef {
             name: placeholder.name.clone(),
             slot: placeholder.slot,
             span: placeholder.span,
+            optional: placeholder.optional,
         }
     }
 }
@@ -898,6 +902,12 @@ fn analyze_expr(
                 Nullability::NonNull
             },
         }),
+        ResolvedExprNode::OptionalGroup { expr: inner, .. } => analyze_expr(
+            inner,
+            env,
+            catalog,
+            inference,
+        ),
         ResolvedExprNode::Unary { op, expr: inner } => {
             let inner = analyze_expr(inner, env, catalog, inference)?;
             match op {
@@ -1147,6 +1157,21 @@ fn finalize_expr(
                 node: CheckedExprNode::Literal(literal.clone()),
             })
         }
+        ResolvedExprNode::OptionalGroup { id, expr: inner } => {
+            let inner = finalize_expr(inner, env, catalog, inference)?;
+            let required_placeholders = collect_optional_placeholders(&inner);
+            Ok(CheckedExpr {
+                span: expr.span(),
+                kind: inner.kind,
+                sql_type: inner.sql_type,
+                nullability: inner.nullability,
+                node: CheckedExprNode::OptionalGroup {
+                    id: *id,
+                    required_placeholders,
+                    expr: Box::new(inner),
+                },
+            })
+        }
         ResolvedExprNode::Unary { op, expr: inner } => {
             let inner = finalize_expr(inner, env, catalog, inference)?;
             match op {
@@ -1275,6 +1300,7 @@ impl InferenceContext {
         let state = self.placeholder_state_mut(placeholder.id, placeholder.span);
         state.name = Some(placeholder.name.clone());
         state.slot = Some(placeholder.slot);
+        state.optional |= placeholder.optional;
     }
 
     fn relate_placeholders(&mut self, left: PlaceholderId, right: PlaceholderId, span: SourceSpan) {
@@ -1311,6 +1337,7 @@ impl InferenceContext {
                 slot: None,
                 inferred_type: None,
                 nullability: Nullability::NonNull,
+                optional: false,
                 first_span: span,
             })
     }
@@ -1396,6 +1423,7 @@ impl InferenceContext {
                     slot: state.slot.unwrap_or(state.id.0 + 1),
                     sql_type,
                     nullability: state.nullability,
+                    optional: state.optional,
                 })
             })
             .collect::<Vec<_>>();
@@ -1411,6 +1439,7 @@ struct PlaceholderState {
     slot: Option<u32>,
     inferred_type: Option<SqlType>,
     nullability: Nullability,
+    optional: bool,
     first_span: SourceSpan,
 }
 
@@ -1485,6 +1514,45 @@ fn is_integer_literal(number: &str) -> bool {
     number
         .bytes()
         .all(|byte| byte.is_ascii_digit() || byte == b'_' || byte == b'-' || byte == b'+')
+}
+
+fn collect_optional_placeholders(expr: &CheckedExpr) -> Vec<PlaceholderId> {
+    let mut placeholders = Vec::new();
+    collect_optional_placeholders_into(expr, &mut placeholders);
+    placeholders.sort_by_key(|placeholder| placeholder.0);
+    placeholders.dedup();
+    placeholders
+}
+
+fn collect_optional_placeholders_into(expr: &CheckedExpr, placeholders: &mut Vec<PlaceholderId>) {
+    match &expr.node {
+        CheckedExprNode::Placeholder(placeholder) => {
+            if placeholder.optional {
+                placeholders.push(placeholder.id);
+            }
+        }
+        CheckedExprNode::OptionalGroup {
+            expr,
+            required_placeholders,
+            ..
+        } => {
+            placeholders.extend(required_placeholders.iter().copied());
+            collect_optional_placeholders_into(expr, placeholders);
+        }
+        CheckedExprNode::Unary { expr, .. } | CheckedExprNode::IsNull { expr, .. } => {
+            collect_optional_placeholders_into(expr, placeholders);
+        }
+        CheckedExprNode::Binary { left, right, .. } => {
+            collect_optional_placeholders_into(left, placeholders);
+            collect_optional_placeholders_into(right, placeholders);
+        }
+        CheckedExprNode::BoolChain { terms, .. } => {
+            for term in terms {
+                collect_optional_placeholders_into(term, placeholders);
+            }
+        }
+        CheckedExprNode::Column(_) | CheckedExprNode::Literal(_) => {}
+    }
 }
 
 fn expr_span(expr: &ParsedExpr) -> SourceSpan {
@@ -1629,6 +1697,42 @@ mod tests {
         assert_eq!(checked.parameters.len(), 2);
         assert_eq!(checked.parameters[0].sql_type, SqlType::Int4);
         assert_eq!(checked.parameters[1].sql_type, SqlType::Int4);
+    }
+
+    #[test]
+    fn resolves_optional_predicates_and_groups() {
+        let checked = parse_and_resolve(
+            "SELECT u.id FROM users AS u WHERE (u.id >= $min? AND u.id <= $max?)?",
+        )
+        .expect("optional query resolves");
+
+        assert_eq!(checked.parameters.len(), 2);
+        assert!(checked.parameters.iter().all(|parameter| parameter.optional));
+        let Some(CheckedExpr {
+            node:
+                CheckedExprNode::OptionalGroup {
+                    required_placeholders,
+                    ..
+                },
+            ..
+        }) = checked.filter
+        else {
+            panic!("expected optional group filter")
+        };
+        assert_eq!(required_placeholders, vec![PlaceholderId(0), PlaceholderId(1)]);
+    }
+
+    #[test]
+    fn resolves_optional_limit_and_offset_placeholders() {
+        let checked = parse_and_resolve(
+            "SELECT u.id FROM users AS u LIMIT $limit? OFFSET $offset?",
+        )
+        .expect("optional limit/offset resolve");
+
+        assert_eq!(checked.parameters.len(), 2);
+        assert!(checked.parameters.iter().all(|parameter| parameter.optional));
+        assert!(checked.limit.is_some());
+        assert!(checked.offset.is_some());
     }
 
     #[test]
