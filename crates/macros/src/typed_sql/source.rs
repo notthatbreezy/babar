@@ -423,14 +423,16 @@ pub(crate) fn canonicalize(sql: &str) -> Result<SqlSource> {
                         let inner = &sql[span.start as usize + 1..original_end];
                         if starts_with_optional_clause_keyword(inner) {
                             return Err(TypedSqlError::unsupported_at(
-                                "typed_sql v1 only supports `(...)?` around predicate expressions, not whole clauses",
+                                "typed_sql v1 requires `(...)?` to own a parenthesized predicate or single ORDER BY item; it cannot wrap a clause keyword like ORDER BY, LIMIT, or OFFSET",
                                 span,
                             ));
                         }
                         optional_groups.push(OptionalGroup {
                             original_span: span,
                             canonical_span: SourceSpan::new(
-                                to_u32(frame.map_or(canonical_end - 1, |frame| frame.canonical_start))?,
+                                to_u32(
+                                    frame.map_or(canonical_end - 1, |frame| frame.canonical_start),
+                                )?,
                                 to_u32(canonical_end)?,
                             ),
                         });

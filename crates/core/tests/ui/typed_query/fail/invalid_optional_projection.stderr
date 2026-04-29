@@ -1,0 +1,9 @@
+error: this SQL construct is outside the typed_sql v1 subset: typed_sql v1 only supports `$value?` when it owns a WHERE/JOIN comparison predicate or the full LIMIT/OFFSET expression
+          |
+        1 | SELECT $user_id? FROM users
+          |        ^^^^^^^^^
+       help: attach `?` only when the placeholder directly owns an entire WHERE/JOIN comparison or the full LIMIT/OFFSET expression; use `(...)?` for larger predicate groups
+  --> tests/ui/typed_query/fail/invalid_optional_projection.rs:10:16
+   |
+10 |         SELECT $user_id? FROM users
+   |                ^

@@ -411,7 +411,7 @@ impl<'a> Normalizer<'a> {
                     id: self.alloc_id(),
                     span: self.source_span(expr)?,
                     op,
-                    expr: Box::new(self.normalize_expr(inner, context)?),
+                    expr: Box::new(self.normalize_expr(inner, context.nested_value_context())?),
                 })
             }
             Expr::BinaryOp { left, op, right } => {
@@ -421,13 +421,13 @@ impl<'a> Normalizer<'a> {
                 id: self.alloc_id(),
                 span: self.source_span(expr)?,
                 negated: false,
-                expr: Box::new(self.normalize_expr(inner, context)?),
+                expr: Box::new(self.normalize_expr(inner, context.nested_value_context())?),
             }),
             Expr::IsNotNull(inner) => Ok(ParsedExpr::IsNull {
                 id: self.alloc_id(),
                 span: self.source_span(expr)?,
                 negated: true,
-                expr: Box::new(self.normalize_expr(inner, context)?),
+                expr: Box::new(self.normalize_expr(inner, context.nested_value_context())?),
             }),
             Expr::Nested(inner) => self.normalize_nested_expr(expr, inner, context),
             _ => {
@@ -477,14 +477,8 @@ impl<'a> Normalizer<'a> {
                         "typed_sql v1 only supports simple comparison operators",
                     )
                 })?,
-                left: Box::new(self.normalize_expr(
-                    left,
-                    context.comparison_operand_context(),
-                )?),
-                right: Box::new(self.normalize_expr(
-                    right,
-                    context.comparison_operand_context(),
-                )?),
+                left: Box::new(self.normalize_expr(left, context.comparison_operand_context())?),
+                right: Box::new(self.normalize_expr(right, context.comparison_operand_context())?),
             }),
         }
     }
@@ -515,7 +509,11 @@ impl<'a> Normalizer<'a> {
         Ok(())
     }
 
-    fn normalize_value(&mut self, value: &ValueWithSpan, context: ExprContext) -> Result<ParsedExpr> {
+    fn normalize_value(
+        &mut self,
+        value: &ValueWithSpan,
+        context: ExprContext,
+    ) -> Result<ParsedExpr> {
         match &value.value {
             Value::Placeholder(token) => {
                 let Some(entry) = self.source.placeholders.entry_for_token(token) else {
@@ -584,7 +582,14 @@ impl<'a> Normalizer<'a> {
             })?;
         if occurrence.optional && !context.allows_optional_placeholder() {
             return Err(TypedSqlError::unsupported_at(
-                "typed_sql v1 only supports `$value?` in WHERE/JOIN comparison predicates and LIMIT/OFFSET expressions",
+                match context {
+                    ExprContext::NestedComparisonOperand => {
+                        "typed_sql v1 requires `$value?` to directly own a WHERE/JOIN comparison predicate or the full LIMIT/OFFSET expression; wrap larger predicate fragments in `(...)?` when the ownership boundary would otherwise be ambiguous"
+                    }
+                    _ => {
+                        "typed_sql v1 only supports `$value?` when it owns a WHERE/JOIN comparison predicate or the full LIMIT/OFFSET expression"
+                    }
+                },
                 occurrence.original_span,
             ));
         }
@@ -606,13 +611,17 @@ impl<'a> Normalizer<'a> {
     ) -> Result<ParsedExpr> {
         let canonical_span = self.source.canonical_span_for_parser(expr.span())?;
         let inner_expr = self.normalize_expr(inner, context)?;
-        let Some(group) = self.source.optional_groups.entry_for_canonical_span(canonical_span) else {
+        let Some(group) = self
+            .source
+            .optional_groups
+            .entry_for_canonical_span(canonical_span)
+        else {
             return Ok(inner_expr);
         };
         self.consumed_optional_groups.insert(group.original_span);
         if !context.allows_optional_group() {
             return Err(TypedSqlError::unsupported_at(
-                "typed_sql v1 only supports `(...)?` around parenthesized WHERE/JOIN predicate expressions and ORDER BY expressions",
+                "typed_sql v1 requires `(...)?` to own an entire parenthesized WHERE/JOIN predicate or a single ORDER BY expression; LIMIT/OFFSET and other clause bodies must use direct `$value?` placeholders instead",
                 group.original_span,
             ));
         }
@@ -680,7 +689,7 @@ impl<'a> Normalizer<'a> {
             return Ok(());
         };
         Err(TypedSqlError::unsupported_at(
-            "typed_sql v1 only supports `(...)?` around parenthesized WHERE/JOIN predicate expressions and ORDER BY expressions",
+            "typed_sql v1 requires `(...)?` to own an entire parenthesized WHERE/JOIN predicate or a single ORDER BY expression; LIMIT/OFFSET and other clause bodies must use direct `$value?` placeholders instead",
             group.original_span,
         ))
     }
@@ -691,6 +700,7 @@ enum ExprContext {
     Projection,
     Predicate,
     ComparisonOperand,
+    NestedComparisonOperand,
     OrderBy,
     Limit,
     Offset,
@@ -707,7 +717,18 @@ impl ExprContext {
 
     fn comparison_operand_context(self) -> Self {
         match self {
-            Self::Predicate | Self::ComparisonOperand => Self::ComparisonOperand,
+            Self::Predicate | Self::ComparisonOperand | Self::NestedComparisonOperand => {
+                Self::ComparisonOperand
+            }
+            other => other,
+        }
+    }
+
+    fn nested_value_context(self) -> Self {
+        match self {
+            Self::ComparisonOperand | Self::NestedComparisonOperand => {
+                Self::NestedComparisonOperand
+            }
             other => other,
         }
     }

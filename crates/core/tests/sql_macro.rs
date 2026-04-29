@@ -2,7 +2,7 @@
 
 mod common;
 
-use babar::codec::{bool, int4, text};
+use babar::codec::{bool, int4, int8, text};
 use babar::query::{Command, Fragment, Query};
 use babar::sql;
 use babar::types;
@@ -165,7 +165,7 @@ fn typed_query_macro_matches_raw_builder() {
         SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = true
     );
     let raw_query: Query<(i32,), (i32, String)> = Query::raw(
-        "SELECT users.id, users.name FROM users WHERE users.id = $1 AND users.active = true",
+        "SELECT users.id, users.name FROM users AS users WHERE ((users.id = $1) AND (users.active = TRUE))",
         (int4,),
         (int4, text),
     );
@@ -174,6 +174,35 @@ fn typed_query_macro_matches_raw_builder() {
     assert_eq!(macro_query.output_oids(), raw_query.output_oids());
     let origin = macro_query.origin().expect("macro captures origin");
     assert!(origin.file().ends_with("crates/core/tests/sql_macro.rs"));
+}
+
+#[test]
+fn typed_query_optional_suffixes_match_all_active_raw_builder() {
+    let macro_query: Query<(i32, i32, bool, i64, i64), (String,)> = babar::typed_query!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        SELECT users.name
+        FROM users
+        WHERE (users.id >= $min_id? AND users.id <= $max_id?)?
+          AND (users.active = $active?)?
+        ORDER BY users.id
+        LIMIT $limit?
+        OFFSET $offset?
+    );
+    let raw_query: Query<(i32, i32, bool, i64, i64), (String,)> = Query::raw(
+        "SELECT users.name FROM users AS users WHERE ((((users.id >= $1) AND (users.id <= $2))) AND ((users.active = $3))) ORDER BY users.id LIMIT $4 OFFSET $5",
+        (int4, int4, bool, int8, int8),
+        (text,),
+    );
+
+    assert_eq!(macro_query.sql(), raw_query.sql());
+    assert_eq!(macro_query.param_oids(), raw_query.param_oids());
+    assert_eq!(macro_query.output_oids(), raw_query.output_oids());
 }
 
 #[tokio::test]
@@ -320,6 +349,71 @@ async fn typed_query_macro_executes_against_postgres() {
     );
     let rows = session.query(&select, (1_i32,)).await.expect("select rows");
     assert_eq!(rows, vec![("alice".to_string(),), ("carol".to_string(),)]);
+
+    session.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn typed_query_optional_suffixes_execute_against_postgres() {
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    session
+        .simple_query_raw(
+            "CREATE TEMP TABLE typed_query_optional_users (\
+                id int4 PRIMARY KEY, \
+                name text NOT NULL, \
+                active bool NOT NULL\
+            )",
+        )
+        .await
+        .expect("create table");
+
+    let insert: Command<(i32, String, bool)> = Command::raw(
+        "INSERT INTO typed_query_optional_users (id, name, active) VALUES ($1, $2, $3)",
+        (int4, text, bool),
+    );
+    for row in [
+        (1, "alice".to_string(), true),
+        (2, "bob".to_string(), false),
+        (3, "carol".to_string(), true),
+        (4, "dave".to_string(), true),
+    ] {
+        let affected = session.execute(&insert, row).await.expect("insert row");
+        assert_eq!(affected, 1);
+    }
+
+    let select: Query<(i32, i32, bool, i64, i64), (String,)> = babar::typed_query!(
+        schema = {
+            table typed_query_optional_users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        SELECT typed_query_optional_users.name
+        FROM typed_query_optional_users
+        WHERE (typed_query_optional_users.id >= $min_id? AND typed_query_optional_users.id <= $max_id?)?
+          AND (typed_query_optional_users.active = $active?)?
+        ORDER BY typed_query_optional_users.id
+        LIMIT $limit?
+        OFFSET $offset?
+    );
+    let raw_select: Query<(i32, i32, bool, i64, i64), (String,)> = Query::raw(
+        "SELECT typed_query_optional_users.name FROM typed_query_optional_users AS typed_query_optional_users WHERE ((((typed_query_optional_users.id >= $1) AND (typed_query_optional_users.id <= $2))) AND ((typed_query_optional_users.active = $3))) ORDER BY typed_query_optional_users.id LIMIT $4 OFFSET $5",
+        (int4, int4, bool, int8, int8),
+        (text,),
+    );
+
+    assert_eq!(select.sql(), raw_select.sql());
+    assert_eq!(select.param_oids(), raw_select.param_oids());
+
+    let rows = session
+        .query(&select, (2_i32, 4_i32, true, 10_i64, 0_i64))
+        .await
+        .expect("select rows");
+    assert_eq!(rows, vec![("carol".to_string(),), ("dave".to_string(),)]);
 
     session.close().await.expect("close");
 }

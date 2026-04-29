@@ -160,7 +160,7 @@
 //!
 //! assert_eq!(
 //!     lookup.sql(),
-//!     "SELECT users.id, users.name FROM users WHERE users.id = $1 AND users.active = true"
+//!     "SELECT users.id, users.name FROM users AS users WHERE ((users.id = $1) AND (users.active = TRUE))"
 //! );
 //! ```
 //!

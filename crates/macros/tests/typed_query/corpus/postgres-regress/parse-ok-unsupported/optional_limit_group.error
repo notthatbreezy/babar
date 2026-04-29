@@ -1,0 +1,3 @@
+stage=normalize
+span=33..43
+message_contains=single ORDER BY expression

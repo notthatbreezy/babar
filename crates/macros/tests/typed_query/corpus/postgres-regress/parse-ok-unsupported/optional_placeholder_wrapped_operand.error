@@ -1,0 +1,3 @@
+stage=normalize
+span=45..54
+message_contains=directly own a WHERE/JOIN comparison predicate

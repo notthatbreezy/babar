@@ -166,12 +166,12 @@ impl TypedSqlError {
             }
             TypedSqlErrorKind::Unsupported if self.message.contains("`$value?`") => Some(
                 Cow::Borrowed(
-                    "attach `?` only to placeholders owned by a WHERE/JOIN comparison or a LIMIT/OFFSET expression",
+                    "attach `?` only when the placeholder directly owns an entire WHERE/JOIN comparison or the full LIMIT/OFFSET expression; use `(...)?` for larger predicate groups",
                 ),
             ),
             TypedSqlErrorKind::Unsupported if self.message.contains("`(...)?`") => Some(
                 Cow::Borrowed(
-                    "wrap a parenthesized predicate expression inside WHERE/JOIN, for example `(users.id = $id?)?`",
+                    "wrap an entire parenthesized WHERE/JOIN predicate or a single ORDER BY expression, for example `(users.id = $id?)?`; do not wrap whole clauses or LIMIT/OFFSET",
                 ),
             ),
             TypedSqlErrorKind::Type if self.message.contains("never constrained") => Some(
@@ -293,10 +293,9 @@ mod tests {
 
     #[test]
     fn canonicalizes_optional_suffix_syntax() {
-        let parsed = parse_select(
-            "SELECT users.id FROM users WHERE (users.id = $user_id?)? LIMIT $limit?",
-        )
-        .expect("query parses");
+        let parsed =
+            parse_select("SELECT users.id FROM users WHERE (users.id = $user_id?)? LIMIT $limit?")
+                .expect("query parses");
 
         assert_eq!(
             parsed.source.canonical_sql,
@@ -350,10 +349,9 @@ mod tests {
 
     #[test]
     fn normalizes_optional_placeholders_and_groups_into_ir() {
-        let parsed = parse_select(
-            "SELECT users.id FROM users WHERE (users.id = $user_id?)? LIMIT $limit?",
-        )
-        .expect("query parses");
+        let parsed =
+            parse_select("SELECT users.id FROM users WHERE (users.id = $user_id?)? LIMIT $limit?")
+                .expect("query parses");
 
         let ParsedExpr::OptionalGroup(group) = parsed.select.filter.expect("where clause") else {
             panic!("expected optional group")
@@ -368,7 +366,10 @@ mod tests {
         assert_eq!(placeholder.span, SourceSpan::new(45, 54));
         assert!(matches!(
             parsed.select.limit.as_ref().map(|limit| &limit.expr),
-            Some(ParsedExpr::Placeholder(PlaceholderRef { optional: true, .. }))
+            Some(ParsedExpr::Placeholder(PlaceholderRef {
+                optional: true,
+                ..
+            }))
         ));
     }
 
@@ -379,12 +380,30 @@ mod tests {
         assert_eq!(projection_error.kind, TypedSqlErrorKind::Unsupported);
         assert!(projection_error.message.contains("`$value?`"));
 
-        let clause_group_error = parse_select(
-            "SELECT users.id FROM users (ORDER BY users.id)?",
-        )
-        .expect_err("clause group should fail");
+        let clause_group_error = parse_select("SELECT users.id FROM users (ORDER BY users.id)?")
+            .expect_err("clause group should fail");
         assert_eq!(clause_group_error.kind, TypedSqlErrorKind::Unsupported);
         assert!(clause_group_error.message.contains("`(...)?`"));
+    }
+
+    #[test]
+    fn rejects_ambiguous_optional_placeholder_ownership() {
+        let err = parse_select("SELECT users.id FROM users WHERE users.id = -$user_id?")
+            .expect_err("wrapped placeholder should fail");
+
+        assert_eq!(err.kind, TypedSqlErrorKind::Unsupported);
+        assert!(err.message.contains("directly own"));
+        assert!(err.message.contains("ownership"));
+    }
+
+    #[test]
+    fn rejects_optional_groups_in_limit_clause() {
+        let err = parse_select("SELECT users.id FROM users LIMIT ($limit?)?")
+            .expect_err("limit group should fail");
+
+        assert_eq!(err.kind, TypedSqlErrorKind::Unsupported);
+        assert!(err.message.contains("`(...)?`"));
+        assert!(err.message.contains("ORDER BY"));
     }
 
     #[test]
@@ -644,7 +663,11 @@ mod tests {
             writeln!(
                 &mut out,
                 "  - ${} @ {}",
-                if entry.occurrences.iter().any(|occurrence| occurrence.optional) {
+                if entry
+                    .occurrences
+                    .iter()
+                    .any(|occurrence| occurrence.optional)
+                {
                     format!("{}?", entry.name)
                 } else {
                     entry.name.clone()
@@ -658,7 +681,7 @@ mod tests {
             writeln!(
                 &mut out,
                 "  - {} -> {}",
-                render_expr(&projection.expr, &parsed.source),
+                render_expr(&projection.expr),
                 render_output_name(&projection.output_name),
             )
             .expect("write projection");
@@ -683,24 +706,25 @@ mod tests {
                 },
                 render_object_name(&join.right.table_name),
                 join.right.binding_name.value,
-                render_expr(&join.on, &parsed.source),
+                render_expr(&join.on),
             )
             .expect("write join");
         }
         writeln!(
             &mut out,
             "where: {}",
-            parsed.select.filter.as_ref().map_or_else(
-                || "<none>".to_owned(),
-                |expr| render_expr(expr, &parsed.source)
-            ),
+            parsed
+                .select
+                .filter
+                .as_ref()
+                .map_or_else(|| "<none>".to_owned(), render_expr),
         )
         .expect("write where");
         writeln!(&mut out, "order_by:").expect("write order header");
         for item in &parsed.select.order_by {
             let mut rendered = format!(
                 "  - {} {}",
-                render_expr(&item.expr, &parsed.source),
+                render_expr(&item.expr),
                 match item.direction {
                     OrderDirection::Asc => "asc",
                     OrderDirection::Desc => "desc",
@@ -718,19 +742,21 @@ mod tests {
         writeln!(
             &mut out,
             "limit: {}",
-            parsed.select.limit.as_ref().map_or_else(
-                || "<none>".to_owned(),
-                |limit| render_expr(&limit.expr, &parsed.source)
-            ),
+            parsed
+                .select
+                .limit
+                .as_ref()
+                .map_or_else(|| "<none>".to_owned(), |limit| render_expr(&limit.expr)),
         )
         .expect("write limit");
         writeln!(
             &mut out,
             "offset: {}",
-            parsed.select.offset.as_ref().map_or_else(
-                || "<none>".to_owned(),
-                |offset| render_expr(&offset.expr, &parsed.source)
-            ),
+            parsed
+                .select
+                .offset
+                .as_ref()
+                .map_or_else(|| "<none>".to_owned(), |offset| render_expr(&offset.expr)),
         )
         .expect("write offset");
         out.trim_end().to_owned()
@@ -751,13 +777,17 @@ mod tests {
         }
     }
 
-    fn render_expr(expr: &ParsedExpr, source: &SqlSource) -> String {
+    fn render_expr(expr: &ParsedExpr) -> String {
         match expr {
             ParsedExpr::Column(column) => {
                 format!("{}.{}", column.binding.value, column.column.value)
             }
             ParsedExpr::Placeholder(placeholder) => {
-                format!("${}{}", placeholder.name, if placeholder.optional { "?" } else { "" })
+                format!(
+                    "${}{}",
+                    placeholder.name,
+                    if placeholder.optional { "?" } else { "" }
+                )
             }
             ParsedExpr::Literal(literal) => match &literal.value {
                 Literal::Number(value) => value.clone(),
@@ -766,7 +796,7 @@ mod tests {
                 Literal::Null => "NULL".to_owned(),
             },
             ParsedExpr::OptionalGroup(group) => {
-                format!("OPTIONAL({})", render_expr(&group.expr, source))
+                format!("OPTIONAL({})", render_expr(&group.expr))
             }
             ParsedExpr::Unary { op, expr, .. } => format!(
                 "({} {})",
@@ -775,13 +805,13 @@ mod tests {
                     UnaryOp::Plus => "+",
                     UnaryOp::Minus => "-",
                 },
-                render_expr(expr, source),
+                render_expr(expr),
             ),
             ParsedExpr::Binary {
                 op, left, right, ..
             } => format!(
                 "({} {} {})",
-                render_expr(left, source),
+                render_expr(left),
                 match op {
                     BinaryOp::Eq => "=",
                     BinaryOp::NotEq => "<>",
@@ -790,11 +820,11 @@ mod tests {
                     BinaryOp::Gt => ">",
                     BinaryOp::GtEq => ">=",
                 },
-                render_expr(right, source),
+                render_expr(right),
             ),
             ParsedExpr::IsNull { negated, expr, .. } => format!(
                 "({} IS {}NULL)",
-                render_expr(expr, source),
+                render_expr(expr),
                 if *negated { "NOT " } else { "" },
             ),
             ParsedExpr::BoolChain { op, terms, .. } => format!(
@@ -803,11 +833,7 @@ mod tests {
                     BoolOp::And => "AND",
                     BoolOp::Or => "OR",
                 },
-                terms
-                    .iter()
-                    .map(|term| render_expr(term, source))
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                terms.iter().map(render_expr).collect::<Vec<_>>().join(", "),
             ),
         }
     }

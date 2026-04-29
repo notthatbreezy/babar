@@ -25,7 +25,7 @@ The main gap is that the pipeline currently models only ordinary named placehold
 ## Phase Status
 - [x] **Phase 1: Optional Syntax Frontend** - Extend the public macro frontend and normalized IR to represent `$value?` and `(...)?` as explicit optional syntax.
 - [x] **Phase 2: Omission Semantics and SQL Emission** - Define and implement structure-aware omission rules through resolution and final SQL generation.
-- [ ] **Phase 3: Diagnostics and Coverage** - Add end-to-end diagnostics, UI coverage, execution-focused tests, and example validation for supported and unsupported optional patterns.
+- [x] **Phase 3: Diagnostics and Coverage** - Add end-to-end diagnostics, UI coverage, execution-focused tests, and example validation for supported and unsupported optional patterns.
 - [ ] **Phase 4: Documentation** - Document the completed read-query API and optional suffix semantics across PAW docs and project docs.
 
 ## Phase Candidates

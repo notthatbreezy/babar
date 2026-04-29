@@ -15,7 +15,7 @@ use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
 use babar::codec::{int4, text};
-use babar::query::Command;
+use babar::query::{Command, Query};
 use babar::{Config, Pool, PoolConfig};
 use serde::{Deserialize, Serialize};
 
@@ -110,6 +110,24 @@ async fn list_widgets(
         .map(|(id, name)| Widget { id, name })
         .collect();
     Ok(Json(widgets))
+}
+
+#[allow(dead_code)]
+fn optional_widget_listing_query() -> Query<(String, i64, i64), (i32, String)> {
+    babar::typed_query!(
+        schema = {
+            table public.widgets {
+                id: int4,
+                name: text,
+            },
+        },
+        SELECT widgets.id, widgets.name
+        FROM widgets
+        WHERE (widgets.name = $name?)?
+        ORDER BY widgets.id
+        LIMIT $limit?
+        OFFSET $offset?
+    )
 }
 
 async fn create_widget(
