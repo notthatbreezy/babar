@@ -1,0 +1,8 @@
+error: could not resolve a table or column in typed_sql v1: unknown column `users.handle` on bound table `public.users`; available columns: id, name
+          |
+        1 | SELECT users.handle FROM users
+          |              ^^^^^^
+  --> tests/ui/typed_query/fail/unknown_column.rs:11:22
+   |
+11 |         SELECT users.handle FROM users
+   |                      ^^^^^^

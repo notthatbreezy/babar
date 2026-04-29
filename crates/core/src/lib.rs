@@ -102,7 +102,7 @@
 //! );
 //! ```
 //!
-//! ## `query!` and `command!` macros
+//! ## `query!`, `command!`, and `typed_query!` macros
 //!
 //! [`query!`] and [`command!`] build ordinary [`query::Query`] /
 //! [`query::Command`] values directly from positional SQL plus a narrow,
@@ -138,6 +138,30 @@
 //!     params = (int4, text),
 //! );
 //! assert_eq!(insert.sql(), "INSERT INTO users (id, name) VALUES ($1, $2)");
+//! ```
+//!
+//! [`typed_query!`] is the greenfield typed-SQL entrypoint. It accepts a small
+//! inline schema DSL that the proc macro can read directly at expansion time,
+//! avoiding any need to evaluate user-defined Rust `const` schema symbols:
+//!
+//! ```
+//! use babar::query::Query;
+//!
+//! let lookup: Query<(i32,), (i32, String)> = babar::typed_query!(
+//!     schema = {
+//!         table public.users {
+//!             id: int4,
+//!             name: text,
+//!             active: bool,
+//!         },
+//!     },
+//!     SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = true
+//! );
+//!
+//! assert_eq!(
+//!     lookup.sql(),
+//!     "SELECT users.id, users.name FROM users WHERE users.id = $1 AND users.active = true"
+//! );
 //! ```
 //!
 //! ## TLS
@@ -235,7 +259,7 @@ pub mod types;
 ///     "INSERT INTO users (id, name) VALUES ($1, $2)"
 /// );
 /// ```
-pub use babar_macros::{command, query, sql, Codec};
+pub use babar_macros::{command, query, sql, typed_query, Codec};
 
 #[doc(hidden)]
 pub mod __private {

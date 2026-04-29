@@ -185,6 +185,27 @@ pub fn command(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Build a typed `babar::query::Query` by resolving SQL against an inline schema
+/// DSL that the proc macro can parse directly.
+///
+/// v0.1 keeps the schema surface intentionally small:
+///
+/// - `schema = { table public.users { id: int4, name: text } }`
+/// - identifier-like schema, table, and column names only
+/// - SQL type names: `bool`, `bytea`, `varchar`, `text`, `int2`, `int4`,
+///   `int8`, `float4`, `float8`, `uuid`, `date`, `time`, `timestamp`,
+///   `timestamptz`, `json`, `jsonb`, `numeric`
+/// - nullable columns via `nullable(...)`
+///
+/// The SQL input uses the same typed_sql v1 subset and named placeholders as the
+/// internal resolver pipeline. Parameter and row codecs are inferred from the
+/// checked query; runtime lowering remains limited to the currently supported
+/// lowered codecs.
+#[proc_macro]
+pub fn typed_query(input: TokenStream) -> TokenStream {
+    typed_sql::expand_typed_query(input)
+}
+
 fn verify_sql_input(input: &SqlInput, compiled: &CompiledSql) -> Result<()> {
     let Some(expected) = verifiable_param_types(&compiled.codecs) else {
         return Ok(());

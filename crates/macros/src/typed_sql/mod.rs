@@ -2,12 +2,17 @@ mod ir;
 mod lower;
 mod normalize;
 mod parse_backend;
+mod public_input;
+mod public_schema;
 mod resolver;
 mod source;
 
 use std::borrow::Cow;
 
 pub(crate) use ir::*;
+#[allow(unused_imports)]
+pub(crate) use public_input::PublicSqlInput;
+pub(crate) use public_schema::expand_typed_query;
 pub(crate) use source::SqlSource;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,6 +23,10 @@ pub(crate) struct ParsedSql {
 
 pub(crate) fn parse_select(sql: &str) -> Result<ParsedSql> {
     let source = source::canonicalize(sql)?;
+    parse_select_source(source)
+}
+
+pub(crate) fn parse_select_source(source: SqlSource) -> Result<ParsedSql> {
     let query = parse_backend::parse_select(&source)?;
     let select = normalize::normalize_select(&source, &query)?;
     Ok(ParsedSql { source, select })
