@@ -140,9 +140,9 @@
 //! assert_eq!(insert.sql(), "INSERT INTO users (id, name) VALUES ($1, $2)");
 //! ```
 //!
-//! [`typed_query!`] is the greenfield typed-SQL entrypoint. It accepts a small
-//! inline schema DSL that the proc macro can read directly at expansion time,
-//! avoiding any need to evaluate user-defined Rust `const` schema symbols:
+//! [`typed_query!`] is the greenfield typed-SQL entrypoint. It accepts authored
+//! schema facts that the proc macro can read directly at expansion time. For
+//! one-off queries that can still be an inline schema DSL:
 //!
 //! ```
 //! use babar::query::Query;
@@ -164,8 +164,10 @@
 //! );
 //! ```
 //!
-//! For reusable authored declarations, [`schema!`] can define Rust-visible schema
-//! modules with multiple tables and narrow field markers:
+//! For reusable authored declarations, [`schema!`] defines Rust-visible schema
+//! modules with multiple tables and narrow field markers, plus a local
+//! `typed_query!` wrapper. This schema-scoped wrapper is the recommended v0.1
+//! pattern when multiple queries share one schema module:
 //!
 //! ```
 //! use babar::query::Query;
@@ -196,6 +198,23 @@
 //!     "SELECT users.id, users.name FROM users AS users WHERE (users.id = $1)"
 //! );
 //! ```
+//!
+//! The authored-schema surface is intentionally small:
+//!
+//! - plain `type_name` fields for ordinary columns,
+//! - `nullable(type_name)` for nullable columns,
+//! - `primary_key(type_name)` / `pk(type_name)` for the current semantic marker,
+//! - authored Rust-visible schema modules only — no file inputs, codegen, or
+//!   live introspection flow in v0.1.
+//!
+//! Authored declarations currently accept `bool`, `bytea`, `varchar`, `text`,
+//! `int2`, `int4`, `int8`, `float4`, `float8`, `uuid`, `date`, `time`,
+//! `timestamp`, `timestamptz`, `json`, `jsonb`, and `numeric`. The current
+//! typed-query runtime lowering path for query parameters and projected rows is
+//! narrower: `bool`, `bytea`, `varchar`, `text`, `int2`, `int4`, `int8`,
+//! `float4`, and `float8`. Wider authored types are still useful as schema
+//! facts, but using them in `typed_query!` currently produces a compile-time
+//! diagnostic naming the unsupported SQL type.
 //!
 //! ## TLS
 //!

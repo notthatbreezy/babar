@@ -109,20 +109,23 @@ The chain is always **fragment → command/query → run**.
 ### The `typed_query!` macro
 
 `typed_query!` is the query-only schema-aware macro. It accepts
-token-style SQL plus a small inline schema DSL and expands straight to a
-`Query<A, B>`:
+token-style SQL plus authored schema metadata and expands straight to a
+`Query<A, B>`. The recommended reusable form is a schema-scoped wrapper:
 
 ```rust
 use babar::query::Query;
 
-let lookup: Query<(i32,), (i32, String)> = babar::typed_query!(
-    schema = {
+babar::schema! {
+    mod todo_schema {
         table public.todo {
-            id: int4,
+            id: primary_key(int4),
             title: text,
             done: bool,
-        },
-    },
+        }
+    }
+}
+
+let lookup: Query<(i32,), (i32, String)> = todo_schema::typed_query!(
     SELECT todo.id, todo.title FROM todo
     WHERE todo.id = $id AND todo.done = false
 );
@@ -131,12 +134,24 @@ let lookup: Query<(i32,), (i32, String)> = babar::typed_query!(
 Keep the scope in mind:
 
 - it is currently for a supported `SELECT` subset, not writes,
-- the schema lives inline in the macro call,
+- the old inline `babar::typed_query!(schema = { ... }, SELECT ...)`
+  path still exists for local or one-off queries, but the recommended
+  v0.1 pattern is `schema!` plus `schema_module::typed_query!(...)`,
+- schemas are authored Rust modules only in v0.1 — no file-based schema
+  loading, codegen, or introspection flow,
+- field markers are intentionally narrow: plain `type_name`,
+  `nullable(type_name)`, `primary_key(type_name)`, and `pk(type_name)`,
+- authored declarations can describe `bool`, `bytea`, `varchar`, `text`,
+  `int2`, `int4`, `int8`, `float4`, `float8`, `uuid`, `date`, `time`,
+  `timestamp`, `timestamptz`, `json`, `jsonb`, and `numeric`,
+- the current runtime lowering path for query params and projected rows
+  is narrower: `bool`, `bytea`, `varchar`, `text`, `int2`, `int4`,
+  `int8`, `float4`, and `float8`,
 - `$value?` is only supported when it owns a direct `WHERE` / `JOIN`
   comparison or the full `LIMIT` / `OFFSET` expression,
 - `(...)?` is only supported when it owns a whole parenthesized
   `WHERE` / `JOIN` predicate or a single `ORDER BY` expression,
-- it does **not** promise generated schema modules, codegen, full SQL
+- it does **not** promise file-based schema inputs, codegen, full SQL
   coverage, or general SQL rewriting.
 
 Those suffixes keep optional behavior explicit and SQL-adjacent:
@@ -149,7 +164,9 @@ OFFSET $offset?
 ```
 
 For `INSERT`, `UPDATE`, `DELETE`, and DDL, the `Command<A>` + `raw` /
-`sql!` surfaces are still the story.
+`sql!` surfaces are still the story. External schemas improve reusable
+read-query verification; they do not turn `typed_query!` into a general
+write macro.
 
 ## What the codec types are doing
 

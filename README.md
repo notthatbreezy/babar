@@ -9,7 +9,7 @@ Typed, async PostgreSQL driver for Tokio that speaks the PostgreSQL wire protoco
 - direct wire-protocol implementation on Tokio — no `libpq`, no `tokio-postgres`
 - typed `Query`, `Command`, `PreparedQuery`, `PreparedCommand`, `Transaction`/`Savepoint`, and `Pool` APIs
 - typed binary `CopyIn<T>` for `COPY FROM STDIN` bulk ingest from `Vec<T>` / iterators
-- SQL composition with `sql!`, `query!`, `command!`, and the inline-schema, query-only `typed_query!` macro
+- SQL composition with `sql!`, `query!`, `command!`, and the query-only `typed_query!` macro for inline or authored schemas
 - rich errors with SQLSTATE fields plus SQL/caret rendering
 - OpenTelemetry-friendly `tracing` spans: `db.connect`, `db.prepare`, `db.execute`, `db.transaction`
 - TLS via `rustls` (default) or `native-tls`
@@ -272,14 +272,17 @@ let insert = babar::command!(
     params = (int4, text),
 );
 
-let typed_lookup: Query<(i32,), (i32, String)> = babar::typed_query!(
-    schema = {
+babar::schema! {
+    mod app_schema {
         table public.users {
-            id: int4,
+            id: primary_key(int4),
             name: text,
             active: bool,
         },
-    },
+    }
+}
+
+let typed_lookup: Query<(i32,), (i32, String)> = app_schema::typed_query!(
     SELECT users.id, users.name
     FROM users
     WHERE users.id >= $min_id AND users.active = true
@@ -299,15 +302,36 @@ or `Fragment` values. For verified workflows, prefer `query!` / `command!`;
 offline cache or generated schema snapshot.
 
 `typed_query!` is the narrower, query-only schema-aware macro rather than the
-final schema or codegen story. Instead of probing a live database, it reads an
-inline `schema = { ... }` DSL during macro expansion, validates a supported
+final schema or codegen story. Instead of probing a live database, it reads
+authored schema metadata during macro expansion, validates a supported
 token-style `SELECT` subset against that schema, and emits an ordinary
 `Query<Params, Row>`.
 
 - `query!` / `command!` take positional SQL plus explicit codec tuples.
-- `typed_query!` takes token-style SQL plus an inline table schema, and uses
+- `typed_query!` takes token-style SQL plus authored schema facts, and uses
   named placeholders like `$min_id` that lower to positional SQL (`$1`, `$2`,
   ...) in the generated query.
+- v0.1 supports two authored-schema entrypoints:
+  - inline `babar::typed_query!(schema = { ... }, SELECT ...)` for one-off
+    examples or local tests,
+  - the recommended hybrid pattern:
+    `babar::schema! { mod app_schema { ... } }` plus
+    `app_schema::typed_query!(SELECT ...)` for reusable multi-table query
+    contexts.
+- `schema!` keeps the schema Rust-visible and authored by hand. v0.1 does not
+  include file-based schema inputs, code generation, or live database
+  introspection.
+- authored fields stay type-first: plain `type_name` for ordinary columns,
+  `nullable(type_name)` for nullable columns, and `primary_key(type_name)` /
+  `pk(type_name)` for the current primary-key marker.
+- the authored declaration type surface is `bool`, `bytea`, `varchar`, `text`,
+  `int2`, `int4`, `int8`, `float4`, `float8`, `uuid`, `date`, `time`,
+  `timestamp`, `timestamptz`, `json`, `jsonb`, and `numeric`.
+- current typed-query runtime lowering is narrower: query parameters and row
+  projections currently lower only `bool`, `bytea`, `varchar`, `text`, `int2`,
+  `int4`, `int8`, `float4`, and `float8`. Declaring wider authored types is
+  allowed, but using them in `typed_query!` currently fails with a compile-time
+  diagnostic that names the unsupported SQL type.
 - Repeating the same named placeholder reuses the same parameter slot, similar
   to `sql!`.
 - `$value?` is supported only when it directly owns a whole `WHERE` / `JOIN`
@@ -315,7 +339,7 @@ token-style `SELECT` subset against that schema, and emits an ordinary
 - `(...)?` is supported only for an entire parenthesized `WHERE` / `JOIN`
   predicate or a single `ORDER BY` expression; it does not wrap whole clauses
   or `LIMIT` / `OFFSET`.
-- This surface is intentionally narrow: query-only, inline-schema-only, and a
+- This surface is intentionally narrow: query-only, authored-schema-only, and a
   supported `SELECT` subset rather than a general SQL rewrite engine, database
   introspection flow, or generated-schema workflow.
 

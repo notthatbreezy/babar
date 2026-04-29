@@ -52,30 +52,57 @@ values.
 
 `Query::raw` is still the clearest baseline and the rest of this chapter
 sticks with it. babar also has a query-only `typed_query!` macro for a
-narrower, schema-aware path to the same `Query<P, R>` value:
+narrower, schema-aware path to the same `Query<P, R>` value. The
+recommended reusable pattern is a Rust-visible schema module plus its
+schema-scoped wrapper:
 
 ```rust
 use babar::query::Query;
 
-let q: Query<(i32,), (i32, String)> = babar::typed_query!(
-    schema = {
+babar::schema! {
+    mod app_schema {
         table public.users {
-            id: int4,
+            id: primary_key(int4),
             name: text,
             active: bool,
-        },
-    },
+        }
+    }
+}
+
+let q: Query<(i32,), (i32, String)> = app_schema::typed_query!(
     SELECT users.id, users.name FROM users
     WHERE users.id = $id AND users.active = true
 );
 ```
 
-That macro is intentionally small-scope: token-style SQL input, an
-inline schema block, and a supported `SELECT` subset only. Inside that
-subset, `$value?` and `(...)?` mark explicit optional ownership
-boundaries for supported predicates and tail expressions. It is still
-query-only — not a generated schema module, a general query builder, or
-full-SQL coverage.
+The older inline path still exists for one-off calls:
+`babar::typed_query!(schema = { ... }, SELECT ...)`. The recommended
+hybrid pattern is the schema-scoped wrapper above because one authored
+schema module can hold multiple tables, keep field semantics local to the
+declaration, and stay reusable across many queries.
+
+That macro surface is intentionally small-scope: token-style SQL input,
+authored Rust-visible schemas, and a supported `SELECT` subset only.
+Inside that subset, `$value?` and `(...)?` mark explicit optional
+ownership boundaries for supported predicates and tail expressions. It
+is still query-only — not file-based schema loading, schema codegen, a
+general query builder, or full-SQL coverage.
+
+Authored fields stay type-first:
+
+- `name: text` for ordinary columns,
+- `deleted_at: nullable(timestamptz)` for nullable columns,
+- `id: primary_key(int4)` or `id: pk(int8)` for the current primary-key
+  marker.
+
+The declaration surface accepts `bool`, `bytea`, `varchar`, `text`,
+`int2`, `int4`, `int8`, `float4`, `float8`, `uuid`, `date`, `time`,
+`timestamp`, `timestamptz`, `json`, `jsonb`, and `numeric`. The current
+typed-query lowering path is narrower for actual query parameters and row
+projections: `bool`, `bytea`, `varchar`, `text`, `int2`, `int4`, `int8`,
+`float4`, and `float8`. Wider authored types compile in the schema
+module, but using them in `typed_query!` currently fails with a
+compile-time diagnostic that names the unsupported SQL type.
 
 ## Nullable columns
 

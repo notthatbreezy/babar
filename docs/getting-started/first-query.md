@@ -79,9 +79,12 @@ placeholders — and you'd build a `Query` from it with
 `session.query`.
 
 There is also a newer `typed_query!` path: a query-only, narrow
-schema-aware macro that takes token-style `SELECT` input plus an inline
-schema DSL and expands directly to a `Query<P, R>`. Its supported subset
-also includes explicit optional ownership markers such as `$value?` and
+schema-aware macro that takes token-style `SELECT` input plus authored
+schema facts and expands directly to a `Query<P, R>`. For one-off uses
+you can keep the schema inline; for reusable read models the recommended
+pattern is `babar::schema! { ... }` plus a schema-scoped
+`app_schema::typed_query!(...)` wrapper. Its supported subset also
+includes explicit optional ownership markers such as `$value?` and
 `(...)?`, but for a first read the explicit `Query::raw(...)` form
 remains the best foundation.
 

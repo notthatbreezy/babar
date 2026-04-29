@@ -29,7 +29,7 @@ Implementation success means the schema declaration surface produces the schema 
 - [ ] **Phase 1: Schema Declaration Surface** - Add a Rust-visible schema module declaration system that can describe multiple tables and emit reusable schema symbols.
 - [ ] **Phase 2: Typed Query Wrapper Bridge** - Connect schema modules to the existing typed-query pipeline through a schema-scoped wrapper and catalog bridge.
 - [ ] **Phase 3: Diagnostics and Coverage** - Expand UI, runtime, and schema-level coverage for authored external schema usage and failure modes.
-- [ ] **Phase 4: Documentation** - Document the external schema model, recommended wrapper pattern, and verification approach.
+- [x] **Phase 4: Documentation** - Document the external schema model, recommended wrapper pattern, and verification approach.
 
 ## Phase Candidates
 - [ ] Preserve or reintroduce a global `babar::typed_query!` path that can consume external schema modules directly
