@@ -1,0 +1,3 @@
+stage=normalize
+span=7..8
+message_contains=wildcard projections

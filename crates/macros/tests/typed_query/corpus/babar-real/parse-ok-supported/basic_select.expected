@@ -1,0 +1,13 @@
+select 0..155
+placeholders:
+  - $id @ 80..83
+projections:
+  - users.id -> id
+  - users.name -> name
+from: users as users
+joins:
+where: AND((users.id = $id), (users.deleted_at IS NULL))
+order_by:
+  - users.name desc
+limit: 10
+offset: 5

@@ -16,6 +16,8 @@ use syn::{
 use verify::{parse_declared_types, verify_param_metadata, verify_statement_against_probe, Probe};
 
 #[allow(dead_code)]
+mod typed_sql;
+#[allow(dead_code)]
 mod verify;
 
 mod kw {

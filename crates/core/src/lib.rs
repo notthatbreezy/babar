@@ -186,6 +186,7 @@ pub mod migration;
 pub mod pool;
 pub(crate) mod protocol;
 pub mod query;
+pub mod schema;
 pub(crate) mod telemetry;
 #[cfg(not(loom))]
 pub mod tls;

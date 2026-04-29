@@ -1,0 +1,3 @@
+stage=normalize
+span=7..9
+message_contains=fully qualified column references

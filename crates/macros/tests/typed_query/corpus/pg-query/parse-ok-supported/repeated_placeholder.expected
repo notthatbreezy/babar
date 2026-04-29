@@ -1,0 +1,11 @@
+select 0..73
+placeholders:
+  - $id @ 44..47
+projections:
+  - users.id -> id
+from: users as users
+joins:
+where: OR((users.id = $id), (users.manager_id = $id))
+order_by:
+limit: <none>
+offset: <none>

@@ -1,0 +1,14 @@
+select 0..148
+placeholders:
+  - $pet_name @ 103..112
+projections:
+  - u.id -> id
+  - p.name -> pet_name
+from: users as u
+joins:
+  - left pets as p on (u.id = p.user_id)
+where: OR((p.name = $pet_name), (p.adopted = true))
+order_by:
+  - p.name asc nulls last
+limit: <none>
+offset: <none>
