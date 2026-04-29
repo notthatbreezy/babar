@@ -33,7 +33,7 @@ Planning Review Specialist Models: none
 Planning Review Perspectives: auto
 Planning Review Perspective Cap: 2
 Custom Workflow Instructions: none
-Initial Prompt: Introduce and complete the typed query API as the new query direction in babar, including design work for optional-clause behavior such as `Option::$id` where absent values remove the SQL clause from the query sent to the server.
+Initial Prompt: Introduce and complete the typed query API as the new query direction in babar, including design work for optional-clause behavior such as `$id?` and `(...)?` where absent values remove the owned predicate or clause from the SQL sent to the server.
 Issue URL: none
 Remote: origin
 Artifact Lifecycle: commit-and-clean
