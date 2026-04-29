@@ -2,14 +2,14 @@
 
 Typed, async PostgreSQL driver for Tokio that speaks the PostgreSQL wire protocol directly.
 
-`babar` is explicit: queries and commands are typed values, codecs are imported values, SQL composition is opt-in via `sql!`, `query!`, `command!`, and the new `typed_query!` POC, `#[derive(Codec)]` infers common struct fields and lets `#[pg(codec = "...")]` override the outliers, and a background driver task owns the socket so public API calls stay cancellation-safe.
+`babar` is explicit: queries and commands are typed values, codecs are imported values, SQL composition is opt-in via `sql!`, `query!`, `command!`, and the query-only `typed_query!` macro, `#[derive(Codec)]` infers common struct fields and lets `#[pg(codec = "...")]` override the outliers, and a background driver task owns the socket so public API calls stay cancellation-safe.
 
 ## Highlights
 
 - direct wire-protocol implementation on Tokio — no `libpq`, no `tokio-postgres`
 - typed `Query`, `Command`, `PreparedQuery`, `PreparedCommand`, `Transaction`/`Savepoint`, and `Pool` APIs
 - typed binary `CopyIn<T>` for `COPY FROM STDIN` bulk ingest from `Vec<T>` / iterators
-- SQL composition with `sql!`, `query!`, `command!`, and the inline-schema `typed_query!` POC
+- SQL composition with `sql!`, `query!`, `command!`, and the inline-schema, query-only `typed_query!` macro
 - rich errors with SQLSTATE fields plus SQL/caret rendering
 - OpenTelemetry-friendly `tracing` spans: `db.connect`, `db.prepare`, `db.execute`, `db.transaction`
 - TLS via `rustls` (default) or `native-tls`
@@ -298,10 +298,11 @@ or `Fragment` values. For verified workflows, prefer `query!` / `command!`;
 `sql!` intentionally does not validate row shapes. v0.1 does not ship an
 offline cache or generated schema snapshot.
 
-`typed_query!` is a narrower greenfield POC rather than the final schema or
-codegen story. Instead of probing a live database, it reads an inline
-`schema = { ... }` DSL during macro expansion, then type-checks token-style SQL
-against that schema and emits an ordinary `Query<Params, Row>`.
+`typed_query!` is the narrower, query-only schema-aware macro rather than the
+final schema or codegen story. Instead of probing a live database, it reads an
+inline `schema = { ... }` DSL during macro expansion, validates a supported
+token-style `SELECT` subset against that schema, and emits an ordinary
+`Query<Params, Row>`.
 
 - `query!` / `command!` take positional SQL plus explicit codec tuples.
 - `typed_query!` takes token-style SQL plus an inline table schema, and uses
@@ -309,9 +310,14 @@ against that schema and emits an ordinary `Query<Params, Row>`.
   ...) in the generated query.
 - Repeating the same named placeholder reuses the same parameter slot, similar
   to `sql!`.
-- Today this surface is intentionally narrow: query-only, inline-schema-only,
-  and limited to the currently supported schema scalar types rather than a full
-  database introspection or generated-schema workflow.
+- `$value?` is supported only when it directly owns a whole `WHERE` / `JOIN`
+  comparison or the full `LIMIT` / `OFFSET` expression.
+- `(...)?` is supported only for an entire parenthesized `WHERE` / `JOIN`
+  predicate or a single `ORDER BY` expression; it does not wrap whole clauses
+  or `LIMIT` / `OFFSET`.
+- This surface is intentionally narrow: query-only, inline-schema-only, and a
+  supported `SELECT` subset rather than a general SQL rewrite engine, database
+  introspection flow, or generated-schema workflow.
 
 ## TLS
 

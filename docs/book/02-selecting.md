@@ -51,9 +51,8 @@ intermediate `Row` type and no `.get::<T, _>()` accessor: by the time
 values.
 
 `Query::raw` is still the clearest baseline and the rest of this chapter
-sticks with it. babar also now has an early `typed_query!` proof of
-concept for a narrower, schema-aware path to the same `Query<P, R>`
-value:
+sticks with it. babar also has a query-only `typed_query!` macro for a
+narrower, schema-aware path to the same `Query<P, R>` value:
 
 ```rust
 use babar::query::Query;
@@ -71,10 +70,12 @@ let q: Query<(i32,), (i32, String)> = babar::typed_query!(
 );
 ```
 
-Today that macro is intentionally small-scope: token-style SQL input,
-an inline schema block, and a supported `SELECT` subset only. It is not
-a generated schema module, a general query builder, or full-SQL
-coverage.
+That macro is intentionally small-scope: token-style SQL input, an
+inline schema block, and a supported `SELECT` subset only. Inside that
+subset, `$value?` and `(...)?` mark explicit optional ownership
+boundaries for supported predicates and tail expressions. It is still
+query-only — not a generated schema module, a general query builder, or
+full-SQL coverage.
 
 ## Nullable columns
 

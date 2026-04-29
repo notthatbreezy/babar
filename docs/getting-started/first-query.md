@@ -78,11 +78,12 @@ placeholders — and you'd build a `Query` from it with
 **fragment → query → run**. You cannot pass a `Fragment` straight to
 `session.query`.
 
-There is also a newer `typed_query!` path: an early, narrow POC that
-takes token-style `SELECT` input plus an inline schema DSL and expands
-directly to a `Query<P, R>`. It is deliberately small-scope today, so
-for a first read the explicit `Query::raw(...)` form remains the best
-foundation.
+There is also a newer `typed_query!` path: a query-only, narrow
+schema-aware macro that takes token-style `SELECT` input plus an inline
+schema DSL and expands directly to a `Query<P, R>`. Its supported subset
+also includes explicit optional ownership markers such as `$value?` and
+`(...)?`, but for a first read the explicit `Query::raw(...)` form
+remains the best foundation.
 
 **`session.query(&q, args)`** is the run step. It returns
 `Vec<B>` — fully decoded rows, where each `B` is whatever your decoder

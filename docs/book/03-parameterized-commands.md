@@ -3,7 +3,7 @@
 In this chapter we'll bind parameters, write to the database, and meet
 the `Encoder<A>` / `Decoder<A>` codec traits behind the scenes. We'll
 also place the classic `raw` / `sql!` surfaces next to the newer
-`typed_query!` POC so the trade-offs are visible.
+query-only `typed_query!` surface so the trade-offs are visible.
 
 ## Setup
 
@@ -108,7 +108,7 @@ The chain is always **fragment → command/query → run**.
 
 ### The `typed_query!` macro
 
-`typed_query!` is a newer, query-only proof of concept. It accepts
+`typed_query!` is the query-only schema-aware macro. It accepts
 token-style SQL plus a small inline schema DSL and expands straight to a
 `Query<A, B>`:
 
@@ -132,8 +132,21 @@ Keep the scope in mind:
 
 - it is currently for a supported `SELECT` subset, not writes,
 - the schema lives inline in the macro call,
-- it does **not** promise generated schema modules, codegen, or full SQL
-  coverage.
+- `$value?` is only supported when it owns a direct `WHERE` / `JOIN`
+  comparison or the full `LIMIT` / `OFFSET` expression,
+- `(...)?` is only supported when it owns a whole parenthesized
+  `WHERE` / `JOIN` predicate or a single `ORDER BY` expression,
+- it does **not** promise generated schema modules, codegen, full SQL
+  coverage, or general SQL rewriting.
+
+Those suffixes keep optional behavior explicit and SQL-adjacent:
+
+```sql
+WHERE (todo.id = $id?)?
+ORDER BY (todo.title)? ASC
+LIMIT $limit?
+OFFSET $offset?
+```
 
 For `INSERT`, `UPDATE`, `DELETE`, and DDL, the `Command<A>` + `raw` /
 `sql!` surfaces are still the story.

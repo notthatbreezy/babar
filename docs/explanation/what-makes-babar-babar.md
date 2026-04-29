@@ -169,12 +169,12 @@ want.
   `sqlx` in [Comparisons](./comparisons.md).
 - **Not synchronous.** babar is async-only on Tokio.
 - **Not an ORM.** There is no `Queryable` derive, no `Insertable`, and
-  no generated schema module. SQL stays visible. The new
-  `typed_query!` macro is an early, narrow schema-aware POC for some
-  `SELECT`s, not a full ORM layer.
-- **Not a general query builder.** `Query::raw`, `sql!`, and the early
-  `typed_query!` POC keep SQL front and center; we still do not provide
-  a fluent typed AST you build up with `.select().from().where_(...)`.
+  no generated schema module. SQL stays visible. The query-only
+  `typed_query!` macro is a narrow schema-aware `SELECT` surface, not a
+  full ORM layer.
+- **Not a general query builder.** `Query::raw`, `sql!`, and
+  `typed_query!` keep SQL front and center; we still do not provide a
+  fluent typed AST you build up with `.select().from().where_(...)`.
 - **Not a migration tool.** babar ships a small migration runner for
   the `embed_migrations!` workflow, but if you want a full migration
   CLI with rollbacks and squashing, `refinery` or `sqlx-cli` are
@@ -188,8 +188,9 @@ Reach for babar when:
   features (channel binding, binary `COPY`, prepared statements as a
   type) than have them hidden behind a generic abstraction.
 - You want **types on the query** — `Query<P, R>`, `Command<P>`,
-  `Transaction<'_>` — with explicit codecs as the default and an early
-  `typed_query!` path for a narrow schema-aware `SELECT` subset.
+  `Transaction<'_>` — with explicit codecs as the default and a
+  query-only `typed_query!` path for a narrow schema-aware `SELECT`
+  subset with explicit optional ownership markers.
 - You want **`validate-early` semantics**: schema drift surfaces at
   prepare time as `Error::SchemaMismatch`, not at row 4,723.
 

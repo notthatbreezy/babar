@@ -49,7 +49,7 @@ When the type system says `Query<(i32,), (Uuid, String, i64)>`, the
 compiler knows the parameter shape, the row shape, and which codecs
 participate. There is no magic — `Query::raw` constructs one
 explicitly, `query!` builds the same thing with explicit codecs and
-optional live verification, and the early `typed_query!` macro can
+optional live verification, and the query-only `typed_query!` macro can
 lower a small schema-aware `SELECT` from inline schema + token-style SQL
 into the same runtime `Query<P, R>` shape.
 

@@ -1,8 +1,8 @@
 //! Tiny Axum service backed by babar's connection pool.
 //!
-//! This example uses the new `typed_query!` proof-of-concept style for read
-//! queries. Writes still use `Command::raw` because the current POC only covers
-//! a narrow `SELECT` subset.
+//! This example uses the query-only `typed_query!` style for read queries.
+//! Writes still use `Command::raw` because the macro intentionally covers a
+//! narrow `SELECT` subset.
 //!
 //! ```text
 //! cargo run -p babar --example axum_service
