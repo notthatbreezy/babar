@@ -1,5 +1,9 @@
 //! Tiny Axum service backed by babar's connection pool.
 //!
+//! This example uses the new `typed_query!` proof-of-concept style for read
+//! queries. Writes still use `Command::raw` because the current POC only covers
+//! a narrow `SELECT` subset.
+//!
 //! ```text
 //! cargo run -p babar --example axum_service
 //! ```
@@ -8,10 +12,10 @@ use std::net::SocketAddr;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Json, Router};
 use babar::codec::{int4, text};
-use babar::query::{Command, Query};
+use babar::query::Command;
 use babar::{Config, Pool, PoolConfig};
 use serde::{Deserialize, Serialize};
 
@@ -59,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let app = Router::new()
         .route("/healthz", get(healthz))
-        .route("/widgets", post(create_widget))
+        .route("/widgets", get(list_widgets).post(create_widget))
         .route("/widgets/:id", get(get_widget))
         .with_state(AppState { pool });
 
@@ -83,6 +87,29 @@ async fn initialize(pool: &Pool) -> babar::Result<()> {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn list_widgets(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<Widget>>, (StatusCode, String)> {
+    let conn = state.pool.acquire().await.map_err(pool_error_http)?;
+    let select = babar::typed_query!(
+        schema = {
+            table public.widgets {
+                id: int4,
+                name: text,
+            },
+        },
+        SELECT widgets.id, widgets.name
+        FROM widgets
+        ORDER BY widgets.id
+    );
+    let rows = conn.query(&select, ()).await.map_err(db_error)?;
+    let widgets = rows
+        .into_iter()
+        .map(|(id, name)| Widget { id, name })
+        .collect();
+    Ok(Json(widgets))
 }
 
 async fn create_widget(
@@ -111,10 +138,16 @@ async fn get_widget(
     Path(id): Path<i32>,
 ) -> Result<Json<Widget>, (StatusCode, String)> {
     let conn = state.pool.acquire().await.map_err(pool_error_http)?;
-    let select: Query<(i32,), (i32, String)> = Query::raw(
-        "SELECT id, name FROM widgets WHERE id = $1",
-        (int4,),
-        (int4, text),
+    let select = babar::typed_query!(
+        schema = {
+            table public.widgets {
+                id: int4,
+                name: text,
+            },
+        },
+        SELECT widgets.id, widgets.name
+        FROM widgets
+        WHERE widgets.id = $widget_id
     );
     let rows = conn.query(&select, (id,)).await.map_err(db_error)?;
     let Some((id, name)) = rows.into_iter().next() else {
