@@ -12,6 +12,7 @@ use super::resolver::{self, Nullability, SchemaCatalog, SchemaColumn, SchemaTabl
 
 mod kw {
     syn::custom_keyword!(schema);
+    syn::custom_keyword!(__babar_schema);
     syn::custom_keyword!(table);
 }
 
@@ -39,7 +40,13 @@ struct TypedQueryInput {
 
 impl Parse for TypedQueryInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        input.parse::<kw::schema>()?;
+        if input.peek(kw::schema) {
+            input.parse::<kw::schema>()?;
+        } else if input.peek(kw::__babar_schema) {
+            input.parse::<kw::__babar_schema>()?;
+        } else {
+            return Err(input.error("expected `schema = { ... }` before typed_query SQL"));
+        }
         input.parse::<Token![=]>()?;
         let schema = input.parse()?;
         input.parse::<Token![,]>()?;
@@ -292,5 +299,19 @@ mod tests {
             SELECT users.id, users.name FROM users,
         })
         .expect("typed_query input parses with trailing comma");
+    }
+
+    #[test]
+    fn typed_query_accepts_authored_schema_bridge() {
+        parse2::<TypedQueryInput>(quote! {
+            __babar_schema = {
+                table public.users {
+                    id: int4,
+                    name: text,
+                },
+            },
+            SELECT users.id, users.name FROM users WHERE users.id = $id
+        })
+        .expect("typed_query input parses with authored bridge");
     }
 }

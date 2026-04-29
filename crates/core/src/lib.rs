@@ -168,6 +168,8 @@
 //! modules with multiple tables and narrow field markers:
 //!
 //! ```
+//! use babar::query::Query;
+//!
 //! babar::schema! {
 //!     pub mod app_schema {
 //!         table public.users {
@@ -185,6 +187,14 @@
 //! assert!(app_schema::users::id().is_primary_key());
 //! assert_eq!(app_schema::posts::author_id().sql_type(), babar::schema::SqlType::INT4);
 //! assert_eq!(app_schema::SCHEMA.tables().len(), 2);
+//!
+//! let lookup: Query<(i32,), (i32, String)> = app_schema::typed_query!(
+//!     SELECT users.id, users.name FROM users WHERE users.id = $id
+//! );
+//! assert_eq!(
+//!     lookup.sql(),
+//!     "SELECT users.id, users.name FROM users AS users WHERE (users.id = $1)"
+//! );
 //! ```
 //!
 //! ## TLS

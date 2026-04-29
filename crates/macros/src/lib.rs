@@ -219,7 +219,8 @@ pub fn typed_query(input: TokenStream) -> TokenStream {
 /// - SQL type names match the inline `typed_query!` schema type surface
 ///
 /// The generated module exposes one nested module per table with `TABLE`,
-/// per-column symbols, and authored declaration metadata through `SCHEMA`.
+/// per-column symbols, authored declaration metadata through `SCHEMA`, and a
+/// schema-scoped `typed_query!` wrapper that reuses the authored tables.
 #[proc_macro]
 pub fn schema(input: TokenStream) -> TokenStream {
     schema_decl::expand_schema(input)

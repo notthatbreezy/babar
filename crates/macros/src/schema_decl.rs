@@ -25,6 +25,7 @@ fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
     let mut seen_modules = HashMap::<String, proc_macro2::Span>::new();
     let mut table_modules = Vec::with_capacity(tables.len());
     let mut table_defs = Vec::with_capacity(tables.len());
+    let mut typed_query_tables = Vec::with_capacity(tables.len());
 
     for table in tables {
         let qualified_name = table.qualified_name();
@@ -50,6 +51,7 @@ fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
         }
 
         let module_ident = table.name.clone();
+        typed_query_tables.push(table.expand_typed_query_bridge());
         table_modules.push(table.expand()?);
         table_defs.push(quote! { #module_ident::DEF });
     }
@@ -57,6 +59,18 @@ fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
     Ok(quote! {
         #vis mod #name {
             #( #table_modules )*
+
+            macro_rules! __babar_typed_query {
+                ($($sql:tt)*) => {
+                    ::babar::typed_query!(
+                        __babar_schema = {
+                            #(#typed_query_tables,)*
+                        },
+                        $($sql)*
+                    )
+                };
+            }
+            pub(crate) use __babar_typed_query as typed_query;
 
             pub const TABLES: &[::babar::schema::TableDef] = &[#(#table_defs),*];
             pub const SCHEMA: ::babar::schema::SchemaDef =
@@ -172,6 +186,25 @@ impl SchemaTableInput {
             }
         })
     }
+
+    fn expand_typed_query_bridge(&self) -> TokenStream2 {
+        let name = &self.name;
+        let columns = self
+            .columns
+            .iter()
+            .map(SchemaColumnInput::expand_typed_query_bridge);
+
+        let table_name = match &self.schema_name {
+            Some(schema_name) => quote! { #schema_name . #name },
+            None => quote! { #name },
+        };
+
+        quote! {
+            table #table_name {
+                #(#columns,)*
+            }
+        }
+    }
 }
 
 impl Parse for SchemaTableInput {
@@ -249,6 +282,14 @@ impl SchemaColumnInput {
                 #semantics,
             )
         })
+    }
+
+    fn expand_typed_query_bridge(&self) -> TokenStream2 {
+        let name = &self.name;
+        let sql_type = self.sql_type.typed_query_tokens();
+        quote! {
+            #name: #sql_type
+        }
     }
 }
 
@@ -332,6 +373,14 @@ impl SchemaColumnTypeInput {
             SchemaFieldSemantics::PrimaryKey => {
                 quote! { ::babar::schema::ColumnSemantics::PrimaryKey }
             }
+        }
+    }
+
+    fn typed_query_tokens(&self) -> TokenStream2 {
+        let sql_type = &self.sql_type;
+        match self.nullability {
+            SchemaFieldNullability::NonNull => quote! { #sql_type },
+            SchemaFieldNullability::Nullable => quote! { nullable(#sql_type) },
         }
     }
 }

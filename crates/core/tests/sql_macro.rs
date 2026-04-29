@@ -185,6 +185,47 @@ fn typed_query_macro_matches_raw_builder() {
     assert!(origin.file().ends_with("crates/core/tests/sql_macro.rs"));
 }
 
+babar::schema! {
+    mod authored_typed_query_schema {
+        table public.users {
+            id: primary_key(int4),
+            name: text,
+            active: bool,
+        },
+        table public.posts {
+            id: pk(int8),
+            author_id: int4,
+            title: text,
+        },
+    }
+}
+
+#[test]
+fn schema_scoped_typed_query_matches_inline_pipeline() {
+    let schema_scoped: Query<(i32,), (i32, String)> = authored_typed_query_schema::typed_query!(
+        SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = true
+    );
+    let inline: Query<(i32,), (i32, String)> = babar::typed_query!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+            table public.posts {
+                id: int8,
+                author_id: int4,
+                title: text,
+            },
+        },
+        SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = true
+    );
+
+    assert_eq!(schema_scoped.sql(), inline.sql());
+    assert_eq!(schema_scoped.param_oids(), inline.param_oids());
+    assert_eq!(schema_scoped.output_oids(), inline.output_oids());
+}
+
 #[test]
 fn typed_query_optional_suffixes_render_sql_for_active_inputs() {
     let macro_query: Query<OptionalUserFilterParams, (String,)> = babar::typed_query!(
