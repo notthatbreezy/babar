@@ -4,6 +4,7 @@ members = [
     "benches/pool-throughput",
     "benches/prepared-throughput",
     "crates/core",
+    "crates/core/tests/external_schema_export",
     "crates/macros",
 ]
 

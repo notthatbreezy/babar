@@ -21,6 +21,7 @@ pub(crate) fn expand_schema(input: TokenStream) -> TokenStream {
 
 fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
     let SchemaModuleInput { vis, name, tables } = input;
+    let typed_query_macro_ident = format_ident!("__babar_typed_query_{}", name);
     let mut seen_tables = HashMap::<String, proc_macro2::Span>::new();
     let mut seen_modules = HashMap::<String, proc_macro2::Span>::new();
     let mut table_modules = Vec::with_capacity(tables.len());
@@ -60,7 +61,9 @@ fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
         #vis mod #name {
             #( #table_modules )*
 
-            macro_rules! __babar_typed_query {
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! #typed_query_macro_ident {
                 ($($sql:tt)*) => {
                     ::babar::typed_query!(
                         __babar_schema = {
@@ -70,7 +73,8 @@ fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
                     )
                 };
             }
-            pub(crate) use __babar_typed_query as typed_query;
+
+            pub use #typed_query_macro_ident as typed_query;
 
             pub const TABLES: &[::babar::schema::TableDef] = &[#(#table_defs),*];
             pub const SCHEMA: ::babar::schema::SchemaDef =

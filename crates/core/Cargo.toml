@@ -90,6 +90,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "std"]
 tracing-test = { workspace = true }
 clap = { workspace = true }
 axum = { workspace = true }
+babar-external-schema-export = { path = "tests/external_schema_export" }
 
 [target.'cfg(loom)'.dev-dependencies]
 loom = { workspace = true }

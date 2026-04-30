@@ -215,6 +215,7 @@ name = "babar"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "babar-external-schema-export",
  "babar-macros",
  "base64 0.21.7",
  "bytes",
@@ -251,6 +252,13 @@ dependencies = [
  "tracing-test",
  "trybuild",
  "uuid",
+]
+
+[[package]]
+name = "babar-external-schema-export"
+version = "0.0.0"
+dependencies = [
+ "babar",
 ]
 
 [[package]]

@@ -1,0 +1,8 @@
+[package]
+name = "babar-external-schema-export"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+babar = { path = "../.." }
