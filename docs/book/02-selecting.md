@@ -10,6 +10,13 @@ authored schema facts, a schema-aware `SELECT`, and the `Vec<B>` returned by
 use babar::query::{Command, Query};
 use babar::{Config, Session};
 
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct UserSummary {
+    id: i32,
+    name: String,
+    active: bool,
+}
+
 babar::schema! {
     mod app_schema {
         table users {
@@ -41,22 +48,26 @@ async fn main() -> babar::Result<()> {
     );
     session.execute(&create, ()).await?;
 
-    let insert: Command<(i32, String, bool, Option<String>)> =
-        app_schema::command!(INSERT INTO users (id, name, active, note) VALUES ($id, $name, $active, $note));
-    session
-        .execute(&insert, (1, "alice".to_string(), true, Some("first".to_string())))
-        .await?;
+    let alice = UserSummary {
+        id: 1,
+        name: "alice".to_string(),
+        active: true,
+    };
+    let insert: Command<UserSummary> =
+        app_schema::command!(INSERT INTO users (id, name, active) VALUES ($id, $name, $active));
+    session.execute(&insert, alice).await?;
 
-    let q: Query<(bool,), (i32, String, bool)> = app_schema::query!(
+    let q: Query<(bool,), UserSummary> = app_schema::query!(
         SELECT users.id, users.name, users.active
         FROM users
         WHERE users.active = $active
         ORDER BY users.id
     );
 
-    let rows: Vec<(i32, String, bool)> = session.query(&q, (true,)).await?;
-    for (id, name, active) in &rows {
-        println!("{id}\t{name}\t{active}");
+    let only_active_users: bool = true
+    let rows: Vec<UserSummary> = session.query(&q, (only_active_users,)).await?;
+    for row in &rows {
+        println!("{}\t{}\t{}", row.id, row.name, row.active);
     }
 
     session.close().await?;
@@ -69,7 +80,8 @@ async fn main() -> babar::Result<()> {
 Every `Query<A, B>` carries two type parameters:
 
 - `A` — the parameter tuple you bind at call time
-- `B` — the per-row output type you get back
+- `B` — the per-row output type you get back, often a tuple for quick sketches
+  or a `#[derive(babar::Codec)]` struct for more ergonomic field access
 
 There is no intermediate `Row` type and no `.get::<T, _>()` accessor: by the
 time `session.query(...).await?` returns, the bytes are already typed Rust
@@ -81,6 +93,12 @@ reusable pattern is a Rust-visible schema module plus its schema-scoped wrapper:
 ```rust
 use babar::query::Query;
 
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct UserSummary {
+    id: i32,
+    name: String,
+}
+
 babar::schema! {
     mod app_schema {
         table public.users {
@@ -91,10 +109,10 @@ babar::schema! {
     }
 }
 
-let q: Query<(i32,), (i32, String)> = app_schema::query!(
-    SELECT users.id, users.name
-    FROM users
-    WHERE users.id = $id AND users.active = true
+ let q: Query<(i32,), UserSummary> = app_schema::query!(
+     SELECT users.id, users.name
+     FROM users
+     WHERE users.id = $id AND users.active = true
 );
 ```
 
@@ -103,7 +121,13 @@ For one-off examples or tests, inline schema works too:
 ```rust
 use babar::query::Query;
 
-let q: Query<(i32,), (i32, String)> = babar::query!(
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct UserSummary {
+    id: i32,
+    name: String,
+}
+
+let q: Query<(i32,), UserSummary> = babar::query!(
     schema = {
         table public.users {
             id: primary_key(int4),
@@ -118,7 +142,8 @@ let q: Query<(i32,), (i32, String)> = babar::query!(
 ```
 
 `typed_query!` still exists as a compatibility alias to the same compiler, but
-new docs and new code should prefer `query!`.
+new docs and new code should prefer `query!`. Struct row types work here just
+as well as tuple rows as long as they derive `babar::Codec`.
 
 ## Supported subset and explicit non-goals
 
