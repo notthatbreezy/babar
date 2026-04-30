@@ -1,10 +1,9 @@
-//! M3 quickstart: end-to-end exercise of the typed surface with `sql!`.
+//! M3 quickstart: end-to-end exercise of the schema-aware typed SQL surface.
 //!
 //! Connects to a Postgres instance, creates a temporary table, inserts
 //! three rows with parameterized values, runs a parameterized SELECT,
-//! and prints each decoded row. All SQL goes through `sql!`, which uses
-//! named placeholders like `$id` and rewrites them to Postgres' `$1`,
-//! `$2`, ... protocol form.
+//! and prints each decoded row. Application queries use schema-scoped
+//! `query!` / `command!` wrappers; the one raw fallback is the DDL setup step.
 //!
 //! Reads the same `PG*` environment variables as `m0_smoke`.
 //!
@@ -15,9 +14,19 @@
 
 use std::process::ExitCode;
 
-use babar::codec::{bool, int4, nullable, text};
 use babar::query::{Command, Query};
-use babar::{sql, Config, Session};
+use babar::{Config, Session};
+
+babar::schema! {
+    mod quickstart_schema {
+        table quickstart {
+            id: primary_key(int4),
+            name: text,
+            active: bool,
+            note: nullable(text),
+        },
+    }
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -61,26 +70,22 @@ async fn main() -> ExitCode {
 }
 
 async fn run(session: &Session) -> babar::Result<()> {
-    let create: Command<()> = Command::from_fragment(sql!(
+    let create: Command<()> = Command::raw(
         "CREATE TEMP TABLE quickstart (
             id int4 PRIMARY KEY,
             name text NOT NULL,
             active bool NOT NULL,
             note text
-         )"
-    ));
+         )",
+        (),
+    );
     let _ = session.execute(&create, ()).await?;
     println!("created TEMP TABLE quickstart");
 
-    let insert: Command<(i32, String, core::primitive::bool, Option<String>)> =
-        Command::from_fragment(sql!(
-            "INSERT INTO quickstart (id, name, active, note)
-             VALUES ($id, $name, $active, $note)",
-            id = int4,
-            name = text,
-            active = bool,
-            note = nullable(text),
-        ));
+    let insert: Command<(i32, String, core::primitive::bool, Option<String>)> = quickstart_schema::command!(
+        INSERT INTO quickstart (id, name, active, note)
+        VALUES ($id, $name, $active, $note)
+    );
     let rows = [
         (1_i32, "alice".to_string(), true, Some("first".to_string())),
         (2_i32, "bob".to_string(), false, None),
@@ -94,15 +99,11 @@ async fn run(session: &Session) -> babar::Result<()> {
     let select: Query<
         (core::primitive::bool,),
         (i32, String, core::primitive::bool, Option<String>),
-    > = Query::from_fragment(
-        sql!(
-            "SELECT id, name, active, note
-                 FROM quickstart
-                 WHERE active = $active
-                 ORDER BY id",
-            active = bool,
-        ),
-        (int4, text, bool, nullable(text)),
+    > = quickstart_schema::query!(
+        SELECT quickstart.id, quickstart.name, quickstart.active, quickstart.note
+        FROM quickstart
+        WHERE quickstart.active = $active
+        ORDER BY quickstart.id
     );
     let active_rows = session.query(&select, (true,)).await?;
     println!("active rows ({}):", active_rows.len());

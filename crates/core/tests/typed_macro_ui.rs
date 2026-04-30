@@ -1,4 +1,4 @@
-//! UI coverage for `query!` / `command!` diagnostics.
+//! UI coverage for public `query!` / `command!` migration and verification behavior.
 
 mod common;
 
@@ -6,6 +6,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
+use babar::Session;
 use common::{AuthMode, PgContainer};
 
 fn env_lock() -> &'static Mutex<()> {
@@ -63,7 +64,8 @@ fn typed_macro_ui() {
         || {
             let tests = trybuild::TestCases::new();
             tests.pass("tests/ui/typed_macro/pass/basic.rs");
-            tests.compile_fail("tests/ui/typed_macro/fail/unsupported_codec.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/legacy_command_syntax.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/legacy_query_syntax.rs");
         },
     );
 }
@@ -90,6 +92,21 @@ fn typed_macro_verifies_against_live_postgres_when_configured() {
 
     let runtime = tokio::runtime::Runtime::new().expect("create runtime");
     let pg = runtime.block_on(PgContainer::start(AuthMode::Scram));
+    let session = runtime
+        .block_on(Session::connect(pg.config(pg.user(), pg.password())))
+        .expect("connect for schema setup");
+    runtime
+        .block_on(session.simple_query_raw(
+            "CREATE TABLE public.verify_live_users (\
+                 id int4 PRIMARY KEY, \
+                 name text NOT NULL, \
+                 active bool NOT NULL\
+             )",
+        ))
+        .expect("create verification table");
+    runtime
+        .block_on(session.close())
+        .expect("close setup session");
     let database_url = format!(
         "postgres://{}:{}@127.0.0.1:{}/babar",
         pg.user(),

@@ -1,32 +1,60 @@
 # 2. Selecting
 
-In this chapter we'll go from a connected `Session` to typed Rust
-values: a `SELECT`, a decoder tuple, and a `Vec<B>` you can iterate.
+In this chapter we'll go from a connected `Session` to typed Rust values:
+authored schema facts, a schema-aware `SELECT`, and the `Vec<B>` returned by
+`session.query`.
 
 ## Setup
 
 ```rust
-use babar::codec::{bool, int4, nullable, text};
-use babar::query::Query;
+use babar::query::{Command, Query};
 use babar::{Config, Session};
+
+babar::schema! {
+    mod app_schema {
+        table users {
+            id: primary_key(int4),
+            name: text,
+            active: bool,
+            note: nullable(text),
+        }
+    }
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> babar::Result<()> {
-    let session: Session = Session::connect(                          // type: Session
+    let session: Session = Session::connect(
         Config::new("localhost", 5432, "postgres", "postgres")
             .password("postgres")
             .application_name("ch02-selecting"),
     )
     .await?;
 
-    // No parameters; one row of three columns.
-    let q: Query<(), (i32, String, bool)> = Query::raw(               // type: Query<(), (i32, String, bool)>
-        "SELECT 1::int4 AS id, 'alice'::text AS name, true AS active",
+    let create: Command<()> = Command::raw(
+        "CREATE TEMP TABLE users (
+            id int4 PRIMARY KEY,
+            name text NOT NULL,
+            active bool NOT NULL,
+            note text
+         )",
         (),
-        (int4, text, bool),
+    );
+    session.execute(&create, ()).await?;
+
+    let insert: Command<(i32, String, bool, Option<String>)> =
+        app_schema::command!(INSERT INTO users (id, name, active, note) VALUES ($id, $name, $active, $note));
+    session
+        .execute(&insert, (1, "alice".to_string(), true, Some("first".to_string())))
+        .await?;
+
+    let q: Query<(bool,), (i32, String, bool)> = app_schema::query!(
+        SELECT users.id, users.name, users.active
+        FROM users
+        WHERE users.active = $active
+        ORDER BY users.id
     );
 
-    let rows: Vec<(i32, String, bool)> = session.query(&q, ()).await?; // type: Vec<(i32, String, bool)>
+    let rows: Vec<(i32, String, bool)> = session.query(&q, (true,)).await?;
     for (id, name, active) in &rows {
         println!("{id}\t{name}\t{active}");
     }
@@ -40,21 +68,15 @@ async fn main() -> babar::Result<()> {
 
 Every `Query<A, B>` carries two type parameters:
 
-- `A` — the *parameter* tuple you bind at call time. `()` if there are
-  no `$N` placeholders.
-- `B` — the *row* tuple you'll get back, one per row.
+- `A` — the parameter tuple you bind at call time
+- `B` — the per-row output type you get back
 
-The codec tuple at the end of `Query::raw` decides `B`. `(int4, text,
-bool)` decodes columns into `(i32, String, bool)`. There is no
-intermediate `Row` type and no `.get::<T, _>()` accessor: by the time
-`session.query(...).await?` returns, the bytes are already typed
+There is no intermediate `Row` type and no `.get::<T, _>()` accessor: by the
+time `session.query(...).await?` returns, the bytes are already typed Rust
 values.
 
-`Query::raw` is still the clearest baseline and the rest of this chapter
-sticks with it. babar also has a query-only `typed_query!` macro for a
-narrower, schema-aware path to the same `Query<P, R>` value. The
-recommended reusable pattern is a Rust-visible schema module plus its
-schema-scoped wrapper:
+`query!` is the default path to that `Query<A, B>` value. The recommended
+reusable pattern is a Rust-visible schema module plus its schema-scoped wrapper:
 
 ```rust
 use babar::query::Query;
@@ -69,112 +91,107 @@ babar::schema! {
     }
 }
 
-let q: Query<(i32,), (i32, String)> = app_schema::typed_query!(
-    SELECT users.id, users.name FROM users
+let q: Query<(i32,), (i32, String)> = app_schema::query!(
+    SELECT users.id, users.name
+    FROM users
     WHERE users.id = $id AND users.active = true
 );
 ```
 
-The older inline path still exists for one-off calls:
-`babar::typed_query!(schema = { ... }, SELECT ...)`. The recommended
-hybrid pattern is the schema-scoped wrapper above because one authored
-schema module can hold multiple tables, keep field semantics local to the
-declaration, and stay reusable across many queries.
+For one-off examples or tests, inline schema works too:
 
-That macro surface is intentionally small-scope: token-style SQL input,
-authored Rust-visible schemas, and a supported `SELECT` subset only.
-Inside that subset, `$value?` and `(...)?` mark explicit optional
-ownership boundaries for supported predicates and tail expressions. It
-is still query-only — not file-based schema loading, schema codegen, a
-general query builder, or full-SQL coverage.
+```rust
+use babar::query::Query;
 
-Authored fields stay type-first:
+let q: Query<(i32,), (i32, String)> = babar::query!(
+    schema = {
+        table public.users {
+            id: primary_key(int4),
+            name: text,
+            active: bool,
+        },
+    },
+    SELECT users.id, users.name
+    FROM users
+    WHERE users.id = $id AND users.active = true
+);
+```
 
-- `name: text` for ordinary columns,
-- `deleted_at: nullable(timestamptz)` for nullable columns,
-- `id: primary_key(int4)` or `id: pk(int8)` for the current primary-key
-  marker.
+`typed_query!` still exists as a compatibility alias to the same compiler, but
+new docs and new code should prefer `query!`.
 
-The declaration surface accepts `bool`, `bytea`, `varchar`, `text`,
-`int2`, `int4`, `int8`, `float4`, `float8`, `uuid`, `date`, `time`,
-`timestamp`, `timestamptz`, `json`, `jsonb`, and `numeric`. The current
-typed-query lowering path is narrower for actual query parameters and row
-projections: `bool`, `bytea`, `varchar`, `text`, `int2`, `int4`, `int8`,
-`float4`, and `float8`. Wider authored types compile in the schema
-module, but using them in `typed_query!` currently fails with a
-compile-time diagnostic that names the unsupported SQL type.
+## Supported subset and explicit non-goals
+
+The schema-aware compiler is intentionally narrow in v1:
+
+- exactly one statement per macro call
+- named placeholders like `$id`, with repeated names reusing the same slot
+- explicit optional ownership markers only where supported:
+  `$value?` for a direct `WHERE` / `JOIN` comparison or the full `LIMIT` /
+  `OFFSET` expression, `(...)?` for a whole parenthesized `WHERE` / `JOIN`
+  predicate or a single `ORDER BY` expression
+- authored Rust schema only — no file-based schema input, codegen, or offline cache
+
+Authored schema declarations accept `bool`, `bytea`, `varchar`, `text`, `int2`,
+`int4`, `int8`, `float4`, `float8`, `uuid`, `date`, `time`, `timestamp`,
+`timestamptz`, `json`, `jsonb`, and `numeric`. Schema-aware typed SQL now lowers
+inferred parameters and projected rows across that same family, including
+nullable variants. The matching babar feature still needs to be enabled for
+optional families such as `uuid`, `time`, `json`, and `numeric`.
+
+This is not a general SQL rewrite engine or ORM layer. Unsupported statements
+should fall back to `Query::raw` / `Command::raw`.
 
 ## Nullable columns
 
-Postgres columns are nullable by default. babar refuses to guess: if
-the column might be NULL, wrap its codec in `nullable(...)` and let
-the row tuple use `Option<T>`.
+Postgres columns are nullable by default. In authored schemas, mark them
+explicitly with `nullable(...)` so the inferred row type becomes `Option<T>`:
 
 ```rust
-use babar::codec::{int4, nullable, text};
+use babar::query::Query;
 
-let q: Query<(), (i32, Option<String>)> = Query::raw(
-    "SELECT id, note FROM users ORDER BY id",
-    (),
-    (int4, nullable(text)),
-);
-```
-
-If you forget the `nullable(...)` wrapper and Postgres sends a NULL,
-the codec returns a clear decode error rather than a panic or a silent
-`String::default()`. For example, decoding the `note` column as plain
-`text` against a row where `note IS NULL`:
-
-```rust
-use babar::codec::{int4, text};
-
-// Wrong: `text` (not `nullable(text)`) and `String` (not `Option<String>`).
-let q: Query<(), (i32, String)> = Query::raw(
-    "SELECT id, note FROM users WHERE id = 1",
-    (),
-    (int4, text),
-);
-
-match session.query(&q, ()).await {
-    Ok(rows) => println!("{rows:?}"),
-    Err(e) => eprintln!("decode failed: {e}"),
+babar::schema! {
+    mod app_schema {
+        table public.users {
+            id: primary_key(int4),
+            note: nullable(text),
+        }
+    }
 }
+
+let q: Query<(), (i32, Option<String>)> = app_schema::query!(
+    SELECT users.id, users.note
+    FROM users
+    ORDER BY users.id
+);
 ```
 
-…prints something like:
-
-```text
-decode failed: decode error at column 1 ("note"): unexpected NULL for non-nullable codec `text`;
-  wrap it in `nullable(text)` and decode into `Option<String>`
-```
-
-The fix is the one-line change shown above: swap `text` for `nullable(text)`
-and `String` for `Option<String>` in the row tuple. babar would rather make
-you spell it out than quietly hand you an empty string.
+If you use `Query::raw` instead, you must keep the decoder tuple in sync
+yourself by pairing nullable columns with `nullable(codec)` and `Option<T>`.
+babar would rather force that explicitness than guess.
 
 ## Multiple rows
 
-`session.query(&q, args)` always returns `Vec<B>` — one tuple per row,
-in server order. For one-row reads it's perfectly idiomatic to write:
+`session.query(&q, args)` always returns `Vec<B>` — one tuple per row, in
+server order. For one-row reads it's perfectly idiomatic to write:
 
 ```rust
 let row = session.query(&q, (id,)).await?.into_iter().next();
 ```
 
-…and treat `None` as "no such row". For large result sets, prefer
-streaming — see [Chapter 4](./04-prepared-and-streaming.md).
+…and treat `None` as "no such row". For large result sets, prefer streaming —
+see [Chapter 4](./04-prepared-and-streaming.md).
 
-## When a row doesn't fit your tuple
+## When to reach for `Query::raw`
 
-If your decoder asks for `(i32, String)` but the SQL returns three
-columns, decoding fails with a clear `Error::ColumnAlignment { expected, actual, .. }`
-before any rows are decoded. Make the
-column list explicit (`SELECT id, name FROM ...`) so the row shape and
-the codec tuple stay in lockstep — `SELECT *` is allowed but a
-liability for typed code.
+`Query::raw` is the typed fallback when the SQL you need is outside the current
+typed SQL subset but you still want the extended protocol, typed params, typed
+rows, prepare support, or streaming. `simple_query_raw` is lower-level still:
+it sends a raw SQL string through PostgreSQL's simple-query protocol and is best
+reserved for bootstrap or multi-statement work.
 
 ## Next
 
-[Chapter 3: Parameterized commands](./03-parameterized-commands.md)
-introduces `Command<A>`, the `sql!` macro, and the `Encoder<A>` /
-`Decoder<A>` traits at a user level.
+[Chapter 3: Parameterized commands](./03-parameterized-commands.md) introduces
+`Command<A>`, the migration path from the old explicit-codec macros, and where
+`sql!`, raw statements, and simple-query fallbacks fit.

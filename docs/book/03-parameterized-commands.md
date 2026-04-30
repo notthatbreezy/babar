@@ -1,57 +1,62 @@
 # 3. Parameterized commands
 
-In this chapter we'll bind parameters, write to the database, and meet
-the `Encoder<A>` / `Decoder<A>` codec traits behind the scenes. We'll
-also place the classic `raw` / `sql!` surfaces next to the newer
-query-only `typed_query!` surface so the trade-offs are visible.
+In this chapter we'll bind parameters, write to the database, and place babar's
+SQL surfaces in order: schema-aware `query!` / `command!` first, `typed_query!`
+as a compatibility alias, `sql!` as a lower-level fragment builder, then the
+raw fallbacks.
 
 ## Setup
 
 ```rust
-use babar::codec::{bool, int4, text};
 use babar::query::{Command, Query};
-use babar::{sql, Config, Session};
+use babar::{Config, Session};
+
+babar::schema! {
+    mod todo_schema {
+        table todo {
+            id: primary_key(int4),
+            title: text,
+            done: bool,
+        }
+    }
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> babar::Result<()> {
-    let session: Session = Session::connect(                              // type: Session
+    let session: Session = Session::connect(
         Config::new("localhost", 5432, "postgres", "postgres")
             .password("postgres")
             .application_name("ch03-params"),
     )
     .await?;
 
-    // CREATE TABLE — no parameters, no rows back.
-    let create: Command<()> = Command::raw(                               // type: Command<()>
-        "CREATE TEMP TABLE todo (id int4 PRIMARY KEY, title text NOT NULL, done bool NOT NULL DEFAULT false)",
+    let create: Command<()> = Command::raw(
+        "CREATE TEMP TABLE todo (
+            id int4 PRIMARY KEY,
+            title text NOT NULL,
+            done bool NOT NULL DEFAULT false
+         )",
         (),
     );
     session.execute(&create, ()).await?;
 
-    // INSERT — bind (i32, String).
-    let insert: Command<(i32, String)> = Command::raw(                    // type: Command<(i32, String)>
-        "INSERT INTO todo (id, title) VALUES ($1, $2)",
-        (int4, text),
-    );
-    session.execute(&insert, (1, "buy milk".into())).await?;
+    let insert: Command<(i32, String, bool)> =
+        todo_schema::command!(INSERT INTO todo (id, title, done) VALUES ($id, $title, $done));
+    session
+        .execute(&insert, (1, "buy milk".into(), false))
+        .await?;
 
-    // UPDATE — bind one parameter; capture rows-affected.
-    let mark_done: Command<(i32,)> = Command::raw(
-        "UPDATE todo SET done = true WHERE id = $1",
-        (int4,),
-    );
+    let mark_done: Command<(i32,)> =
+        todo_schema::command!(UPDATE todo SET done = true WHERE todo.id = $id);
     let affected: u64 = session.execute(&mark_done, (1,)).await?;
     println!("updated {affected} row(s)");
 
-    // SELECT it back, this time with the sql! macro and named placeholders.
-    let lookup: Query<(bool,), (i32, String, bool)> =
-        Query::from_fragment(
-            sql!(
-                "SELECT id, title, done FROM todo WHERE done = $done ORDER BY id",
-                done = bool,
-            ),
-            (int4, text, bool),
-        );
+    let lookup: Query<(bool,), (i32, String, bool)> = todo_schema::query!(
+        SELECT todo.id, todo.title, todo.done
+        FROM todo
+        WHERE todo.done = $done
+        ORDER BY todo.id
+    );
     for (id, title, done) in session.query(&lookup, (true,)).await? {
         println!("{id}\t{title}\t{done}");
     }
@@ -63,54 +68,38 @@ async fn main() -> babar::Result<()> {
 
 ## `Command<A>` vs `Query<A, B>`
 
-A `Command<A>` describes a round-trip that *doesn't* return rows —
-DDL, INSERT, UPDATE, DELETE. `session.execute(&cmd, args).await?`
-returns a `u64` rows-affected count.
+A `Command<A>` describes a round-trip that does not return rows.
+`session.execute(&cmd, args).await?` returns a `u64` affected-row count.
 
 A `Query<A, B>` describes a round-trip that returns typed rows.
 `session.query(&q, args).await?` returns `Vec<B>`.
 
-Both take the same `A` type parameter for parameters: a tuple of
-encoders for `Command::raw` / `Query::raw`, a fragment that knows its
-own parameter shape if you use the `sql!` macro, or an inline-schema
-macro that infers the runnable `Query<A, B>` if you use
-`typed_query!`.
+Both use the same `A` parameter tuple. With schema-aware typed SQL, the macro
+infers that tuple from your authored schema and named placeholders.
 
-## Three query-building surfaces
+## The default path: `query!` / `command!`
 
-### `Command::raw` and `Query::raw`
+Public `query!` / `command!` are now the primary typed SQL entrypoints. They
+share one schema-aware compiler and accept either:
 
-The most direct form. You write Postgres positional placeholders
-(`$1`, `$2`, …) and pass an explicit codec tuple in matching order.
-This is what the `todo_cli` example uses.
-
-### The `sql!` macro
-
-`sql!` lets you write *named* placeholders (`$id`, `$title`) and pair
-each name with its codec inline. It produces a `Fragment<A>` whose
-parameter type `A` is derived from the names you used. Then you wrap
-the fragment in either `Command::from_fragment(...)` or
-`Query::from_fragment(fragment, decoder_tuple)` to get the runnable
-value:
+- inline schema for one-off examples/tests:
 
 ```rust
-let f = sql!(
-    "INSERT INTO todo (id, title) VALUES ($id, $title)",
-    id = int4,
-    title = text,
+use babar::query::Command;
+
+let insert: Command<(i32, String)> = babar::command!(
+    schema = {
+        table public.todo {
+            id: primary_key(int4),
+            title: text,
+        },
+    },
+    INSERT INTO todo (id, title) VALUES ($id, $title)
 );
-let insert: Command<(i32, String)> = Command::from_fragment(f);
 ```
 
-A `Fragment` on its own is *not* runnable — you cannot call
-`session.execute(sql!(...))` or `session.query(sql!(...))` directly.
-The chain is always **fragment → command/query → run**.
-
-### The `typed_query!` macro
-
-`typed_query!` is the query-only schema-aware macro. It accepts
-token-style SQL plus authored schema metadata and expands straight to a
-`Query<A, B>`. The recommended reusable form is a schema-scoped wrapper:
+- or a schema-scoped wrapper generated by `schema!`, which is the recommended
+  reusable pattern:
 
 ```rust
 use babar::query::Query;
@@ -125,71 +114,108 @@ babar::schema! {
     }
 }
 
-let lookup: Query<(i32,), (i32, String)> = todo_schema::typed_query!(
-    SELECT todo.id, todo.title FROM todo
+let lookup: Query<(i32,), (i32, String)> = todo_schema::query!(
+    SELECT todo.id, todo.title
+    FROM todo
     WHERE todo.id = $id AND todo.done = false
 );
 ```
 
-Keep the scope in mind:
+Schema-aware typed SQL is intentionally narrow:
 
-- it is currently for a supported `SELECT` subset, not writes,
-- the old inline `babar::typed_query!(schema = { ... }, SELECT ...)`
-  path still exists for local or one-off queries, but the recommended
-  v0.1 pattern is `schema!` plus `schema_module::typed_query!(...)`,
-- schemas are authored Rust modules only in v0.1 — no file-based schema
-  loading, codegen, or introspection flow,
-- field markers are intentionally narrow: plain `type_name`,
-  `nullable(type_name)`, `primary_key(type_name)`, and `pk(type_name)`,
-- authored declarations can describe `bool`, `bytea`, `varchar`, `text`,
-  `int2`, `int4`, `int8`, `float4`, `float8`, `uuid`, `date`, `time`,
-  `timestamp`, `timestamptz`, `json`, `jsonb`, and `numeric`,
-- the current runtime lowering path for query params and projected rows
-  is narrower: `bool`, `bytea`, `varchar`, `text`, `int2`, `int4`,
-  `int8`, `float4`, and `float8`,
-- `$value?` is only supported when it owns a direct `WHERE` / `JOIN`
-  comparison or the full `LIMIT` / `OFFSET` expression,
-- `(...)?` is only supported when it owns a whole parenthesized
-  `WHERE` / `JOIN` predicate or a single `ORDER BY` expression,
-- it does **not** promise file-based schema inputs, codegen, full SQL
-  coverage, or general SQL rewriting.
+- exactly one statement per macro call
+- authored Rust schema only — no file-based schema input, codegen, or offline cache
+- supported writes include `INSERT ... VALUES`, `UPDATE ... WHERE`, and
+  `DELETE ... WHERE`; `RETURNING` stays explicit and row-shaped
+- optional ownership markers remain explicit: `$value?` and `(...)?` only in
+  supported `WHERE` / `JOIN` / `ORDER BY` / `LIMIT` / `OFFSET` positions
+- unsupported constructs such as `INSERT ... SELECT`, `ON CONFLICT`,
+  `UPDATE ... FROM`, `DELETE ... USING`, wildcard `RETURNING *`, or missing
+  `WHERE` predicates on `UPDATE` / `DELETE` produce compile-time diagnostics
 
-Those suffixes keep optional behavior explicit and SQL-adjacent:
+Compile-time verification is optional and online-only in v0.1. During macro
+expansion babar checks `BABAR_DATABASE_URL` first, then `DATABASE_URL`. If
+either is configured, schema-aware `SELECT` statements from `query!`,
+`typed_query!`, and schema-scoped wrappers verify schema facts, parameters, and
+returned columns against a live PostgreSQL server. Non-`RETURNING` commands and
+explicit-`RETURNING` DML are not yet probe-verified through that path. Without
+config, the macros still expand to the same runtime values.
 
-```sql
-WHERE (todo.id = $id?)?
-ORDER BY (todo.title)? ASC
-LIMIT $limit?
-OFFSET $offset?
+## `typed_query!` compatibility positioning
+
+`typed_query!` remains available as a compatibility alias to the same unified
+compiler during this transition. That means:
+
+- old docs/examples that already use `typed_query!` can keep compiling while you migrate
+- the preferred spelling for new code is still `query!` / `command!`
+- schema modules re-export compatibility aliases too:
+  `app_schema::typed_query!(...)` and `app_schema::typed_command!(...)`
+
+The old explicit-codec macro forms do **not** survive this transition:
+
+```rust,ignore
+query!("SELECT ...", params = (...), row = (...))
+command!("INSERT ...", params = (...))
 ```
 
-For `INSERT`, `UPDATE`, `DELETE`, and DDL, the `Command<A>` + `raw` /
-`sql!` surfaces are still the story. External schemas improve reusable
-read-query verification; they do not turn `typed_query!` into a general
-write macro.
+Move those calls to inline `schema = { ... }` or a `schema!` module, then write
+token-style SQL with named placeholders. If the statement is outside the typed
+SQL subset, use `Query::raw` / `Command::raw` instead of trying to force it
+through the macro.
 
-## What the codec types are doing
+## `sql!` is now the lower-level fragment builder
 
-When you write `(int4, text)` you're constructing a tuple of
-`Encoder<A>` / `Decoder<A>` values. Each one knows two things:
+`sql!` still matters, but it is no longer the first thing to reach for. Use it
+when you specifically want named-placeholder fragment composition or fragment
+nesting:
 
-- the Postgres OID it speaks for (`int4` ↔ OID 23, `text` ↔ OID 25),
-- how to encode/decode that OID's binary representation to/from its
-  Rust counterpart (`i32`, `String`, …).
+```rust
+use babar::codec::{bool, int4, text};
+use babar::query::Query;
 
-The `Encoder<A>` trait turns a Rust `A` into the parameter byte
-buffer; the `Decoder<A>` trait turns one column's bytes back into a
-Rust `A`. Both traits are generic over the value type, which is why
-the row tuple in `Query<(), (i32, String, bool)>` is the codec
-tuple's value-type, not some opaque `Row` shape.
+let lookup: Query<(i32, bool), (String,)> = babar::sql!(
+    "SELECT title FROM todo WHERE ($predicate) AND done = $done",
+    predicate = babar::sql!("id = $id", id = int4),
+    done = bool,
+)
+.query((text,));
+```
 
-Codecs you'll reach for first: `int4`, `int8`, `text`, `bool`,
-`bytea`, `float4`, `float8`, `nullable(c)`. The full set lives in
-`babar::codec`; the full set is listed in
-[reference/codecs.md](../reference/codecs.md).
+`sql!` yields a `Fragment<A>`, not a runnable statement. The chain is always
+**fragment → command/query → run**. It can best-effort verify parameter
+metadata for the verifiable codec subset, but it does not infer row types or
+validate returned columns, which is why it is now the secondary surface.
+
+## `Query::raw`, `Command::raw`, and `simple_query_raw`
+
+Use raw fallbacks when the typed SQL compiler is not a fit:
+
+- **`Query::raw` / `Command::raw`** — one extended-protocol statement with
+  explicit codec tuples. Keep these when you still want typed params, typed
+  rows, prepare support, or streaming.
+- **`simple_query_raw`** — a simple-protocol raw SQL string. Reach for it when
+  you need multi-statement bootstrap, migration-style setup, or untyped raw
+  result sets. It is not the same surface as a typed `Query` / `Command`.
+
+That is why this chapter uses `Command::raw` for `CREATE TEMP TABLE` but
+schema-aware `command!` / `query!` for application SQL.
+
+## What the codec traits are doing
+
+When you write an explicit tuple like `(int4, text)` for `Query::raw` or
+`Command::raw`, you're constructing `Encoder<A>` / `Decoder<A>` values. Each
+codec knows:
+
+- which Postgres OID it speaks
+- how to encode or decode that OID's binary representation
+
+The `Encoder<A>` trait turns a Rust `A` into parameter bytes. The `Decoder<A>`
+trait turns one row's bytes back into a Rust `A`. Schema-aware typed SQL hides
+most of that boilerplate, but the same codec machinery still powers the emitted
+statements.
 
 ## Next
 
-[Chapter 4: Prepared queries & streaming](./04-prepared-and-streaming.md)
-shows how to prepare a statement once, run it many times, and stream
-results in batches.
+[Chapter 4: Prepared queries & streaming](./04-prepared-and-streaming.md) shows
+how to prepare a statement once, run it many times, and stream results in
+batches.

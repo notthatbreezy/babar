@@ -1,0 +1,8 @@
+error: this SQL construct is outside the typed_sql v1 subset: typed_sql v1 does not support DELETE ... USING
+          |
+        1 | DELETE FROM users USING audit_users WHERE users.id = $id
+          | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  --> tests/ui/typed_query/fail/delete_using.rs:13:9
+   |
+13 |         DELETE FROM users USING audit_users WHERE users.id = $id
+   |         ^^^^^^

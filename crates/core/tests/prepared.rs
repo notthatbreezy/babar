@@ -98,6 +98,101 @@ async fn prepared_command_insert_and_count() {
 }
 
 #[tokio::test]
+async fn prepared_static_typed_dml_command_roundtrip() {
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    session
+        .simple_query_raw("CREATE TABLE typed_prep_users (id int4, name text, active bool)")
+        .await
+        .expect("create table");
+
+    let cmd: Command<(i32, String, bool)> = babar::typed_query!(
+        schema = {
+            table public.typed_prep_users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        INSERT INTO typed_prep_users (id, name, active) VALUES ($id, $name, $active)
+    );
+    let prepared = session
+        .prepare_command(&cmd)
+        .await
+        .expect("prepare typed dml");
+
+    let affected = prepared
+        .execute((1_i32, "alice".to_string(), true))
+        .await
+        .expect("insert row");
+    assert_eq!(affected, 1);
+
+    let query: Query<(), (i32, String, bool)> = Query::raw(
+        "SELECT id, name, active FROM typed_prep_users",
+        (),
+        (int4, text, babar::codec::bool),
+    );
+    let rows = session
+        .query(&query, ())
+        .await
+        .expect("select typed insert");
+    assert_eq!(rows, vec![(1, "alice".to_string(), true)]);
+
+    prepared.close().await.expect("close prepared cmd");
+    session.close().await.expect("close session");
+}
+
+#[tokio::test]
+async fn runtime_dynamic_typed_query_remains_executable_but_not_preparable() {
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    session
+        .simple_query_raw(
+            "CREATE TABLE prep_dynamic_users (id int4 PRIMARY KEY, name text NOT NULL);\
+             INSERT INTO prep_dynamic_users (id, name) VALUES (1, 'alice'), (2, 'bob')",
+        )
+        .await
+        .expect("seed table");
+
+    let query: Query<(Option<i32>,), (String,)> = babar::typed_query!(
+        schema = {
+            table public.prep_dynamic_users {
+                id: int4,
+                name: text,
+            },
+        },
+        SELECT prep_dynamic_users.name
+        FROM public.prep_dynamic_users
+        WHERE (prep_dynamic_users.id = $id?)?
+        ORDER BY prep_dynamic_users.id
+    );
+
+    let rows = session
+        .query(&query, (Some(2_i32),))
+        .await
+        .expect("dynamic query should execute");
+    assert_eq!(rows, vec![("bob".to_string(),)]);
+
+    let err = session
+        .prepare_query(&query)
+        .await
+        .expect_err("dynamic typed query should not prepare");
+    match err {
+        Error::Codec(message) => assert!(
+            message.contains("runtime-dependent optional typed_query! SQL cannot be prepared"),
+            "unexpected message: {message}"
+        ),
+        other => panic!("expected codec error, got {other:?}"),
+    }
+
+    session.close().await.expect("close session");
+}
+
+#[tokio::test]
 async fn prepared_query_cache_reuses_statement() {
     let Some((_pg, session)) = fresh_session().await else {
         return;

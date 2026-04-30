@@ -45,13 +45,12 @@ In babar, a `Query<Params, Row>` is a runtime value. It carries:
 - A parameter encoder (`Encoder<Params>`).
 - A row decoder (`Decoder<Row>`).
 
-When the type system says `Query<(i32,), (Uuid, String, i64)>`, the
-compiler knows the parameter shape, the row shape, and which codecs
-participate. There is no magic — `Query::raw` constructs one
-explicitly, `query!` builds the same thing with explicit codecs and
-optional live verification, and the query-only `typed_query!` macro can
-lower a small schema-aware `SELECT` from inline schema + token-style SQL
-into the same runtime `Query<P, R>` shape.
+When the type system says `Query<(i32,), (Uuid, String, i64)>`, the compiler
+knows the parameter shape, the row shape, and which codecs participate. There
+is no magic — `query!` is now the default schema-aware path, `typed_query!`
+remains a compatibility alias during the transition, and `Query::raw`
+constructs the same runtime value explicitly when you need an unsupported raw
+fallback.
 
 ## Where to read next
 

@@ -1,15 +1,17 @@
-//! Typed queries and commands plus the `Fragment` builder.
+//! Typed statement values plus the `Fragment` builder.
 //!
 //! The flow:
 //!
 //! ```text
-//! Fragment<A>  ─────►  Command<A>          (no rows produced)
-//!              ─►  Query<A, B>     (rows decoded as B)
+//! schema-aware query!/command! or Fragment<A>  ─────►  Command<A>  (no rows)
+//!                                           └──────►  Query<A, B> (rows as B)
 //! ```
 //!
 //! `Fragment` holds SQL pieces and the encoder for the parameter tuple `A`.
 //! `Command` and `Query` wrap a fragment with the statement shape you hand to
-//! `Session::execute`, `Session::query`, or `Session::prepare_*`.
+//! `Session::execute`, `Session::query`, or `Session::prepare_*`. Most code
+//! should prefer schema-aware [`crate::query!`] / [`crate::command!`]; the raw
+//! builders here remain explicit advanced fallbacks.
 
 mod fragment;
 
@@ -30,12 +32,12 @@ pub struct Query<A, B> {
 }
 
 impl<A, B> Query<A, B> {
-    /// Build a query directly from a raw SQL string, an encoder for the
-    /// parameter tuple `A`, and a decoder for the row type `B`.
+    /// Build a query directly from raw SQL plus explicit parameter/row codecs.
     ///
-    /// SQL placeholders use Postgres' native `$1`, `$2`, ... numbering.
-    /// The encoder is responsible for producing exactly that many param slots
-    /// in the same order.
+    /// This is the advanced fallback when schema-aware [`crate::query!`] is not
+    /// a fit. SQL placeholders use Postgres' native `$1`, `$2`, ... numbering,
+    /// and the encoder is responsible for producing exactly that many param
+    /// slots in the same order.
     pub fn raw<E, D>(sql: impl Into<String>, encoder: E, decoder: D) -> Self
     where
         E: Encoder<A> + Send + Sync + 'static,
@@ -121,7 +123,10 @@ pub struct Command<A> {
 }
 
 impl<A> Command<A> {
-    /// Build a command directly from raw SQL and a parameter encoder.
+    /// Build a command directly from raw SQL and an explicit parameter encoder.
+    ///
+    /// This is the advanced fallback when schema-aware [`crate::command!`] is
+    /// not a fit.
     pub fn raw<E>(sql: impl Into<String>, encoder: E) -> Self
     where
         E: Encoder<A> + Send + Sync + 'static,

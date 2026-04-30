@@ -10,15 +10,63 @@ pub(crate) struct PublicSqlInput {
 
 impl PublicSqlInput {
     pub(crate) fn parse(tokens: TokenStream) -> syn::Result<Self> {
+        ParsedPublicSql::parse(tokens)?.into_input()
+    }
+
+    pub(crate) fn parse_select(&self) -> syn::Result<ParsedSql> {
+        self.parse_with(parse_select_source)
+    }
+
+    pub(crate) fn parse_with<T>(
+        &self,
+        parse: impl FnOnce(SqlSource) -> super::Result<T>,
+    ) -> syn::Result<T> {
+        parse(self.source.clone()).map_err(|err| self.syn_error(err))
+    }
+
+    pub(crate) fn source(&self) -> &SqlSource {
+        &self.source
+    }
+
+    pub(crate) fn syn_error(&self, err: TypedSqlError) -> syn::Error {
+        syn::Error::new(
+            self.span_map
+                .span_for(err.span)
+                .unwrap_or_else(Span::call_site),
+            err.render_for_user(&self.source),
+        )
+    }
+
+    pub(crate) fn syn_error_message(&self, message: impl std::fmt::Display) -> syn::Error {
+        let span = self
+            .span_map
+            .segments
+            .first()
+            .map(|segment| segment.token_span)
+            .unwrap_or_else(Span::call_site);
+        syn::Error::new(span, message.to_string())
+    }
+}
+
+struct ParsedPublicSql {
+    sql: String,
+    span_map: PublicSpanMap,
+    canonicalize_error: CanonicalizeErrorTarget,
+}
+
+impl ParsedPublicSql {
+    fn parse(tokens: TokenStream) -> syn::Result<Self> {
         if let Some((sql, span)) = parse_literal_sql(&tokens)? {
-            let source = source::canonicalize(&sql).map_err(|err| syn::Error::new(span, err))?;
-            let span_map = PublicSpanMap {
-                segments: vec![SpanSegment {
-                    sql_span: SourceSpan::new(0, to_u32(sql.len())?),
-                    token_span: span,
-                }],
-            };
-            return Ok(Self { source, span_map });
+            return Ok(Self {
+                span_map: PublicSpanMap {
+                    segments: vec![SpanSegment {
+                        sql_span: SourceSpan::new(0, to_u32(sql.len())?),
+                        token_span: span,
+                    }],
+                },
+                canonicalize_error: CanonicalizeErrorTarget::SingleSpan(span),
+                sql,
+            });
         }
 
         let mut builder = SqlTextBuilder::default();
@@ -30,26 +78,40 @@ impl PublicSqlInput {
             ));
         }
 
-        let source = source::canonicalize(&builder.sql).map_err(|err| builder.syn_error(err))?;
+        let span_map = PublicSpanMap {
+            segments: builder.segments,
+        };
         Ok(Self {
-            source,
-            span_map: PublicSpanMap {
-                segments: builder.segments,
-            },
+            sql: builder.sql,
+            canonicalize_error: CanonicalizeErrorTarget::SpanMap(span_map.clone()),
+            span_map,
         })
     }
 
-    pub(crate) fn parse_select(&self) -> syn::Result<ParsedSql> {
-        parse_select_source(self.source.clone()).map_err(|err| self.syn_error(err))
+    fn into_input(self) -> syn::Result<PublicSqlInput> {
+        let canonicalized = source::canonicalize_parts(&self.sql)
+            .map_err(|err| self.canonicalize_error.into_syn_error(err))?;
+        Ok(PublicSqlInput {
+            source: SqlSource::from_canonicalized(self.sql, canonicalized),
+            span_map: self.span_map,
+        })
     }
+}
 
-    pub(crate) fn syn_error(&self, err: TypedSqlError) -> syn::Error {
-        syn::Error::new(
-            self.span_map
-                .span_for(err.span)
-                .unwrap_or_else(Span::call_site),
-            err.render_for_user(&self.source),
-        )
+enum CanonicalizeErrorTarget {
+    SingleSpan(Span),
+    SpanMap(PublicSpanMap),
+}
+
+impl CanonicalizeErrorTarget {
+    fn into_syn_error(self, err: TypedSqlError) -> syn::Error {
+        match self {
+            Self::SingleSpan(span) => syn::Error::new(span, err),
+            Self::SpanMap(span_map) => syn::Error::new(
+                span_map.span_for(err.span).unwrap_or_else(Span::call_site),
+                err.to_string(),
+            ),
+        }
     }
 }
 

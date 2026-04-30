@@ -1,8 +1,7 @@
 //! Tiny Axum service backed by babar's connection pool.
 //!
-//! This example uses a reusable schema-scoped `typed_query!` wrapper for read
-//! queries. Writes still use `Command::raw` because the macro intentionally
-//! covers a narrow `SELECT` subset.
+//! This example uses schema-scoped `query!` / `command!` wrappers for
+//! application SQL. The raw fallback is reserved for the DDL setup step.
 //!
 //! ```text
 //! cargo run -p babar --example axum_service
@@ -14,7 +13,6 @@ use axum::extract::{Path, Query as AxumQuery, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use babar::codec::{int4, text};
 use babar::query::{Command, Query};
 use babar::{Config, Pool, PoolConfig};
 use serde::{Deserialize, Serialize};
@@ -126,7 +124,7 @@ async fn list_widgets(
 }
 
 fn optional_widget_listing_query() -> Query<OptionalWidgetListingParams, WidgetRow> {
-    service_schema::typed_query!(
+    service_schema::query!(
         SELECT widgets.id, widgets.name
         FROM widgets
         WHERE (widgets.name = $name?)?
@@ -141,10 +139,8 @@ async fn create_widget(
     Json(payload): Json<CreateWidget>,
 ) -> Result<(StatusCode, Json<Widget>), (StatusCode, String)> {
     let conn = state.pool.acquire().await.map_err(pool_error_http)?;
-    let insert: Command<(i32, String)> = Command::raw(
-        "INSERT INTO widgets (id, name) VALUES ($1, $2)",
-        (int4, text),
-    );
+    let insert: Command<(i32, String)> =
+        service_schema::command!(INSERT INTO widgets (id, name) VALUES ($id, $name));
     conn.execute(&insert, (payload.id, payload.name.clone()))
         .await
         .map_err(db_error)?;
@@ -162,7 +158,7 @@ async fn get_widget(
     Path(id): Path<i32>,
 ) -> Result<Json<Widget>, (StatusCode, String)> {
     let conn = state.pool.acquire().await.map_err(pool_error_http)?;
-    let select = service_schema::typed_query!(
+    let select = service_schema::query!(
         SELECT widgets.id, widgets.name
         FROM widgets
         WHERE widgets.id = $widget_id

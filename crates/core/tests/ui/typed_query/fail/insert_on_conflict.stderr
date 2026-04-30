@@ -1,0 +1,8 @@
+error: this SQL construct is outside the typed_sql v1 subset: typed_sql v1 does not support ON CONFLICT or other INSERT conflict clauses
+          |
+        1 | INSERT INTO users (id) VALUES ($id) ON CONFLICT (id) DO NOTHING
+          | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  --> tests/ui/typed_query/fail/insert_on_conflict.rs:10:9
+   |
+10 |         INSERT INTO users (id) VALUES ($id) ON CONFLICT (id) DO NOTHING
+   |         ^^^^^^

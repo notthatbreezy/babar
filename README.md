@@ -2,14 +2,14 @@
 
 Typed, async PostgreSQL driver for Tokio that speaks the PostgreSQL wire protocol directly.
 
-`babar` is explicit: queries and commands are typed values, codecs are imported values, SQL composition is opt-in via `sql!`, `query!`, `command!`, and the query-only `typed_query!` macro, `#[derive(Codec)]` infers common struct fields and lets `#[pg(codec = "...")]` override the outliers, and a background driver task owns the socket so public API calls stay cancellation-safe.
+`babar` is explicit: queries and commands are typed values, schema-aware `query!` / `command!` are the default typed SQL path, `typed_query!` remains available as a compatibility alias during the unification transition, `sql!` is the lower-level fragment builder, `#[derive(Codec)]` infers common struct fields and lets `#[pg(codec = "...")]` override the outliers, and a background driver task owns the socket so public API calls stay cancellation-safe.
 
 ## Highlights
 
 - direct wire-protocol implementation on Tokio — no `libpq`, no `tokio-postgres`
 - typed `Query`, `Command`, `PreparedQuery`, `PreparedCommand`, `Transaction`/`Savepoint`, and `Pool` APIs
 - typed binary `CopyIn<T>` for `COPY FROM STDIN` bulk ingest from `Vec<T>` / iterators
-- SQL composition with `sql!`, `query!`, `command!`, and the query-only `typed_query!` macro for inline or authored schemas
+- schema-aware typed SQL with `query!` / `command!`, authored schemas via `schema!`, and `typed_query!` as a compatibility alias during migration
 - rich errors with SQLSTATE fields plus SQL/caret rendering
 - OpenTelemetry-friendly `tracing` spans: `db.connect`, `db.prepare`, `db.execute`, `db.transaction`
 - TLS via `rustls` (default) or `native-tls`
@@ -78,9 +78,17 @@ Important caveats for the new families:
 ## Quick start
 
 ```rust,no_run
-use babar::codec::{int4, text};
 use babar::query::{Command, Query};
 use babar::{Config, Session};
+
+babar::schema! {
+    mod app_schema {
+        table demo_users {
+            id: primary_key(int4),
+            name: text,
+        }
+    }
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> babar::Result<()> {
@@ -95,18 +103,17 @@ async fn main() -> babar::Result<()> {
     );
     session.execute(&create, ()).await?;
 
-    let insert: Command<(i32, String)> = Command::raw(
-        "INSERT INTO demo_users (id, name) VALUES ($1, $2)",
-        (int4, text),
-    );
+    let insert: Command<(i32, String)> =
+        app_schema::command!(INSERT INTO demo_users (id, name) VALUES ($id, $name));
     session.execute(&insert, (1, "Ada".to_string())).await?;
 
-    let select: Query<(), (i32, String)> = Query::raw(
-        "SELECT id, name FROM demo_users ORDER BY id",
-        (),
-        (int4, text),
+    let select: Query<(i32,), (i32, String)> = app_schema::query!(
+        SELECT demo_users.id, demo_users.name
+        FROM demo_users
+        WHERE demo_users.id >= $min_id
+        ORDER BY demo_users.id
     );
-    let rows = session.query(&select, ()).await?;
+    let rows = session.query(&select, (1,)).await?;
     assert_eq!(rows, vec![(1, "Ada".to_string())]);
 
     session.close().await?;
@@ -254,22 +261,34 @@ The same tutorial is published via GitHub Pages at
 
 ## Compile-time SQL verification
 
-`babar` keeps `Query::raw` / `Command::raw` as the default runtime path, but it
-also offers optional macro-driven query surfaces:
+`babar`'s primary typed SQL surface is now schema-aware `query!` /
+`command!`:
 
 ```rust
-use babar::codec::{int4, text};
-use babar::query::Query;
+use babar::query::{Command, Query};
 
-let lookup = babar::query!(
-    "SELECT id, name FROM users WHERE id = $1",
-    params = (int4,),
-    row = (int4, text),
+let lookup: Query<(i32,), (i32, String)> = babar::query!(
+    schema = {
+        table public.users {
+            id: primary_key(int4),
+            name: text,
+            active: bool,
+        },
+    },
+    SELECT users.id, users.name
+    FROM users
+    WHERE users.id = $id AND users.active = true
 );
 
-let insert = babar::command!(
-    "INSERT INTO users (id, name) VALUES ($1, $2)",
-    params = (int4, text),
+let insert: Command<(i32, String, bool)> = babar::command!(
+    schema = {
+        table public.users {
+            id: primary_key(int4),
+            name: text,
+            active: bool,
+        },
+    },
+    INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
 );
 
 babar::schema! {
@@ -282,69 +301,84 @@ babar::schema! {
     }
 }
 
-let typed_lookup: Query<(i32,), (i32, String)> = app_schema::typed_query!(
+let lookup: Query<(i32,), (i32, String)> = app_schema::query!(
     SELECT users.id, users.name
     FROM users
     WHERE users.id >= $min_id AND users.active = true
 );
 ```
 
-During macro expansion, babar first checks `BABAR_DATABASE_URL`, then
-`DATABASE_URL`. If either is set, `query!` / `command!` verify declared
-parameter and row metadata against a live Postgres server, while `sql!`
-best-effort verifies parameter metadata when every binding uses the v1
-verifiable subset: `int2`, `int4`, `int8`, `bool`, `text`, `varchar`, `bytea`,
-`nullable(...)`, and tuples of those.
+`query!` / `command!` now share the same schema-aware compiler:
 
-Without config, the macros still compile and emit the same `Query`, `Command`,
-or `Fragment` values. For verified workflows, prefer `query!` / `command!`;
-`sql!` intentionally does not validate row shapes. v0.1 does not ship an
-offline cache or generated schema snapshot.
-
-`typed_query!` is the narrower, query-only schema-aware macro rather than the
-final schema or codegen story. Instead of probing a live database, it reads
-authored schema metadata during macro expansion, validates a supported
-token-style `SELECT` subset against that schema, and emits an ordinary
-`Query<Params, Row>`.
-
-- `query!` / `command!` take positional SQL plus explicit codec tuples.
-- `typed_query!` takes token-style SQL plus authored schema facts, and uses
-  named placeholders like `$min_id` that lower to positional SQL (`$1`, `$2`,
-  ...) in the generated query.
-- v0.1 supports two authored-schema entrypoints:
-  - inline `babar::typed_query!(schema = { ... }, SELECT ...)` for one-off
-    examples or local tests,
-  - the recommended hybrid pattern:
-    `babar::schema! { mod app_schema { ... } }` plus
-    `app_schema::typed_query!(SELECT ...)` for reusable multi-table query
-    contexts.
-- `schema!` keeps the schema Rust-visible and authored by hand. v0.1 does not
-  include file-based schema inputs, code generation, or live database
-  introspection.
+- use inline `schema = { ... }` blocks for one-off examples and tests
+- use `schema! { mod app_schema { ... } }` plus `app_schema::query!(...)` /
+  `app_schema::command!(...)` for reusable authored schemas
+- `typed_query!` remains available as a compatibility alias to the same
+  compiler during this transition, and schema modules also re-export
+  `typed_query!` / `typed_command!`
+- during macro expansion, babar first checks `BABAR_DATABASE_URL`, then
+  `DATABASE_URL`
+- today, live verification runs for schema-aware `SELECT` statements
+  (`query!`, `typed_query!`, and schema-scoped wrappers), checking authored
+  schema facts, parameters, and returned columns against a live PostgreSQL
+  server
+- non-`RETURNING` `command!` calls and explicit-`RETURNING` DML are not yet
+  probe-verified through that path
+- without config, the macros still compile and emit the same runtime `Query` /
+  `Command` values
+- v0.1 does not ship an offline cache, generated schema snapshot, file-based
+  schema input, or live schema introspection flow
 - unique table names stay available as `app_schema::users`; if two SQL schemas
-  share a table name, use schema namespaces like `app_schema::public::users`
-  and `app_schema::reporting::users`.
-- authored fields stay type-first: plain `type_name` for ordinary columns,
-  `nullable(type_name)` for nullable columns, and `primary_key(type_name)` /
-  `pk(type_name)` for the current primary-key marker.
-- the authored declaration type surface is `bool`, `bytea`, `varchar`, `text`,
-  `int2`, `int4`, `int8`, `float4`, `float8`, `uuid`, `date`, `time`,
-  `timestamp`, `timestamptz`, `json`, `jsonb`, and `numeric`.
-- current typed-query runtime lowering is narrower: query parameters and row
-  projections currently lower only `bool`, `bytea`, `varchar`, `text`, `int2`,
-  `int4`, `int8`, `float4`, and `float8`. Declaring wider authored types is
-  allowed, but using them in `typed_query!` currently fails with a compile-time
-  diagnostic that names the unsupported SQL type.
-- Repeating the same named placeholder reuses the same parameter slot, similar
-  to `sql!`.
-- `$value?` is supported only when it directly owns a whole `WHERE` / `JOIN`
-  comparison or the full `LIMIT` / `OFFSET` expression.
-- `(...)?` is supported only for an entire parenthesized `WHERE` / `JOIN`
-  predicate or a single `ORDER BY` expression; it does not wrap whole clauses
-  or `LIMIT` / `OFFSET`.
-- This surface is intentionally narrow: query-only, authored-schema-only, and a
-  supported `SELECT` subset rather than a general SQL rewrite engine, database
-  introspection flow, or generated-schema workflow.
+  share a table name, use namespaces like `app_schema::public::users`
+- authored fields stay type-first: `type_name`, `nullable(type_name)`,
+  `primary_key(type_name)`, and `pk(type_name)`
+- authored declarations accept `bool`, `bytea`, `varchar`, `text`, `int2`,
+  `int4`, `int8`, `float4`, `float8`, `uuid`, `date`, `time`, `timestamp`,
+  `timestamptz`, `json`, `jsonb`, and `numeric`
+- typed SQL currently lowers inferred parameters and projected columns across
+  that same family, including nullable variants; the matching babar feature
+  must still be enabled for families such as `uuid`, `time`, `json`, and
+  `numeric`
+- named placeholders reuse slots when repeated, and optional forms stay
+  explicit: `$value?` only for supported `WHERE` / `JOIN` comparisons or full
+  `LIMIT` / `OFFSET` expressions, `(...)?` only for a full parenthesized
+  `WHERE` / `JOIN` predicate or a single `ORDER BY` expression
+
+The supported subset is intentionally small. v1 expects exactly one statement
+and keeps reads narrow: explicit projections, one `FROM` relation plus optional
+joins, optional `WHERE` / `ORDER BY` / `LIMIT` / `OFFSET`, and no `SELECT *`,
+`WITH` / CTEs, subqueries, `DISTINCT`, `GROUP BY` / `HAVING`, set operations,
+or multi-statement input. Writes are limited to `INSERT ... VALUES`,
+`UPDATE ... WHERE`, and `DELETE ... WHERE`, with explicit-column `RETURNING`
+lowering through the query-shaped row path. v1 does not cover
+`INSERT ... SELECT`, `ON CONFLICT`, `UPDATE ... FROM`, `DELETE ... USING`,
+wildcard `RETURNING *`, or `UPDATE` / `DELETE` without a `WHERE` predicate. It
+is not a general SQL rewrite engine, ORM, or codegen workflow.
+
+The old explicit-codec forms:
+
+- `query!("...", params = ..., row = ...)`
+- `command!("...", params = ...)`
+
+no longer compile. Migrate those calls by moving schema facts into either an
+inline `schema = { ... }` block or a `schema!` module, then writing token-style
+SQL with named placeholders.
+
+## Choosing the right SQL surface
+
+Use the highest-level surface that still fits the statement:
+
+- **`query!` / `command!`** — default path for schema-aware typed SQL in the
+  supported subset
+- **`Query::raw` / `Command::raw`** — fallback for unsupported extended-protocol
+  SQL when you still want typed parameters, typed rows, prepare support, or
+  streaming
+- **`sql!`** — lower-level fragment builder for named-placeholder composition
+  and fragment nesting; useful, but secondary to schema-aware typed SQL
+- **`simple_query_raw`** — simple-protocol escape hatch for raw SQL strings,
+  especially multi-statement bootstrap/migration work or commands where you do
+  not need typed params/results. It does not participate in typed prepared or
+  streaming flows.
 
 ## TLS
 

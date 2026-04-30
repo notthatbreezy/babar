@@ -62,13 +62,16 @@ That is the validate-early principle in operation. Concretely:
 - Every decoder advertises its column count. If `RowDescription`
   advertises a different count, you get `Error::ColumnAlignment`
   immediately, again before any rows are processed.
-- The `query!` macro can validate SQL against a live database when
-  `BABAR_DATABASE_URL` is set for opt-in compile-time validation.
-- The `typed_query!` macro is a narrower, opt-in inline-schema,
-  query-only surface: it resolves a supported `SELECT` subset at macro
-  expansion time, including the supported optional suffix ownership
-  forms, without claiming generated schema modules, offline caches, or
-  full SQL coverage.
+- The schema-aware `query!` / `command!` macros can validate authored schema
+  facts, parameters, and returned columns against a live database when
+  `BABAR_DATABASE_URL` or `DATABASE_URL` is set for opt-in compile-time
+  validation, but that probe currently runs only for schema-aware `SELECT`
+  statements.
+- `typed_query!` remains available as a compatibility alias to that same
+  compiler during the transition, but the surface still stays intentionally
+  small: supported statements only, explicit optional ownership forms, authored
+  Rust schema modules or inline schema, and no generated schema modules,
+  offline caches, or full SQL coverage.
 
 The cost is one round-trip on each prepare. The benefit is that
 schema drift surfaces as a Rust error at the boundary, with a

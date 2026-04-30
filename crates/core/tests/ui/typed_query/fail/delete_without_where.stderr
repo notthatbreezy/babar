@@ -1,0 +1,8 @@
+error: this SQL construct is outside the typed_sql v1 subset: typed_sql v1 requires DELETE statements to include a WHERE predicate
+          |
+        1 | DELETE FROM users
+          | ^^^^^^^^^^^^^^^^^
+  --> tests/ui/typed_query/fail/delete_without_where.rs:10:9
+   |
+10 |         DELETE FROM users
+   |         ^^^^^^

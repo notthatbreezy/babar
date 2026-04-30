@@ -6,7 +6,7 @@ use sqlparser::{
 
 use super::{source::SqlSource, Result, TypedSqlError};
 
-pub(crate) fn parse_select(source: &SqlSource) -> Result<Query> {
+pub(crate) fn parse_statement(source: &SqlSource) -> Result<Statement> {
     let dialect = PostgreSqlDialect {};
     let mut parser = Parser::new(&dialect)
         .try_with_sql(&source.canonical_sql)
@@ -17,23 +17,37 @@ pub(crate) fn parse_select(source: &SqlSource) -> Result<Query> {
 
     if statements.len() != 1 {
         return Err(TypedSqlError::unsupported(
-            "typed_sql v1 expects exactly one SELECT statement",
+            "typed_sql v1 expects exactly one statement",
         ));
     }
 
     let statement = statements.pop().expect("statement length checked");
+    match &statement {
+        Statement::Query(query) => {
+            if !matches!(query.body.as_ref(), SetExpr::Select(_)) {
+                return Err(TypedSqlError::unsupported(
+                    "typed_sql v1 does not support set operations or derived top-level queries",
+                ));
+            }
+        }
+        Statement::Insert(_) | Statement::Update(_) | Statement::Delete(_) => {}
+        _ => {
+            return Err(TypedSqlError::unsupported(
+                "typed_sql v1 only supports SELECT, INSERT, UPDATE, and DELETE statements",
+            ))
+        }
+    }
+
+    Ok(statement)
+}
+
+pub(crate) fn parse_select(source: &SqlSource) -> Result<Query> {
+    let statement = parse_statement(source)?;
     let Statement::Query(query) = statement else {
         return Err(TypedSqlError::unsupported(
             "typed_sql v1 only supports SELECT statements",
         ));
     };
-
-    if !matches!(query.body.as_ref(), SetExpr::Select(_)) {
-        return Err(TypedSqlError::unsupported(
-            "typed_sql v1 does not support set operations or derived top-level queries",
-        ));
-    }
-
     Ok(*query)
 }
 

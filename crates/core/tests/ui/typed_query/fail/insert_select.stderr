@@ -1,0 +1,8 @@
+error: this SQL construct is outside the typed_sql v1 subset: typed_sql v1 does not support INSERT ... SELECT
+          |
+        1 | INSERT INTO users (id) SELECT users.id FROM users WHERE users.active = $active
+          |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  --> tests/ui/typed_query/fail/insert_select.rs:11:32
+   |
+11 |         INSERT INTO users (id) SELECT users.id FROM users WHERE users.active = $active
+   |                                ^^^^^^

@@ -1,8 +1,10 @@
 use std::collections::{hash_map::Entry, HashMap};
 
 use crate::typed_sql::ir::{
-    AstId, BinaryOp, BoolOp, JoinKind, Literal, OutputNameSyntax, ParsedExpr, ParsedOrderBy,
-    ParsedProjection, ParsedSelect, PlaceholderId, PlaceholderRef, SourceSpan, UnaryOp,
+    AstId, BinaryOp, BoolOp, JoinKind, Literal, OutputNameSyntax, ParsedAssignment,
+    ParsedAssignmentTarget, ParsedDelete, ParsedExpr, ParsedInsert, ParsedOrderBy,
+    ParsedProjection, ParsedSelect, ParsedStatement, ParsedUpdate, PlaceholderId, PlaceholderRef,
+    SourceSpan, StatementKind, StatementResultKind, UnaryOp,
 };
 
 use super::{Result, TypedSqlError};
@@ -180,6 +182,22 @@ impl SchemaCatalog {
     fn column(&self, table_id: TableId, column_id: ColumnId) -> &SchemaColumn {
         &self.tables[table_id.0].columns[column_id.0]
     }
+
+    pub(crate) fn lookup_column_by_display_name(
+        &self,
+        table_name: &str,
+        column_name: &str,
+    ) -> Option<&SchemaColumn> {
+        self.tables
+            .iter()
+            .find(|table| table.display_name() == table_name)
+            .and_then(|table| {
+                table
+                    .columns_by_name
+                    .get(column_name)
+                    .map(|column_id| &table.columns[column_id.0])
+            })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -246,6 +264,14 @@ impl SchemaColumn {
             nullability,
         }
     }
+
+    pub(crate) const fn sql_type(&self) -> SqlType {
+        self.sql_type
+    }
+
+    pub(crate) const fn nullability(&self) -> Nullability {
+        self.nullability
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -258,6 +284,62 @@ pub(crate) struct CheckedSelect {
     pub(crate) limit: Option<CheckedExpr>,
     pub(crate) offset: Option<CheckedExpr>,
     pub(crate) parameters: Vec<CheckedParameter>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CheckedStatement {
+    pub(crate) kind: StatementKind,
+    pub(crate) result: StatementResultKind,
+    pub(crate) body: CheckedStatementBody,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CheckedStatementBody {
+    Select(CheckedSelect),
+    Insert(CheckedInsert),
+    Update(CheckedUpdate),
+    Delete(CheckedDelete),
+}
+
+impl CheckedStatement {
+    pub(crate) fn parameters(&self) -> &[CheckedParameter] {
+        match &self.body {
+            CheckedStatementBody::Select(select) => &select.parameters,
+            CheckedStatementBody::Insert(insert) => &insert.parameters,
+            CheckedStatementBody::Update(update) => &update.parameters,
+            CheckedStatementBody::Delete(delete) => &delete.parameters,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CheckedInsert {
+    pub(crate) target: CheckedBinding,
+    pub(crate) projections: Vec<CheckedProjection>,
+    pub(crate) parameters: Vec<CheckedParameter>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CheckedUpdate {
+    pub(crate) target: CheckedBinding,
+    pub(crate) assignments: Vec<CheckedAssignment>,
+    pub(crate) filter: CheckedExpr,
+    pub(crate) projections: Vec<CheckedProjection>,
+    pub(crate) parameters: Vec<CheckedParameter>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CheckedDelete {
+    pub(crate) target: CheckedBinding,
+    pub(crate) filter: CheckedExpr,
+    pub(crate) projections: Vec<CheckedProjection>,
+    pub(crate) parameters: Vec<CheckedParameter>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CheckedAssignment {
+    pub(crate) target: ResolvedColumnRef,
+    pub(crate) value: CheckedExpr,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -341,6 +423,117 @@ pub(crate) enum CheckedExprNode {
         op: BoolOp,
         terms: Vec<CheckedExpr>,
     },
+}
+
+pub(crate) fn resolve_statement(
+    statement: &ParsedStatement,
+    catalog: &SchemaCatalog,
+) -> Result<CheckedStatement> {
+    match statement.kind {
+        StatementKind::Query => {
+            let select = statement
+                .as_select()
+                .ok_or_else(|| TypedSqlError::internal("query statement missing SELECT body"))?;
+            Ok(CheckedStatement {
+                kind: StatementKind::Query,
+                result: StatementResultKind::Rows,
+                body: CheckedStatementBody::Select(resolve_select(select, catalog)?),
+            })
+        }
+        StatementKind::Insert => {
+            let checked = match &statement.body {
+                crate::typed_sql::ir::ParsedStatementBody::Rows(rows) => match &rows.body {
+                    crate::typed_sql::ir::ParsedRowStatementBody::Insert(insert) => {
+                        resolve_insert(insert, catalog)?
+                    }
+                    _ => {
+                        return Err(TypedSqlError::internal(
+                            "insert statement did not carry insert body",
+                        ))
+                    }
+                },
+                crate::typed_sql::ir::ParsedStatementBody::Command(command) => {
+                    match &command.body {
+                        crate::typed_sql::ir::ParsedCommandStatementBody::Insert(insert) => {
+                            resolve_insert(insert, catalog)?
+                        }
+                        _ => {
+                            return Err(TypedSqlError::internal(
+                                "insert command did not carry insert body",
+                            ))
+                        }
+                    }
+                }
+            };
+            Ok(CheckedStatement {
+                kind: StatementKind::Insert,
+                result: statement.result,
+                body: CheckedStatementBody::Insert(checked),
+            })
+        }
+        StatementKind::Update => {
+            let checked = match &statement.body {
+                crate::typed_sql::ir::ParsedStatementBody::Rows(rows) => match &rows.body {
+                    crate::typed_sql::ir::ParsedRowStatementBody::Update(update) => {
+                        resolve_update(update, catalog)?
+                    }
+                    _ => {
+                        return Err(TypedSqlError::internal(
+                            "update statement did not carry update body",
+                        ))
+                    }
+                },
+                crate::typed_sql::ir::ParsedStatementBody::Command(command) => {
+                    match &command.body {
+                        crate::typed_sql::ir::ParsedCommandStatementBody::Update(update) => {
+                            resolve_update(update, catalog)?
+                        }
+                        _ => {
+                            return Err(TypedSqlError::internal(
+                                "update command did not carry update body",
+                            ))
+                        }
+                    }
+                }
+            };
+            Ok(CheckedStatement {
+                kind: StatementKind::Update,
+                result: statement.result,
+                body: CheckedStatementBody::Update(checked),
+            })
+        }
+        StatementKind::Delete => {
+            let checked = match &statement.body {
+                crate::typed_sql::ir::ParsedStatementBody::Rows(rows) => match &rows.body {
+                    crate::typed_sql::ir::ParsedRowStatementBody::Delete(delete) => {
+                        resolve_delete(delete, catalog)?
+                    }
+                    _ => {
+                        return Err(TypedSqlError::internal(
+                            "delete statement did not carry delete body",
+                        ))
+                    }
+                },
+                crate::typed_sql::ir::ParsedStatementBody::Command(command) => {
+                    match &command.body {
+                        crate::typed_sql::ir::ParsedCommandStatementBody::Delete(delete) => {
+                            resolve_delete(delete, catalog)?
+                        }
+                        _ => {
+                            return Err(TypedSqlError::internal(
+                                "delete command did not carry delete body",
+                            ))
+                        }
+                    }
+                }
+            };
+            Ok(CheckedStatement {
+                kind: StatementKind::Delete,
+                result: statement.result,
+                body: CheckedStatementBody::Delete(checked),
+            })
+        }
+    }
 }
 
 pub(crate) fn resolve_select(
@@ -508,6 +701,310 @@ pub(crate) fn resolve_select(
         offset: checked_offset,
         parameters: inference.parameters(),
     })
+}
+
+fn resolve_insert(insert: &ParsedInsert, catalog: &SchemaCatalog) -> Result<CheckedInsert> {
+    let (target, scope, bindings) = resolve_single_target(&insert.target, catalog)?;
+    let env = RowEnv::new(target.id);
+    let mut inference = InferenceContext::new();
+    let table = catalog.table(bindings[0].table);
+
+    let target_columns = if insert.columns.is_empty() {
+        table
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(index, _)| ColumnId(index))
+            .collect::<Vec<_>>()
+    } else {
+        insert
+            .columns
+            .iter()
+            .map(|column| resolve_target_column(table, column.value.as_str(), column.span))
+            .collect::<Result<Vec<_>>>()?
+    };
+
+    for row in &insert.values {
+        if row.values.len() != target_columns.len() {
+            return Err(TypedSqlError::type_at(
+                format!(
+                    "typed_sql v1 expected {} INSERT values for target columns, but found {}",
+                    target_columns.len(),
+                    row.values.len()
+                ),
+                row.span,
+            ));
+        }
+
+        for (expr, column_id) in row.values.iter().zip(target_columns.iter().copied()) {
+            let resolved = resolve_expr(expr, &scope, &bindings, catalog)?;
+            let meta = analyze_expr(&resolved, &env, catalog, &mut inference)?;
+            let column = catalog.column(bindings[0].table, column_id);
+            constrain_assignment(
+                column.sql_type,
+                column.nullability,
+                &meta,
+                resolved.span(),
+                &mut inference,
+            )?;
+        }
+    }
+
+    let projections = resolve_returning(
+        &insert.returning,
+        &scope,
+        &bindings,
+        &env,
+        catalog,
+        &mut inference,
+    )?;
+    inference.solve()?;
+    let target = checked_target_binding(&target, &env, catalog);
+    let projections = finalize_projections(&projections, &env, catalog, &inference)?;
+
+    Ok(CheckedInsert {
+        target,
+        projections,
+        parameters: inference.parameters(),
+    })
+}
+
+fn resolve_update(update: &ParsedUpdate, catalog: &SchemaCatalog) -> Result<CheckedUpdate> {
+    let (target, scope, bindings) = resolve_single_target(&update.target, catalog)?;
+    let env = RowEnv::new(target.id);
+    let mut inference = InferenceContext::new();
+    let mut assignments = Vec::with_capacity(update.assignments.len());
+
+    for assignment in &update.assignments {
+        let target_column = resolve_assignment_target(assignment, &scope, &bindings, catalog)?;
+        let value = resolve_expr(&assignment.value, &scope, &bindings, catalog)?;
+        let meta = analyze_expr(&value, &env, catalog, &mut inference)?;
+        let column = catalog.column(target_column.table, target_column.column);
+        constrain_assignment(
+            column.sql_type,
+            column.nullability,
+            &meta,
+            value.span(),
+            &mut inference,
+        )?;
+        assignments.push((target_column, value));
+    }
+
+    let filter = resolve_expr(&update.filter, &scope, &bindings, catalog)?;
+    let filter_meta = analyze_expr(&filter, &env, catalog, &mut inference)?;
+    require_predicate(&filter_meta, filter.span())?;
+
+    let projections = resolve_returning(
+        &update.returning,
+        &scope,
+        &bindings,
+        &env,
+        catalog,
+        &mut inference,
+    )?;
+    inference.solve()?;
+
+    let assignments = assignments
+        .into_iter()
+        .map(|(target_column, value)| {
+            Ok(CheckedAssignment {
+                target: target_column,
+                value: finalize_expr(&value, &env, catalog, &inference)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let filter = finalize_expr(&filter, &env, catalog, &inference)?;
+    let projections = finalize_projections(&projections, &env, catalog, &inference)?;
+
+    Ok(CheckedUpdate {
+        target: checked_target_binding(&target, &env, catalog),
+        assignments,
+        filter,
+        projections,
+        parameters: inference.parameters(),
+    })
+}
+
+fn resolve_delete(delete: &ParsedDelete, catalog: &SchemaCatalog) -> Result<CheckedDelete> {
+    let (target, scope, bindings) = resolve_single_target(&delete.target, catalog)?;
+    let env = RowEnv::new(target.id);
+    let mut inference = InferenceContext::new();
+
+    let filter = resolve_expr(&delete.filter, &scope, &bindings, catalog)?;
+    let filter_meta = analyze_expr(&filter, &env, catalog, &mut inference)?;
+    require_predicate(&filter_meta, filter.span())?;
+
+    let projections = resolve_returning(
+        &delete.returning,
+        &scope,
+        &bindings,
+        &env,
+        catalog,
+        &mut inference,
+    )?;
+    inference.solve()?;
+
+    Ok(CheckedDelete {
+        target: checked_target_binding(&target, &env, catalog),
+        filter: finalize_expr(&filter, &env, catalog, &inference)?,
+        projections: finalize_projections(&projections, &env, catalog, &inference)?,
+        parameters: inference.parameters(),
+    })
+}
+
+fn resolve_single_target(
+    from: &crate::typed_sql::ir::ParsedFrom,
+    catalog: &SchemaCatalog,
+) -> Result<(ResolvedBinding, Scope, Vec<ResolvedBinding>)> {
+    let mut next_binding_id = 0u32;
+    let mut scope = Scope::default();
+    let binding = resolve_from(from, catalog, &mut next_binding_id, &mut scope)?;
+    Ok((binding.clone(), scope, vec![binding]))
+}
+
+fn checked_target_binding(
+    binding: &ResolvedBinding,
+    env: &RowEnv,
+    catalog: &SchemaCatalog,
+) -> CheckedBinding {
+    CheckedBinding {
+        id: binding.id,
+        binding_name: binding.binding_name.clone(),
+        table_name: catalog.table(binding.table).display_name(),
+        nullability: env.binding_nullability(binding.id),
+    }
+}
+
+fn resolve_target_column(
+    table: &SchemaTable,
+    column_name: &str,
+    span: SourceSpan,
+) -> Result<ColumnId> {
+    table.columns_by_name.get(column_name).copied().ok_or_else(|| {
+        let available = table
+            .columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        TypedSqlError::resolve_at(
+            format!(
+                "unknown column `{column_name}` on target table `{}`; available columns: {available}",
+                table.display_name()
+            ),
+            span,
+        )
+    })
+}
+
+fn resolve_assignment_target(
+    assignment: &ParsedAssignment,
+    scope: &Scope,
+    bindings: &[ResolvedBinding],
+    catalog: &SchemaCatalog,
+) -> Result<ResolvedColumnRef> {
+    let ParsedAssignmentTarget {
+        span,
+        binding,
+        column,
+    } = &assignment.target;
+    let binding_id = match binding {
+        Some(binding) => scope.lookup(&binding.value, binding.span)?,
+        None => bindings[0].id,
+    };
+    let resolved_binding = &bindings[binding_id.0 as usize];
+    let table = catalog.table(resolved_binding.table);
+    let column_id = resolve_target_column(table, &column.value, column.span)?;
+    Ok(ResolvedColumnRef {
+        binding: binding_id,
+        table: resolved_binding.table,
+        column: column_id,
+        span: *span,
+    })
+}
+
+fn resolve_returning(
+    projections: &[ParsedProjection],
+    scope: &Scope,
+    bindings: &[ResolvedBinding],
+    env: &RowEnv,
+    catalog: &SchemaCatalog,
+    inference: &mut InferenceContext,
+) -> Result<Vec<ResolvedProjection>> {
+    let projections = projections
+        .iter()
+        .map(|projection| resolve_projection(projection, scope, bindings, catalog))
+        .collect::<Result<Vec<_>>>()?;
+    for projection in &projections {
+        if !matches!(projection.output_name, ProjectionOutputName::Explicit(_))
+            && !matches!(projection.expr.node, ResolvedExprNode::Column(_))
+        {
+            return Err(TypedSqlError::type_at(
+                "typed_sql v1 requires computed RETURNING expressions to use `AS alias`",
+                projection.expr.span(),
+            ));
+        }
+        let _ = analyze_expr(&projection.expr, env, catalog, inference)?;
+    }
+    Ok(projections)
+}
+
+fn finalize_projections(
+    projections: &[ResolvedProjection],
+    env: &RowEnv,
+    catalog: &SchemaCatalog,
+    inference: &InferenceContext,
+) -> Result<Vec<CheckedProjection>> {
+    projections
+        .iter()
+        .enumerate()
+        .map(|(ordinal, projection)| {
+            let expr = finalize_expr(&projection.expr, env, catalog, inference)?;
+            Ok(CheckedProjection {
+                ordinal: ordinal as u32,
+                output_name: projection.output_name.render().to_owned(),
+                sql_type: expr.sql_type,
+                nullability: expr.nullability,
+                expr,
+            })
+        })
+        .collect()
+}
+
+fn constrain_assignment(
+    expected: SqlType,
+    expected_nullability: Nullability,
+    actual: &ExprMeta,
+    span: SourceSpan,
+    inference: &mut InferenceContext,
+) -> Result<()> {
+    match actual.value_type {
+        ValueType::Concrete(sql_type) if expected.comparable_to(sql_type) => Ok(()),
+        ValueType::Placeholder(placeholder) => {
+            inference.expect_placeholder(placeholder, expected, expected_nullability, span)
+        }
+        ValueType::IntegerLiteral | ValueType::NumericLiteral | ValueType::StringLiteral
+            if literal_compatible(expected, &actual.value_type) =>
+        {
+            Ok(())
+        }
+        ValueType::Null if expected_nullability == Nullability::Nullable => Ok(()),
+        ValueType::Null => Err(TypedSqlError::type_at(
+            format!(
+                "typed_sql v1 cannot assign NULL to non-null `{}` columns",
+                expected.name()
+            ),
+            span,
+        )),
+        _ => Err(TypedSqlError::type_at(
+            format!(
+                "typed_sql v1 cannot assign {} to `{}` columns",
+                describe_expr_meta(actual),
+                expected.name()
+            ),
+            span,
+        )),
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1020,10 +1517,10 @@ fn constrain_comparison(
             }
         }
         (ValueType::Concrete(expected), ValueType::Placeholder(placeholder)) => {
-            inference.expect_placeholder(*placeholder, *expected, right.nullability, right_span)
+            inference.expect_placeholder(*placeholder, *expected, left.nullability, right_span)
         }
         (ValueType::Placeholder(placeholder), ValueType::Concrete(expected)) => {
-            inference.expect_placeholder(*placeholder, *expected, left.nullability, left_span)
+            inference.expect_placeholder(*placeholder, *expected, right.nullability, left_span)
         }
         (ValueType::Placeholder(left_placeholder), ValueType::Placeholder(right_placeholder)) => {
             inference.relate_placeholders(*left_placeholder, *right_placeholder, span);
@@ -1611,7 +2108,7 @@ mod tests {
 
     fn parse_and_resolve(sql: &str) -> Result<CheckedSelect> {
         let parsed = parse_select(sql)?;
-        resolve_select(&parsed.select, &fixture_catalog())
+        resolve_select(parsed.select.as_ref().expect("select"), &fixture_catalog())
     }
 
     #[test]

@@ -9,6 +9,68 @@ use babar::types;
 use babar::Session;
 use common::{AuthMode, PgContainer};
 
+#[cfg(all(
+    feature = "json",
+    feature = "numeric",
+    feature = "time",
+    feature = "uuid"
+))]
+use rust_decimal::Decimal;
+#[cfg(all(
+    feature = "json",
+    feature = "numeric",
+    feature = "time",
+    feature = "uuid"
+))]
+use serde_json::json;
+#[cfg(all(
+    feature = "json",
+    feature = "numeric",
+    feature = "time",
+    feature = "uuid"
+))]
+use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
+#[cfg(all(
+    feature = "json",
+    feature = "numeric",
+    feature = "time",
+    feature = "uuid"
+))]
+use uuid::Uuid;
+
+#[cfg(all(
+    feature = "json",
+    feature = "numeric",
+    feature = "time",
+    feature = "uuid"
+))]
+type ExtendedTypeRow = (
+    Uuid,
+    Date,
+    Time,
+    PrimitiveDateTime,
+    Option<OffsetDateTime>,
+    serde_json::Value,
+    Option<serde_json::Value>,
+    Decimal,
+);
+
+#[cfg(all(
+    feature = "json",
+    feature = "numeric",
+    feature = "time",
+    feature = "uuid"
+))]
+type ExtendedTypeParams = (
+    Uuid,
+    Date,
+    Time,
+    PrimitiveDateTime,
+    Option<OffsetDateTime>,
+    Option<serde_json::Value>,
+    Decimal,
+);
+
 type OptionalUserFilterParams = (
     Option<i32>,
     Option<i32>,
@@ -132,17 +194,35 @@ fn sql_macro_query_and_command_match_raw_builders() {
 }
 
 #[test]
-fn typed_query_and_command_macros_match_raw_builders() {
+fn public_query_and_command_macros_match_typed_query_alias_and_raw_builders() {
     let macro_query: Query<(i32, bool), (i32, String)> = babar::query!(
-        "SELECT id, name FROM users WHERE id = $1 AND active = $2",
-        params = (int4, bool),
-        row = (int4, text),
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = $active
+    );
+    let alias_query: Query<(i32, bool), (i32, String)> = babar::typed_query!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = $active
     );
     let raw_query: Query<(i32, bool), (i32, String)> = Query::raw(
-        "SELECT id, name FROM users WHERE id = $1 AND active = $2",
+        "SELECT users.id, users.name FROM users AS users WHERE ((users.id = $1) AND (users.active = $2))",
         (int4, bool),
         (int4, text),
     );
+    assert_eq!(macro_query.sql(), alias_query.sql());
+    assert_eq!(macro_query.param_oids(), alias_query.param_oids());
+    assert_eq!(macro_query.output_oids(), alias_query.output_oids());
     assert_eq!(macro_query.sql(), raw_query.sql());
     assert_eq!(macro_query.param_oids(), raw_query.param_oids());
     assert_eq!(macro_query.output_oids(), raw_query.output_oids());
@@ -150,11 +230,31 @@ fn typed_query_and_command_macros_match_raw_builders() {
     assert!(origin.file().ends_with("crates/core/tests/sql_macro.rs"));
 
     let macro_command: Command<(i32, String)> = babar::command!(
-        "INSERT INTO users (id, name) VALUES ($1, $2)",
-        params = (int4, text),
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        INSERT INTO users (id, name) VALUES ($id, $name)
     );
-    let raw_command: Command<(i32, String)> =
-        Command::raw("INSERT INTO users (id, name) VALUES ($1, $2)", (int4, text));
+    let alias_command: Command<(i32, String)> = babar::typed_query!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        INSERT INTO users (id, name) VALUES ($id, $name)
+    );
+    let raw_command: Command<(i32, String)> = Command::raw(
+        "INSERT INTO users AS users (id, name) VALUES ($1, $2)",
+        (int4, text),
+    );
+    assert_eq!(macro_command.sql(), alias_command.sql());
+    assert_eq!(macro_command.param_oids(), alias_command.param_oids());
     assert_eq!(macro_command.sql(), raw_command.sql());
     assert_eq!(macro_command.param_oids(), raw_command.param_oids());
     let origin = macro_command.origin().expect("macro captures origin");
@@ -183,6 +283,48 @@ fn typed_query_macro_matches_raw_builder() {
     assert_eq!(macro_query.output_oids(), raw_query.output_oids());
     let origin = macro_query.origin().expect("macro captures origin");
     assert!(origin.file().ends_with("crates/core/tests/sql_macro.rs"));
+}
+
+#[test]
+fn typed_query_macro_lowers_insert_into_command_builder() {
+    let macro_command: Command<(i32, String, bool)> = babar::typed_query!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
+    );
+    let raw_command: Command<(i32, String, bool)> = Command::raw(
+        "INSERT INTO users AS users (id, name, active) VALUES ($1, $2, $3)",
+        (int4, text, bool),
+    );
+    assert_eq!(macro_command.sql(), raw_command.sql());
+    assert_eq!(macro_command.param_oids(), raw_command.param_oids());
+}
+
+#[test]
+fn typed_query_macro_lowers_update_returning_into_query_builder() {
+    let macro_query: Query<(String, i32), (i32, String)> = babar::typed_query!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        UPDATE users SET name = $name WHERE users.id = $id RETURNING users.id, users.name
+    );
+    let raw_query: Query<(String, i32), (i32, String)> = Query::raw(
+        "UPDATE users AS users SET name = $1 WHERE (users.id = $2) RETURNING users.id, users.name",
+        (text, int4),
+        (int4, text),
+    );
+    assert_eq!(macro_query.sql(), raw_query.sql());
+    assert_eq!(macro_query.param_oids(), raw_query.param_oids());
+    assert_eq!(macro_query.output_oids(), raw_query.output_oids());
 }
 
 babar::schema! {
@@ -241,11 +383,11 @@ babar::schema! {
 }
 
 #[test]
-fn schema_scoped_typed_query_matches_inline_pipeline() {
-    let schema_scoped: Query<(i32,), (i32, String)> = authored_typed_query_schema::typed_query!(
+fn schema_scoped_query_matches_public_inline_pipeline() {
+    let schema_scoped: Query<(i32,), (i32, String)> = authored_typed_query_schema::query!(
         SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = true
     );
-    let inline: Query<(i32,), (i32, String)> = babar::typed_query!(
+    let inline: Query<(i32,), (i32, String)> = babar::query!(
         schema = {
             table public.users {
                 id: int4,
@@ -267,11 +409,36 @@ fn schema_scoped_typed_query_matches_inline_pipeline() {
 }
 
 #[test]
-fn schema_scoped_typed_query_supports_schema_qualified_reuse() {
-    let public_query: Query<(bool,), (String,)> = authored_schema_qualified_query_schema::typed_query!(
+fn schema_scoped_command_matches_public_inline_pipeline() {
+    let schema_scoped: Command<(i32, String, bool)> = authored_typed_query_schema::command!(
+        INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
+    );
+    let inline: Command<(i32, String, bool)> = babar::command!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+            table public.posts {
+                id: int8,
+                author_id: int4,
+                title: text,
+            },
+        },
+        INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
+    );
+
+    assert_eq!(schema_scoped.sql(), inline.sql());
+    assert_eq!(schema_scoped.param_oids(), inline.param_oids());
+}
+
+#[test]
+fn schema_scoped_query_supports_schema_qualified_reuse() {
+    let public_query: Query<(bool,), (String,)> = authored_schema_qualified_query_schema::query!(
         SELECT users.name FROM public.users WHERE users.active = $active ORDER BY users.id
     );
-    let public_inline: Query<(bool,), (String,)> = babar::typed_query!(
+    let public_inline: Query<(bool,), (String,)> = babar::query!(
         schema = {
             table public.users {
                 id: int4,
@@ -290,10 +457,10 @@ fn schema_scoped_typed_query_supports_schema_qualified_reuse() {
     assert_eq!(public_query.param_oids(), public_inline.param_oids());
     assert_eq!(public_query.output_oids(), public_inline.output_oids());
 
-    let reporting_query: Query<(bool,), (String,)> = authored_schema_qualified_query_schema::typed_query!(
+    let reporting_query: Query<(bool,), (String,)> = authored_schema_qualified_query_schema::query!(
         SELECT widgets.title FROM reporting.widgets WHERE widgets.active = $active ORDER BY widgets.id
     );
-    let reporting_inline: Query<(bool,), (String,)> = babar::typed_query!(
+    let reporting_inline: Query<(bool,), (String,)> = babar::query!(
         schema = {
             table public.users {
                 id: int4,
@@ -317,7 +484,7 @@ fn schema_scoped_typed_query_supports_schema_qualified_reuse() {
 }
 
 #[test]
-fn schema_scoped_typed_query_supports_duplicate_table_names_across_sql_schemas() {
+fn schema_scoped_query_supports_duplicate_table_names_across_sql_schemas() {
     assert_eq!(
         authored_duplicate_table_name_schema::public::users::TABLE.schema_name(),
         Some("public")
@@ -327,10 +494,10 @@ fn schema_scoped_typed_query_supports_duplicate_table_names_across_sql_schemas()
         Some("reporting")
     );
 
-    let public_query: Query<(bool,), (String,)> = authored_duplicate_table_name_schema::typed_query!(
+    let public_query: Query<(bool,), (String,)> = authored_duplicate_table_name_schema::query!(
         SELECT users.name FROM public.users WHERE users.active = $active ORDER BY users.id
     );
-    let public_inline: Query<(bool,), (String,)> = babar::typed_query!(
+    let public_inline: Query<(bool,), (String,)> = babar::query!(
         schema = {
             table public.users {
                 id: int4,
@@ -349,10 +516,10 @@ fn schema_scoped_typed_query_supports_duplicate_table_names_across_sql_schemas()
     assert_eq!(public_query.param_oids(), public_inline.param_oids());
     assert_eq!(public_query.output_oids(), public_inline.output_oids());
 
-    let reporting_query: Query<(bool,), (String,)> = authored_duplicate_table_name_schema::typed_query!(
+    let reporting_query: Query<(bool,), (String,)> = authored_duplicate_table_name_schema::query!(
         SELECT users.name FROM reporting.users WHERE users.active = $active ORDER BY users.id
     );
-    let reporting_inline: Query<(bool,), (String,)> = babar::typed_query!(
+    let reporting_inline: Query<(bool,), (String,)> = babar::query!(
         schema = {
             table public.users {
                 id: int4,
@@ -376,8 +543,8 @@ fn schema_scoped_typed_query_supports_duplicate_table_names_across_sql_schemas()
 }
 
 #[test]
-fn typed_query_optional_suffixes_render_sql_for_active_inputs() {
-    let macro_query: Query<OptionalUserFilterParams, (String,)> = babar::typed_query!(
+fn public_query_optional_suffixes_render_sql_for_active_inputs() {
+    let macro_query: Query<OptionalUserFilterParams, (String,)> = babar::query!(
         schema = {
             table public.users {
                 id: int4,
@@ -479,7 +646,7 @@ async fn sql_macro_fragments_execute_against_postgres() {
 }
 
 #[tokio::test]
-async fn typed_query_and_command_macros_execute_against_postgres() {
+async fn public_query_and_command_macros_execute_against_postgres() {
     let Some((_pg, session)) = fresh_session().await else {
         return;
     };
@@ -496,8 +663,14 @@ async fn typed_query_and_command_macros_execute_against_postgres() {
         .expect("create table");
 
     let insert: Command<(i32, String, Option<String>)> = babar::command!(
-        "INSERT INTO typed_macro_users (id, name, note) VALUES ($1, $2, $3)",
-        params = (int4, text, nullable(text)),
+        schema = {
+            table typed_macro_users {
+                id: int4,
+                name: text,
+                note: nullable(text),
+            },
+        },
+        INSERT INTO typed_macro_users (id, name, note) VALUES ($id, $name, $note)
     );
     for row in [
         (1, "alice".to_string(), Some("first".to_string())),
@@ -508,9 +681,17 @@ async fn typed_query_and_command_macros_execute_against_postgres() {
     }
 
     let select: Query<(i32,), (String, Option<String>)> = babar::query!(
-        "SELECT name, note FROM typed_macro_users WHERE id >= $1 ORDER BY id",
-        params = (int4,),
-        row = (text, nullable(text)),
+        schema = {
+            table typed_macro_users {
+                id: int4,
+                name: text,
+                note: nullable(text),
+            },
+        },
+        SELECT typed_macro_users.name, typed_macro_users.note
+        FROM typed_macro_users
+        WHERE typed_macro_users.id >= $min_id
+        ORDER BY typed_macro_users.id
     );
     let rows = session.query(&select, (1_i32,)).await.expect("select rows");
     assert_eq!(
@@ -574,6 +755,215 @@ async fn typed_query_macro_executes_against_postgres() {
 }
 
 #[tokio::test]
+async fn public_command_and_query_dml_macros_execute_against_postgres() {
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    session
+        .simple_query_raw(
+            "CREATE TEMP TABLE typed_dml_users (\
+                id int4 PRIMARY KEY, \
+                name text NOT NULL, \
+                active bool NOT NULL\
+            )",
+        )
+        .await
+        .expect("create table");
+
+    let insert: Command<(i32, String, bool)> = babar::command!(
+        schema = {
+            table typed_dml_users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        INSERT INTO typed_dml_users (id, name, active) VALUES ($id, $name, $active)
+    );
+    let affected = session
+        .execute(&insert, (1_i32, "alice".to_string(), true))
+        .await
+        .expect("insert row");
+    assert_eq!(affected, 1);
+
+    let update: Query<(String, i32), (i32, String)> = babar::command!(
+        schema = {
+            table typed_dml_users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        UPDATE typed_dml_users
+        SET name = $name
+        WHERE typed_dml_users.id = $id
+        RETURNING typed_dml_users.id, typed_dml_users.name
+    );
+    let rows = session
+        .query(&update, ("alice-updated".to_string(), 1_i32))
+        .await
+        .expect("update returning rows");
+    assert_eq!(rows, vec![(1, "alice-updated".to_string())]);
+
+    let delete: Command<(i32,)> = babar::command!(
+        schema = {
+            table typed_dml_users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        DELETE FROM typed_dml_users WHERE typed_dml_users.id = $id
+    );
+    let affected = session
+        .execute(&delete, (1_i32,))
+        .await
+        .expect("delete row");
+    assert_eq!(affected, 1);
+
+    session.close().await.expect("close");
+}
+
+#[cfg(all(
+    feature = "json",
+    feature = "numeric",
+    feature = "time",
+    feature = "uuid"
+))]
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn public_query_macro_supports_prioritized_runtime_sql_types() {
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    session
+        .simple_query_raw(
+            "CREATE TABLE typed_query_extended_types (\
+                id uuid PRIMARY KEY, \
+                event_date date NOT NULL, \
+                event_time time NOT NULL, \
+                created_at timestamp NOT NULL, \
+                published_at timestamptz NULL, \
+                payload json NOT NULL, \
+                meta jsonb NULL, \
+                amount numeric NOT NULL\
+            )",
+        )
+        .await
+        .expect("create table");
+
+    let id = Uuid::parse_str("7f6d0ef5-f095-4c6d-98b8-4d44dc48fb4f").expect("valid uuid");
+    let event_date = Date::from_calendar_date(2024, Month::May, 2).expect("valid date");
+    let event_time = Time::from_hms(9, 30, 15).expect("valid time");
+    let created_at = PrimitiveDateTime::new(event_date, event_time);
+    let published_at = Some(
+        OffsetDateTime::from_unix_timestamp(1_700_000_000)
+            .expect("valid timestamptz")
+            .to_offset(UtcOffset::UTC),
+    );
+    let payload = json!({"kind": "launch", "attempt": 1});
+    let meta = Some(json!({"region": "us-east-1"}));
+    let amount = Decimal::new(12345, 2);
+
+    let insert: Command<ExtendedTypeRow> = Command::raw(
+        "INSERT INTO typed_query_extended_types \
+         (id, event_date, event_time, created_at, published_at, payload, meta, amount) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        (
+            babar::codec::uuid,
+            babar::codec::date,
+            babar::codec::time,
+            babar::codec::timestamp,
+            babar::codec::nullable(babar::codec::timestamptz),
+            babar::codec::json,
+            babar::codec::nullable(babar::codec::jsonb),
+            babar::codec::numeric,
+        ),
+    );
+    let affected = session
+        .execute(
+            &insert,
+            (
+                id,
+                event_date,
+                event_time,
+                created_at,
+                published_at,
+                payload.clone(),
+                meta.clone(),
+                amount,
+            ),
+        )
+        .await
+        .expect("insert row");
+    assert_eq!(affected, 1);
+
+    let query: Query<ExtendedTypeParams, ExtendedTypeRow> = babar::query!(
+        schema = {
+            table public.typed_query_extended_types {
+                id: uuid,
+                event_date: date,
+                event_time: time,
+                created_at: timestamp,
+                published_at: nullable(timestamptz),
+                payload: json,
+                meta: nullable(jsonb),
+                amount: numeric,
+            },
+        },
+        SELECT typed_query_extended_types.id,
+               typed_query_extended_types.event_date,
+               typed_query_extended_types.event_time,
+               typed_query_extended_types.created_at,
+               typed_query_extended_types.published_at,
+               typed_query_extended_types.payload,
+               typed_query_extended_types.meta,
+               typed_query_extended_types.amount
+        FROM public.typed_query_extended_types
+        WHERE typed_query_extended_types.id = $id
+          AND typed_query_extended_types.event_date = $event_date
+          AND typed_query_extended_types.event_time = $event_time
+          AND typed_query_extended_types.created_at = $created_at
+          AND typed_query_extended_types.published_at = $published_at
+          AND typed_query_extended_types.meta = $meta
+          AND typed_query_extended_types.amount = $amount
+    );
+
+    let rows = session
+        .query(
+            &query,
+            (
+                id,
+                event_date,
+                event_time,
+                created_at,
+                published_at,
+                meta.clone(),
+                amount,
+            ),
+        )
+        .await
+        .expect("select rows");
+    assert_eq!(
+        rows,
+        vec![(
+            id,
+            event_date,
+            event_time,
+            created_at,
+            published_at,
+            payload,
+            meta,
+            amount,
+        )]
+    );
+
+    session.close().await.expect("close");
+}
+
+#[tokio::test]
 async fn schema_scoped_typed_query_executes_against_schema_qualified_tables() {
     let Some((_pg, session)) = fresh_session().await else {
         return;
@@ -605,10 +995,10 @@ async fn schema_scoped_typed_query_executes_against_schema_qualified_tables() {
         assert_eq!(affected, 1);
     }
 
-    let schema_scoped: Query<(bool,), (String,)> = authored_runtime_schema::typed_query!(
+    let schema_scoped: Query<(bool,), (String,)> = authored_runtime_schema::query!(
         SELECT widgets.name FROM babar_authored.widgets WHERE widgets.active = $active ORDER BY widgets.id
     );
-    let inline: Query<(bool,), (String,)> = babar::typed_query!(
+    let inline: Query<(bool,), (String,)> = babar::query!(
         schema = {
             table babar_authored.widgets {
                 id: int4,
@@ -628,7 +1018,7 @@ async fn schema_scoped_typed_query_executes_against_schema_qualified_tables() {
         .expect("select active rows");
     assert_eq!(rows, vec![("alpha".to_string(),), ("gamma".to_string(),)]);
 
-    let lookup: Query<(i32,), (String,)> = authored_runtime_schema::typed_query!(
+    let lookup: Query<(i32,), (String,)> = authored_runtime_schema::query!(
         SELECT widgets.name FROM babar_authored.widgets WHERE widgets.id = $widget_id
     );
     let rows = session

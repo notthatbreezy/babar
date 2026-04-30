@@ -2,8 +2,13 @@ use babar::query::Query;
 
 fn main() {
     let _query: Query<(i32,), (i32, String)> = babar::query!(
-        "SELECT $1::int4 AS id, 'ok'::text AS name",
-        params = (babar::codec::int4,),
-        row = (babar::codec::int4, babar::codec::text),
+        schema = {
+            table public.verify_live_users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        SELECT verify_live_users.id, verify_live_users.name FROM public.verify_live_users WHERE verify_live_users.id = $id
     );
 }

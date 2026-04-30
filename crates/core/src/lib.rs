@@ -1,14 +1,16 @@
 //! `babar` — a typed, async PostgreSQL driver for Tokio that speaks the wire
 //! protocol directly.
 //!
-//! `babar` deliberately keeps the API explicit:
+//! `babar` centers application queries around schema-aware typed SQL:
 //!
-//! - SQL is a typed value (`Query`, `Command`, `PreparedQuery`, ...).
-//! - Query codecs are imported values (`int4`, `text`, `uuid`, ...); `#[derive(Codec)]`
-//!   infers common struct fields and accepts `#[pg(codec = "...")]` overrides.
+//! - [`query!`] / [`command!`] are the primary typed SQL entrypoints.
+//! - [`schema!`] produces reusable authored schema modules with local
+//!   `query!` / `command!` wrappers.
+//! - [`Query::raw`](query::Query::raw) / [`Command::raw`](query::Command::raw)
+//!   remain explicit advanced fallbacks for unsupported extended-protocol SQL.
 //! - A background task owns the socket so public API calls remain
 //!   cancellation-safe.
-//! - Errors retain SQL context, SQLSTATE metadata, and `sql!` callsite origin.
+//! - Errors retain SQL context, SQLSTATE metadata, and macro callsite origin.
 //!
 //! ## Feature highlights
 //!
@@ -42,9 +44,19 @@
 //! ## Quick start
 //!
 //! ```no_run
-//! use babar::codec::{int4, text};
+//! use babar::codec::{int4, nullable, text};
 //! use babar::query::{Command, Query};
 //! use babar::{Config, Session};
+//!
+//! babar::schema! {
+//!     mod app_schema {
+//!         table users {
+//!             id: primary_key(int4),
+//!             name: text,
+//!             note: nullable(text),
+//!         },
+//!     }
+//! }
 //!
 //! #[tokio::main(flavor = "current_thread")]
 //! async fn main() -> babar::Result<()> {
@@ -54,100 +66,60 @@
 //!     let session = Session::connect(cfg).await?;
 //!
 //!     let create: Command<()> = Command::raw(
-//!         "CREATE TEMP TABLE users (id int4 PRIMARY KEY, name text NOT NULL)",
+//!         "CREATE TEMP TABLE users (
+//!              id int4 PRIMARY KEY,
+//!              name text NOT NULL,
+//!              note text
+//!          )",
 //!         (),
 //!     );
 //!     session.execute(&create, ()).await?;
 //!
-//!     let insert: Command<(i32, String)> = Command::raw(
-//!         "INSERT INTO users (id, name) VALUES ($1, $2)",
-//!         (int4, text),
+//!     let insert: Command<(i32, String, Option<String>)> = app_schema::command!(
+//!         INSERT INTO users (id, name, note) VALUES ($id, $name, $note)
 //!     );
-//!     session.execute(&insert, (1, "Ada".to_string())).await?;
+//!     session
+//!         .execute(&insert, (1, "Ada".to_string(), Some("first".to_string())))
+//!         .await?;
 //!
-//!     let select: Query<(), (i32, String)> = Query::raw(
-//!         "SELECT id, name FROM users ORDER BY id",
-//!         (),
-//!         (int4, text),
+//!     let select: Query<(), (i32, String, Option<String>)> = app_schema::query!(
+//!         SELECT users.id, users.name, users.note FROM users ORDER BY users.id
 //!     );
 //!     let rows = session.query(&select, ()).await?;
-//!     assert_eq!(rows, vec![(1, "Ada".to_string())]);
+//!     assert_eq!(
+//!         rows,
+//!         vec![(1, "Ada".to_string(), Some("first".to_string()))]
+//!     );
 //!
 //!     session.close().await?;
 //!     Ok(())
 //! }
 //! ```
 //!
-//! ## `sql!` macro
+//! ## `query!`, `command!`, and `typed_query!`
 //!
-//! [`sql!`] builds a [`query::Fragment`] from SQL that uses named placeholders
-//! like `$id` or `$name`, captures the macro callsite in [`query::Origin`], and
-//! rewrites placeholders into PostgreSQL's native `$1`, `$2`, ... numbering.
-//!
-//! ```
-//! use babar::codec::{int4, text};
-//! use babar::query::Query;
-//! use babar::sql;
-//!
-//! let q: Query<(i32, String), (i32, String)> = sql!(
-//!     "SELECT id, name FROM users WHERE id = $id OR owner = $name OR name = $name",
-//!     id = int4,
-//!     name = text,
-//! )
-//! .query((int4, text));
-//!
-//! assert_eq!(
-//!     q.sql(),
-//!     "SELECT id, name FROM users WHERE id = $1 OR owner = $2 OR name = $2"
-//! );
-//! ```
-//!
-//! ## `query!`, `command!`, and `typed_query!` macros
-//!
-//! [`query!`] and [`command!`] build ordinary [`query::Query`] /
-//! [`query::Command`] values directly from positional SQL plus a narrow,
-//! explicit codec DSL:
-//!
-//! - scalars: `int2`, `int4`, `int8`, `bool`, `text`, `varchar`, `bytea`
-//! - nullable scalars: `nullable(...)`
-//! - tuples of the above, including `()` for zero parameters
+//! [`query!`] and [`command!`] are the primary typed SQL entrypoints. They read
+//! schema facts from either an inline `schema = { ... }` block or a local
+//! schema-scoped wrapper produced by [`schema!`].
 //!
 //! Compile-time verification is optional and online-only in v0.1:
 //!
 //! - `BABAR_DATABASE_URL` takes precedence over `DATABASE_URL`
-//! - [`query!`] / [`command!`] verify declared parameter and row shapes against a
-//!   live PostgreSQL server when either variable is set during macro expansion
-//! - [`sql!`] reuses the same probe for parameter metadata only, and only when
-//!   every binding codec is in the verifiable subset
+//! - schema-aware `SELECT` statements from [`query!`], [`typed_query!`], and
+//!   schema-scoped wrappers verify referenced schema facts, parameters, and
+//!   returned columns against a live PostgreSQL server when either variable is
+//!   set during macro expansion
+//! - non-`RETURNING` typed commands and explicit-`RETURNING` DML are not yet
+//!   probe-verified through that path
 //! - without configuration, the macros still compile and emit the same runtime
 //!   statement values
 //! - there is no offline cache or generated schema snapshot in v0.1
 //!
-//! ```
-//! use babar::codec::{int4, text};
-//!
-//! let lookup = babar::query!(
-//!     "SELECT id, name FROM users WHERE id = $1",
-//!     params = (int4,),
-//!     row = (int4, text),
-//! );
-//! assert_eq!(lookup.sql(), "SELECT id, name FROM users WHERE id = $1");
-//!
-//! let insert = babar::command!(
-//!     "INSERT INTO users (id, name) VALUES ($1, $2)",
-//!     params = (int4, text),
-//! );
-//! assert_eq!(insert.sql(), "INSERT INTO users (id, name) VALUES ($1, $2)");
-//! ```
-//!
-//! [`typed_query!`] is the greenfield typed-SQL entrypoint. It accepts authored
-//! schema facts that the proc macro can read directly at expansion time. For
-//! one-off queries that can still be an inline schema DSL:
-//!
+//! One-off examples and tests can still use inline schema declarations:
 //! ```
 //! use babar::query::Query;
 //!
-//! let lookup: Query<(i32,), (i32, String)> = babar::typed_query!(
+//! let lookup: Query<(i32,), (i32, String)> = babar::query!(
 //!     schema = {
 //!         table public.users {
 //!             id: int4,
@@ -164,10 +136,14 @@
 //! );
 //! ```
 //!
+//! [`typed_query!`] remains available as a compatibility alias to the same
+//! schema-aware compiler during this transition, but [`query!`] / [`command!`]
+//! are the primary surface.
+//!
 //! For reusable authored declarations, [`schema!`] defines Rust-visible schema
-//! modules with multiple tables and narrow field markers, plus a local
-//! `typed_query!` wrapper. This schema-scoped wrapper is the recommended v0.1
-//! pattern when multiple queries share one schema module:
+//! modules with multiple tables and narrow field markers, plus local `query!` /
+//! `command!` wrappers. This schema-scoped wrapper is the recommended v0.1
+//! pattern when multiple statements share one schema module:
 //!
 //! ```
 //! use babar::query::Query;
@@ -193,7 +169,7 @@
 //! // app_schema::public::users::id()
 //! // app_schema::reporting::users::id()
 //!
-//! let lookup: Query<(i32,), (i32, String)> = app_schema::typed_query!(
+//! let lookup: Query<(i32,), (i32, String)> = app_schema::query!(
 //!     SELECT users.id, users.name FROM users WHERE users.id = $id
 //! );
 //! assert_eq!(
@@ -212,12 +188,35 @@
 //!
 //! Authored declarations currently accept `bool`, `bytea`, `varchar`, `text`,
 //! `int2`, `int4`, `int8`, `float4`, `float8`, `uuid`, `date`, `time`,
-//! `timestamp`, `timestamptz`, `json`, `jsonb`, and `numeric`. The current
-//! typed-query runtime lowering path for query parameters and projected rows is
-//! narrower: `bool`, `bytea`, `varchar`, `text`, `int2`, `int4`, `int8`,
-//! `float4`, and `float8`. Wider authored types are still useful as schema
-//! facts, but using them in `typed_query!` currently produces a compile-time
-//! diagnostic naming the unsupported SQL type.
+//! `timestamp`, `timestamptz`, `json`, `jsonb`, and `numeric`. Schema-aware
+//! typed SQL lowers inferred parameters and projected rows across that same
+//! family, including nullable variants; the matching babar feature must still
+//! be enabled for optional families such as `uuid`, `time`, `json`, and
+//! `numeric`.
+//!
+//! ## `sql!` macro
+//!
+//! [`sql!`] is the lower-level fragment builder. It remains useful when you
+//! want explicit named-placeholder composition or fragment nesting, but it is a
+//! secondary surface relative to schema-aware [`query!`] / [`command!`].
+//!
+//! ```
+//! use babar::codec::{int4, text};
+//! use babar::query::Query;
+//! use babar::sql;
+//!
+//! let q: Query<(i32, String), (i32, String)> = sql!(
+//!     "SELECT id, name FROM users WHERE id = $id OR owner = $name OR name = $name",
+//!     id = int4,
+//!     name = text,
+//! )
+//! .query((int4, text));
+//!
+//! assert_eq!(
+//!     q.sql(),
+//!     "SELECT id, name FROM users WHERE id = $1 OR owner = $2 OR name = $2"
+//! );
+//! ```
 //!
 //! ## TLS
 //!
@@ -273,6 +272,27 @@ pub mod tls;
 pub mod transaction;
 pub mod types;
 
+/// Build a schema-aware typed statement from SQL.
+///
+/// Start with either `schema = { ... }` for inline examples/tests or use a
+/// schema-scoped wrapper such as `app_schema::query!(...)`. [`typed_query!`]
+/// remains available as a compatibility alias to the same compiler.
+pub use babar_macros::query;
+
+/// Build a schema-aware typed command from SQL.
+///
+/// Non-`RETURNING` statements lower to [`query::Command`]. Statements with an
+/// explicit `RETURNING` clause lower to the same query-shaped row contract as
+/// other typed SQL in this release. Use inline `schema = { ... }` blocks for
+/// small examples/tests or schema-scoped wrappers such as `app_schema::command!(...)`.
+pub use babar_macros::command;
+
+/// Declare an authored schema module with reusable table and column symbols.
+///
+/// The generated module exposes `SCHEMA`, table/column markers, and local
+/// `query!` / `command!` wrappers that reuse the authored schema facts.
+pub use babar_macros::schema;
+
 /// Build a [`query::Fragment`] from SQL that uses named placeholders.
 ///
 /// Placeholders use the v0.1 syntax `$name`. Each placeholder must have a
@@ -314,7 +334,15 @@ pub mod types;
 ///     "INSERT INTO users (id, name) VALUES ($1, $2)"
 /// );
 /// ```
-pub use babar_macros::{command, query, schema, sql, typed_query, Codec};
+pub use babar_macros::sql;
+
+/// Compatibility alias for the schema-aware typed SQL compiler.
+///
+/// Prefer [`query!`] / [`command!`] for new code; this alias remains available
+/// to smooth migration during the typed-SQL surface transition.
+pub use babar_macros::typed_query;
+
+pub use babar_macros::Codec;
 
 #[doc(hidden)]
 pub mod __private {

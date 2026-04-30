@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use proc_macro::TokenStream;
 use proc_macro2::{TokenStream as TokenStream2, TokenTree};
@@ -7,9 +7,20 @@ use syn::parse::{Parse, ParseStream};
 use syn::{braced, parenthesized, parse_macro_input, token, Error, Ident, Result, Token};
 
 use super::lower;
+use super::lower::LoweredQuery;
+use super::parse_typed_sql_source;
 use super::public_input::PublicSqlInput;
-use super::resolver::{self, Nullability, SchemaCatalog, SchemaColumn, SchemaTable, SqlType};
-use super::{TypedSqlError, TypedSqlErrorKind};
+use super::resolver::{
+    self, CheckedSelect, CheckedStatement, CheckedStatementBody, Nullability, SchemaCatalog,
+    SchemaColumn, SchemaTable, SqlType,
+};
+use super::{
+    ParsedExpr, ParsedSql, StatementKind, StatementResultKind, TypedSqlError, TypedSqlErrorKind,
+};
+use crate::verify::{
+    declared_type_for_sql_type, verify_typed_statement_against_probe, ReferencedColumn,
+    ReferencedTable,
+};
 
 mod kw {
     syn::custom_keyword!(schema);
@@ -17,34 +28,250 @@ mod kw {
     syn::custom_keyword!(table);
 }
 
-pub(crate) fn expand_typed_query(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as TypedQueryInput);
-    match compile_typed_query(input) {
+pub(crate) fn expand_query(input: TokenStream) -> TokenStream {
+    let input = match syn::parse::<TypedQueryInput>(input) {
+        Ok(input) => input,
+        Err(err) => {
+            return rewrite_entrypoint_error(err, MacroEntrypoint::Query)
+                .into_compile_error()
+                .into()
+        }
+    };
+    match compile_typed_query(input, MacroEntrypoint::Query) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.into_compile_error().into(),
     }
 }
 
-fn compile_typed_query(input: TypedQueryInput) -> Result<proc_macro2::TokenStream> {
-    let TypedQueryInput {
-        source_kind,
-        schema,
-        sql,
-    } = input;
-    let catalog = schema.into_catalog()?;
-    let parsed = sql.parse_select()?;
-    let checked = resolver::resolve_select(&parsed.select, &catalog)
-        .map_err(|err| sql.syn_error(decorate_error(source_kind, err)))?;
-    let lowered = lower::lower_select(&parsed, &checked)
-        .map_err(|err| sql.syn_error(decorate_error(source_kind, err)))?;
-    Ok(lowered.emit_query_tokens())
+pub(crate) fn expand_command(input: TokenStream) -> TokenStream {
+    let input = match syn::parse::<TypedQueryInput>(input) {
+        Ok(input) => input,
+        Err(err) => {
+            return rewrite_entrypoint_error(err, MacroEntrypoint::Command)
+                .into_compile_error()
+                .into()
+        }
+    };
+    match compile_typed_query(input, MacroEntrypoint::Command) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.into_compile_error().into(),
+    }
 }
 
-struct TypedQueryInput {
+pub(crate) fn expand_typed_query(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as TypedQueryInput);
+    match compile_typed_query(input, MacroEntrypoint::TypedQuery) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.into_compile_error().into(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MacroEntrypoint {
+    Query,
+    Command,
+    TypedQuery,
+}
+
+impl MacroEntrypoint {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Query => "query!",
+            Self::Command => "command!",
+            Self::TypedQuery => "typed_query!",
+        }
+    }
+}
+
+fn compile_typed_query(
+    input: TypedQueryInput,
+    entrypoint: MacroEntrypoint,
+) -> Result<proc_macro2::TokenStream> {
+    let front_door = input.into_front_door()?;
+    let parsed = front_door.parse_with(parse_typed_sql_source)?;
+    let checked = resolver::resolve_statement(&parsed.statement, front_door.catalog())
+        .map_err(|err| front_door.syn_error(err))?;
+    enforce_entrypoint_contract(&front_door, &checked, entrypoint)?;
+    let lowered =
+        lower::lower_statement(&parsed, &checked).map_err(|err| front_door.syn_error(err))?;
+    if let (CheckedStatementBody::Select(select), Some(parsed_select)) =
+        (&checked.body, parsed.select.as_ref())
+    {
+        verify_live_schema(&front_door, &parsed, select, &lowered)
+            .map_err(|err| front_door.sql.syn_error_message(err))?;
+        debug_assert_eq!(parsed_select.projections.len(), select.projections.len());
+    }
+    Ok(match checked.result {
+        StatementResultKind::Rows => lowered.emit_query_tokens(),
+        StatementResultKind::Command => lowered.emit_command_tokens(),
+    })
+}
+
+fn enforce_entrypoint_contract(
+    front_door: &TypedSqlFrontDoor,
+    checked: &CheckedStatement,
+    entrypoint: MacroEntrypoint,
+) -> Result<()> {
+    let message = match entrypoint {
+        MacroEntrypoint::Query if checked.kind != StatementKind::Query => Some(
+            "query! now only accepts schema-aware SELECT statements; use command! for typed INSERT, UPDATE, or DELETE statements",
+        ),
+        MacroEntrypoint::Command if checked.kind == StatementKind::Query => Some(
+            "command! now accepts only schema-aware INSERT, UPDATE, or DELETE statements; use query! for typed SELECT statements",
+        ),
+        _ => None,
+    };
+
+    match message {
+        Some(message) => Err(front_door.sql.syn_error_message(message)),
+        None => Ok(()),
+    }
+}
+
+fn rewrite_entrypoint_error(err: Error, entrypoint: MacroEntrypoint) -> Error {
+    let rewritten = err
+        .to_string()
+        .replace("typed_query!", entrypoint.name())
+        .replace(
+            "typed_query schema",
+            &format!("{} schema", entrypoint.name()),
+        )
+        .replace("typed_query SQL", &format!("{} SQL", entrypoint.name()));
+    Error::new(err.span(), rewritten)
+}
+
+fn verify_live_schema(
+    front_door: &TypedSqlFrontDoor,
+    parsed: &ParsedSql,
+    checked: &CheckedSelect,
+    lowered: &LoweredQuery,
+) -> std::result::Result<(), crate::verify::VerificationError> {
+    let binding_tables = checked
+        .bindings
+        .iter()
+        .map(|binding| (binding.binding_name.as_str(), binding.table_name.as_str()))
+        .collect::<HashMap<_, _>>();
+    let referenced_tables =
+        collect_referenced_tables(parsed, &binding_tables, front_door.catalog());
+    let params = lowered
+        .parameters
+        .iter()
+        .map(|parameter| declared_type_for_sql_type(parameter.sql_type))
+        .collect::<Vec<_>>();
+    let rows = lowered
+        .columns
+        .iter()
+        .map(|column| declared_type_for_sql_type(column.sql_type))
+        .collect::<Vec<_>>();
+    verify_typed_statement_against_probe(&lowered.sql, &referenced_tables, &params, Some(&rows))
+}
+
+fn collect_referenced_tables(
+    parsed: &ParsedSql,
+    binding_tables: &HashMap<&str, &str>,
+    catalog: &SchemaCatalog,
+) -> Vec<ReferencedTable> {
+    let mut columns_by_table = BTreeMap::<String, BTreeSet<String>>::new();
+    for table_name in binding_tables.values() {
+        columns_by_table
+            .entry((**table_name).to_owned())
+            .or_default();
+    }
+    if let Some(select) = parsed.select.as_ref() {
+        collect_referenced_columns_select(select, binding_tables, &mut columns_by_table);
+    }
+    columns_by_table
+        .into_iter()
+        .map(|(table_name, column_names)| ReferencedTable {
+            columns: column_names
+                .into_iter()
+                .map(|column_name| {
+                    let column = catalog
+                        .lookup_column_by_display_name(&table_name, &column_name)
+                        .expect("resolved referenced column should exist in schema catalog");
+                    ReferencedColumn {
+                        name: column_name,
+                        type_: declared_type_for_sql_type(column.sql_type()),
+                        nullability: column.nullability(),
+                    }
+                })
+                .collect(),
+            name: table_name,
+        })
+        .collect()
+}
+
+fn collect_referenced_columns_select(
+    select: &super::ParsedSelect,
+    binding_tables: &HashMap<&str, &str>,
+    columns_by_table: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    for projection in &select.projections {
+        collect_referenced_columns_expr(&projection.expr, binding_tables, columns_by_table);
+    }
+    if let Some(filter) = &select.filter {
+        collect_referenced_columns_expr(filter, binding_tables, columns_by_table);
+    }
+    for join in &select.joins {
+        collect_referenced_columns_expr(&join.on, binding_tables, columns_by_table);
+    }
+    for order_by in &select.order_by {
+        collect_referenced_columns_expr(&order_by.expr, binding_tables, columns_by_table);
+    }
+    if let Some(limit) = &select.limit {
+        collect_referenced_columns_expr(&limit.expr, binding_tables, columns_by_table);
+    }
+    if let Some(offset) = &select.offset {
+        collect_referenced_columns_expr(&offset.expr, binding_tables, columns_by_table);
+    }
+}
+
+fn collect_referenced_columns_expr(
+    expr: &ParsedExpr,
+    binding_tables: &HashMap<&str, &str>,
+    columns_by_table: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    match expr {
+        ParsedExpr::Column(column) => {
+            if let Some(table_name) = binding_tables.get(column.binding.value.as_str()) {
+                columns_by_table
+                    .entry((**table_name).to_owned())
+                    .or_default()
+                    .insert(column.column.value.clone());
+            }
+        }
+        ParsedExpr::OptionalGroup(group) => {
+            collect_referenced_columns_expr(&group.expr, binding_tables, columns_by_table);
+        }
+        ParsedExpr::Unary { expr, .. } | ParsedExpr::IsNull { expr, .. } => {
+            collect_referenced_columns_expr(expr, binding_tables, columns_by_table);
+        }
+        ParsedExpr::Binary { left, right, .. } => {
+            collect_referenced_columns_expr(left, binding_tables, columns_by_table);
+            collect_referenced_columns_expr(right, binding_tables, columns_by_table);
+        }
+        ParsedExpr::BoolChain { terms, .. } => {
+            for term in terms {
+                collect_referenced_columns_expr(term, binding_tables, columns_by_table);
+            }
+        }
+        ParsedExpr::Placeholder(_) | ParsedExpr::Literal(_) => {}
+    }
+}
+
+struct TypedSqlFrontDoorInput {
     source_kind: SchemaSourceKind,
     schema: SchemaInput,
     sql: PublicSqlInput,
 }
+
+struct TypedSqlFrontDoor {
+    source_kind: SchemaSourceKind,
+    catalog: SchemaCatalog,
+    sql: PublicSqlInput,
+}
+
+struct TypedQueryInput(TypedSqlFrontDoorInput);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SchemaSourceKind {
@@ -52,7 +279,7 @@ enum SchemaSourceKind {
     AuthoredBridge,
 }
 
-impl Parse for TypedQueryInput {
+impl Parse for TypedSqlFrontDoorInput {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let source_kind = if input.peek(kw::schema) {
             input.parse::<kw::schema>()?;
@@ -77,26 +304,63 @@ impl Parse for TypedQueryInput {
     }
 }
 
-fn decorate_error(source_kind: SchemaSourceKind, mut err: TypedSqlError) -> TypedSqlError {
-    if source_kind == SchemaSourceKind::AuthoredBridge {
-        match err.kind {
-            TypedSqlErrorKind::Resolve => {
-                err.message = format!("authored external schema lookup failed: {}", err.message);
-            }
-            TypedSqlErrorKind::Unsupported
-                if err
-                    .message
-                    .contains("runtime lowering does not yet support SQL type") =>
-            {
-                err.message = format!(
-                    "authored external schema declarations can express this type, but {}",
-                    err.message
-                );
-            }
-            _ => {}
-        }
+impl TypedSqlFrontDoorInput {
+    fn into_front_door(self) -> Result<TypedSqlFrontDoor> {
+        Ok(TypedSqlFrontDoor {
+            source_kind: self.source_kind,
+            catalog: self.schema.into_catalog()?,
+            sql: self.sql,
+        })
     }
-    err
+}
+
+impl TypedSqlFrontDoor {
+    fn catalog(&self) -> &SchemaCatalog {
+        &self.catalog
+    }
+
+    fn parse_with<T>(&self, parse: impl FnOnce(super::SqlSource) -> super::Result<T>) -> Result<T> {
+        self.sql.parse_with(parse)
+    }
+
+    fn syn_error(&self, err: TypedSqlError) -> Error {
+        self.sql.syn_error(self.decorate_error(err))
+    }
+
+    fn decorate_error(&self, mut err: TypedSqlError) -> TypedSqlError {
+        if self.source_kind == SchemaSourceKind::AuthoredBridge {
+            match err.kind {
+                TypedSqlErrorKind::Resolve => {
+                    err.message =
+                        format!("authored external schema lookup failed: {}", err.message);
+                }
+                TypedSqlErrorKind::Unsupported
+                    if err
+                        .message
+                        .contains("runtime lowering does not yet support SQL type") =>
+                {
+                    err.message = format!(
+                        "authored external schema declarations can express this type, but {}",
+                        err.message
+                    );
+                }
+                _ => {}
+            }
+        }
+        err
+    }
+}
+
+impl TypedQueryInput {
+    fn into_front_door(self) -> Result<TypedSqlFrontDoor> {
+        self.0.into_front_door()
+    }
+}
+
+impl Parse for TypedQueryInput {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        Ok(Self(input.parse()?))
+    }
 }
 
 fn trim_optional_trailing_comma(tokens: TokenStream2) -> TokenStream2 {
@@ -366,7 +630,7 @@ mod tests {
     use quote::quote;
     use syn::parse2;
 
-    use super::TypedQueryInput;
+    use super::{compile_typed_query, MacroEntrypoint, TypedQueryInput};
 
     #[test]
     fn typed_query_accepts_trailing_comma_after_sql_tokens() {
@@ -441,6 +705,94 @@ mod tests {
 
         assert!(err.to_string().contains(
             "cannot mix inline `schema = { ... }` with the authored external schema bridge"
+        ));
+    }
+
+    #[test]
+    fn public_command_keeps_non_returning_dml_command_shaped() {
+        let tokens = compile_typed_query(
+            parse2::<TypedQueryInput>(quote! {
+                schema = {
+                    table public.users {
+                        id: int4,
+                        name: text,
+                    },
+                },
+                INSERT INTO users (id, name) VALUES ($id, $name)
+            })
+            .expect("typed command input parses"),
+            MacroEntrypoint::Command,
+        )
+        .expect("non-returning command! should compile");
+
+        assert!(tokens
+            .to_string()
+            .contains(":: babar :: query :: Command :: from_fragment"));
+    }
+
+    #[test]
+    fn public_command_lowers_returning_dml_through_query_path() {
+        let tokens = compile_typed_query(
+            parse2::<TypedQueryInput>(quote! {
+                schema = {
+                    table public.users {
+                        id: int4,
+                        name: text,
+                    },
+                },
+                UPDATE users SET name = $name WHERE users.id = $id RETURNING users.id, users.name
+            })
+            .expect("typed command input parses"),
+            MacroEntrypoint::Command,
+        )
+        .expect("returning command! should compile");
+
+        assert!(tokens
+            .to_string()
+            .contains(":: babar :: query :: Query :: from_fragment"));
+    }
+
+    #[test]
+    fn public_query_rejects_write_statements() {
+        let err = compile_typed_query(
+            parse2::<TypedQueryInput>(quote! {
+                schema = {
+                    table public.users {
+                        id: int4,
+                        name: text,
+                    },
+                },
+                DELETE FROM users WHERE users.id = $id
+            })
+            .expect("typed query input parses"),
+            MacroEntrypoint::Query,
+        )
+        .expect_err("query! should reject write statements");
+
+        assert!(err
+            .to_string()
+            .contains("query! now only accepts schema-aware SELECT statements"));
+    }
+
+    #[test]
+    fn public_command_rejects_select_statements() {
+        let err = compile_typed_query(
+            parse2::<TypedQueryInput>(quote! {
+                schema = {
+                    table public.users {
+                        id: int4,
+                        name: text,
+                    },
+                },
+                SELECT users.id, users.name FROM users
+            })
+            .expect("typed command input parses"),
+            MacroEntrypoint::Command,
+        )
+        .expect_err("command! should reject select statements");
+
+        assert!(err.to_string().contains(
+            "command! now accepts only schema-aware INSERT, UPDATE, or DELETE statements"
         ));
     }
 }

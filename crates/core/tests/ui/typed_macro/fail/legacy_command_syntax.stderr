@@ -1,0 +1,5 @@
+error: `command!` no longer accepts the old explicit-codec form `command!("...", params = ...)`; use schema-aware typed SQL (`command!(schema = { ... }, INSERT/UPDATE/DELETE ...)`). During this transition, `typed_query!` remains the compatibility alias and authored schema modules expose schema-scoped wrappers like `app_schema::command!(...)`. For unsupported statements or migration-time fallbacks, use `Query::raw` / `Command::raw`.
+ --> tests/ui/typed_macro/fail/legacy_command_syntax.rs:5:9
+  |
+5 |         "INSERT INTO users (id, name) VALUES ($1, $2)",
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

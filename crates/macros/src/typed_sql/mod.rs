@@ -12,24 +12,45 @@ use std::borrow::Cow;
 pub(crate) use ir::*;
 #[allow(unused_imports)]
 pub(crate) use public_input::PublicSqlInput;
-pub(crate) use public_schema::expand_typed_query;
+pub(crate) use public_schema::{expand_command, expand_query, expand_typed_query};
+pub(crate) use resolver::{Nullability, SqlType};
 pub(crate) use source::SqlSource;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ParsedSql {
     pub(crate) source: SqlSource,
-    pub(crate) select: ParsedSelect,
+    pub(crate) statement: ParsedStatement,
+    pub(crate) select: Option<ParsedSelect>,
+}
+
+impl ParsedSql {
+    fn new(source: SqlSource, statement: ParsedStatement) -> Self {
+        let select = statement.as_select().cloned();
+        Self {
+            source,
+            statement,
+            select,
+        }
+    }
+}
+
+pub(crate) fn parse_typed_sql(sql: &str) -> Result<ParsedSql> {
+    let source = source::canonicalize(sql)?;
+    parse_typed_sql_source(source)
+}
+
+pub(crate) fn parse_typed_sql_source(source: SqlSource) -> Result<ParsedSql> {
+    let statement = parse_backend::parse_statement(&source)?;
+    let statement = normalize::normalize_statement(&source, &statement)?;
+    Ok(ParsedSql::new(source, statement))
 }
 
 pub(crate) fn parse_select(sql: &str) -> Result<ParsedSql> {
-    let source = source::canonicalize(sql)?;
-    parse_select_source(source)
+    parse_typed_sql(sql)
 }
 
 pub(crate) fn parse_select_source(source: SqlSource) -> Result<ParsedSql> {
-    let query = parse_backend::parse_select(&source)?;
-    let select = normalize::normalize_select(&source, &query)?;
-    Ok(ParsedSql { source, select })
+    parse_typed_sql_source(source)
 }
 
 pub(crate) type Result<T, E = TypedSqlError> = std::result::Result<T, E>;
@@ -317,18 +338,19 @@ mod tests {
             "SELECT u.id, p.name AS pet_name FROM users AS u INNER JOIN pets AS p ON p.owner_id = u.id WHERE u.id = $user_id AND p.deleted_at IS NULL ORDER BY p.name DESC NULLS LAST LIMIT 10 OFFSET $skip",
         )
         .expect("query parses");
+        let select = parsed.select.as_ref().expect("select");
 
-        assert_eq!(parsed.select.projections.len(), 2);
-        assert_eq!(parsed.select.from.binding_name.value, "u");
-        assert_eq!(parsed.select.joins.len(), 1);
-        assert_eq!(parsed.select.joins[0].kind, JoinKind::Inner);
-        assert_eq!(parsed.select.order_by.len(), 1);
-        assert_eq!(parsed.select.order_by[0].direction, OrderDirection::Desc);
-        assert_eq!(parsed.select.order_by[0].nulls, Some(NullsOrder::Last));
-        assert!(parsed.select.limit.is_some());
-        assert!(parsed.select.offset.is_some());
+        assert_eq!(select.projections.len(), 2);
+        assert_eq!(select.from.binding_name.value, "u");
+        assert_eq!(select.joins.len(), 1);
+        assert_eq!(select.joins[0].kind, JoinKind::Inner);
+        assert_eq!(select.order_by.len(), 1);
+        assert_eq!(select.order_by[0].direction, OrderDirection::Desc);
+        assert_eq!(select.order_by[0].nulls, Some(NullsOrder::Last));
+        assert!(select.limit.is_some());
+        assert!(select.offset.is_some());
 
-        let ParsedExpr::BoolChain { op, terms, .. } = parsed.select.filter.expect("where clause")
+        let ParsedExpr::BoolChain { op, terms, .. } = select.filter.clone().expect("where clause")
         else {
             panic!("expected bool chain")
         };
@@ -348,12 +370,31 @@ mod tests {
     }
 
     #[test]
+    fn select_entrypoints_record_statement_metadata() {
+        let parsed =
+            parse_typed_sql("SELECT users.id, users.name FROM users").expect("query parses");
+
+        assert_eq!(parsed.statement.kind, StatementKind::Query);
+        assert_eq!(parsed.statement.result, StatementResultKind::Rows);
+
+        let rows = parsed
+            .statement
+            .row_statement()
+            .expect("row-returning statement");
+        let select = parsed.select.as_ref().expect("select");
+        assert_eq!(rows.kind, RowStatementKind::Select);
+        assert_eq!(rows.shape.columns.len(), select.projections.len());
+        assert_eq!(rows.as_select(), Some(select));
+    }
+
+    #[test]
     fn normalizes_optional_placeholders_and_groups_into_ir() {
         let parsed =
             parse_select("SELECT users.id FROM users WHERE (users.id = $user_id?)? LIMIT $limit?")
                 .expect("query parses");
+        let select = parsed.select.as_ref().expect("select");
 
-        let ParsedExpr::OptionalGroup(group) = parsed.select.filter.expect("where clause") else {
+        let ParsedExpr::OptionalGroup(group) = select.filter.clone().expect("where clause") else {
             panic!("expected optional group")
         };
         let ParsedExpr::Binary { right, .. } = group.expr.as_ref() else {
@@ -365,7 +406,7 @@ mod tests {
         assert!(placeholder.optional);
         assert_eq!(placeholder.span, SourceSpan::new(45, 54));
         assert!(matches!(
-            parsed.select.limit.as_ref().map(|limit| &limit.expr),
+            select.limit.as_ref().map(|limit| &limit.expr),
             Some(ParsedExpr::Placeholder(PlaceholderRef {
                 optional: true,
                 ..
@@ -656,8 +697,12 @@ mod tests {
     }
 
     fn render_parsed_sql(parsed: &ParsedSql) -> String {
+        let select = parsed
+            .select
+            .as_ref()
+            .expect("render_parsed_sql expects SELECT");
         let mut out = String::new();
-        writeln!(&mut out, "select {}", parsed.select.span).expect("write header");
+        writeln!(&mut out, "select {}", select.span).expect("write header");
         writeln!(&mut out, "placeholders:").expect("write placeholders header");
         for entry in parsed.source.placeholders.entries() {
             writeln!(
@@ -677,7 +722,7 @@ mod tests {
             .expect("write placeholder");
         }
         writeln!(&mut out, "projections:").expect("write projections header");
-        for projection in &parsed.select.projections {
+        for projection in &select.projections {
             writeln!(
                 &mut out,
                 "  - {} -> {}",
@@ -689,12 +734,12 @@ mod tests {
         writeln!(
             &mut out,
             "from: {} as {}",
-            render_object_name(&parsed.select.from.table_name),
-            parsed.select.from.binding_name.value,
+            render_object_name(&select.from.table_name),
+            select.from.binding_name.value,
         )
         .expect("write from");
         writeln!(&mut out, "joins:").expect("write joins header");
-        for join in &parsed.select.joins {
+        for join in &select.joins {
             writeln!(
                 &mut out,
                 "  - {} {} as {} on {}",
@@ -715,13 +760,15 @@ mod tests {
             "where: {}",
             parsed
                 .select
+                .as_ref()
+                .expect("select")
                 .filter
                 .as_ref()
                 .map_or_else(|| "<none>".to_owned(), render_expr),
         )
         .expect("write where");
         writeln!(&mut out, "order_by:").expect("write order header");
-        for item in &parsed.select.order_by {
+        for item in &select.order_by {
             let mut rendered = format!(
                 "  - {} {}",
                 render_expr(&item.expr),
@@ -744,6 +791,8 @@ mod tests {
             "limit: {}",
             parsed
                 .select
+                .as_ref()
+                .expect("select")
                 .limit
                 .as_ref()
                 .map_or_else(|| "<none>".to_owned(), |limit| render_expr(&limit.expr)),
@@ -754,6 +803,8 @@ mod tests {
             "offset: {}",
             parsed
                 .select
+                .as_ref()
+                .expect("select")
                 .offset
                 .as_ref()
                 .map_or_else(|| "<none>".to_owned(), |offset| render_expr(&offset.expr)),

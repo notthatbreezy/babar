@@ -3,17 +3,22 @@ use std::collections::HashSet;
 use sqlparser::{
     ast::Spanned,
     ast::{
-        BinaryOperator, Expr, Ident, Join, JoinConstraint, JoinOperator, LimitClause, ObjectName,
-        ObjectNamePart, OrderBy, OrderByExpr, OrderByKind, Query, Select, SelectItem, SetExpr,
-        TableAlias, TableFactor, TableWithJoins, UnaryOperator, Value, ValueWithSpan,
+        Assignment, AssignmentTarget, BinaryOperator, Delete, Expr, FromTable, Ident, Insert, Join,
+        JoinConstraint, JoinOperator, LimitClause, ObjectName, ObjectNamePart, OrderBy,
+        OrderByExpr, OrderByKind, Query, Select, SelectItem, SetExpr, Statement, TableAlias,
+        TableFactor, TableObject, TableWithJoins, UnaryOperator, Update, Value, ValueWithSpan,
+        Values,
     },
 };
 
 use crate::typed_sql::ir::{
     AstId, BinaryOp, BindingNameSyntax, BoolOp, ColumnRefSyntax, IdentSyntax, JoinKind, Literal,
-    NullsOrder, ObjectNameSyntax, OrderDirection, OutputNameSyntax, ParsedExpr, ParsedFrom,
-    ParsedJoin, ParsedLimit, ParsedLiteral, ParsedOffset, ParsedOptionalGroup, ParsedOrderBy,
-    ParsedProjection, ParsedSelect, PlaceholderId, PlaceholderRef, SourceSpan, UnaryOp,
+    NullsOrder, ObjectNameSyntax, OrderDirection, OutputNameSyntax, ParsedAssignment,
+    ParsedAssignmentTarget, ParsedCommandStatement, ParsedDelete, ParsedExpr, ParsedFrom,
+    ParsedInsert, ParsedJoin, ParsedLimit, ParsedLiteral, ParsedOffset, ParsedOptionalGroup,
+    ParsedOrderBy, ParsedProjection, ParsedRowStatement, ParsedSelect, ParsedStatement,
+    ParsedUpdate, ParsedValuesRow, PlaceholderId, PlaceholderRef, SourceSpan, StatementKind,
+    UnaryOp,
 };
 
 use super::{
@@ -24,6 +29,14 @@ use super::{
 pub(crate) fn normalize_select(source: &SqlSource, query: &Query) -> Result<ParsedSelect> {
     let mut normalizer = Normalizer::new(source);
     normalizer.normalize_query(query)
+}
+
+pub(crate) fn normalize_statement(
+    source: &SqlSource,
+    statement: &Statement,
+) -> Result<ParsedStatement> {
+    let mut normalizer = Normalizer::new(source);
+    normalizer.normalize_statement(statement)
 }
 
 struct Normalizer<'a> {
@@ -113,6 +126,385 @@ impl<'a> Normalizer<'a> {
             limit,
             offset,
         })
+    }
+
+    fn normalize_statement(&mut self, statement: &Statement) -> Result<ParsedStatement> {
+        match statement {
+            Statement::Query(query) => Ok(ParsedStatement::query(ParsedRowStatement::select(
+                self.normalize_query(query)?,
+            ))),
+            Statement::Insert(insert) => self.normalize_insert_statement(insert),
+            Statement::Update(update) => self.normalize_update_statement(update),
+            Statement::Delete(delete) => self.normalize_delete_statement(delete),
+            _ => Err(TypedSqlError::unsupported(
+                "typed_sql v1 only supports SELECT, INSERT, UPDATE, and DELETE statements",
+            )),
+        }
+    }
+
+    fn normalize_insert_statement(&mut self, insert: &Insert) -> Result<ParsedStatement> {
+        self.reject_insert_features(insert)?;
+
+        let target = self.normalize_insert_target(insert)?;
+        let columns = insert
+            .columns
+            .iter()
+            .map(|ident| self.normalize_ident(ident))
+            .collect::<Result<Vec<_>>>()?;
+        let values = self.normalize_insert_values(insert)?;
+        let returning = self.normalize_returning(&insert.returning)?;
+        self.reject_unconsumed_optional_groups()?;
+
+        let insert = ParsedInsert {
+            id: self.alloc_id(),
+            span: self.source_span(insert)?,
+            target,
+            columns,
+            values,
+            returning,
+        };
+        Ok(if insert.returning.is_empty() {
+            ParsedStatement::command(
+                StatementKind::Insert,
+                ParsedCommandStatement::insert(insert),
+            )
+        } else {
+            ParsedStatement::rows(StatementKind::Insert, ParsedRowStatement::insert(insert))
+        })
+    }
+
+    fn reject_insert_features(&self, insert: &Insert) -> Result<()> {
+        if insert.optimizer_hint.is_some()
+            || insert.or.is_some()
+            || insert.ignore
+            || insert.overwrite
+            || !insert.assignments.is_empty()
+            || insert.partitioned.is_some()
+            || !insert.after_columns.is_empty()
+            || insert.has_table_keyword
+            || insert.replace_into
+            || insert.priority.is_some()
+            || insert.insert_alias.is_some()
+            || insert.settings.is_some()
+            || insert.format_clause.is_some()
+        {
+            return Err(self.unsupported_node(
+                insert,
+                "typed_sql v1 only supports INSERT ... VALUES ... with optional explicit RETURNING columns",
+            ));
+        }
+
+        if insert.on.is_some() {
+            return Err(self.unsupported_node(
+                insert,
+                "typed_sql v1 does not support ON CONFLICT or other INSERT conflict clauses",
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn normalize_insert_target(&mut self, insert: &Insert) -> Result<ParsedFrom> {
+        let TableObject::TableName(name) = &insert.table else {
+            return Err(self.unsupported_node(
+                insert,
+                "typed_sql v1 only supports plain table names as INSERT targets",
+            ));
+        };
+        let table_name = self.normalize_object_name(name)?;
+        let binding_name = match &insert.table_alias {
+            Some(alias) => self.normalize_ident(alias)?,
+            None => self.normalize_ident(object_name_last_ident(name)?)?,
+        };
+        Ok(ParsedFrom {
+            id: self.alloc_id(),
+            span: self.source_span(insert)?,
+            table_name,
+            binding_name,
+        })
+    }
+
+    fn normalize_insert_values(&mut self, insert: &Insert) -> Result<Vec<ParsedValuesRow>> {
+        let Some(source) = &insert.source else {
+            return Err(self.unsupported_node(
+                insert,
+                "typed_sql v1 only supports INSERT ... VALUES ... statements",
+            ));
+        };
+        self.reject_values_query_features(source)?;
+        let SetExpr::Values(values) = source.body.as_ref() else {
+            return Err(self.unsupported_node(
+                source.as_ref(),
+                "typed_sql v1 does not support INSERT ... SELECT",
+            ));
+        };
+        self.normalize_values(values)
+    }
+
+    fn reject_values_query_features(&self, query: &Query) -> Result<()> {
+        if query.with.is_some() {
+            return Err(self.unsupported_node(query, "typed_sql v1 does not support WITH clauses"));
+        }
+        if query.fetch.is_some() {
+            return Err(self.unsupported_node(query, "typed_sql v1 does not support FETCH clauses"));
+        }
+        if !query.locks.is_empty() {
+            return Err(
+                self.unsupported_node(query, "typed_sql v1 does not support locking clauses")
+            );
+        }
+        if query.for_clause.is_some() {
+            return Err(self.unsupported_node(query, "typed_sql v1 does not support FOR clauses"));
+        }
+        if query.settings.is_some()
+            || query.format_clause.is_some()
+            || !query.pipe_operators.is_empty()
+            || query.order_by.is_some()
+            || query.limit_clause.is_some()
+        {
+            return Err(self.unsupported_node(
+                query,
+                "typed_sql v1 only supports plain INSERT ... VALUES rows",
+            ));
+        }
+        Ok(())
+    }
+
+    fn normalize_values(&mut self, values: &Values) -> Result<Vec<ParsedValuesRow>> {
+        values
+            .rows
+            .iter()
+            .map(|row| {
+                let row_values = row
+                    .iter()
+                    .map(|expr| self.normalize_expr(expr, ExprContext::Projection))
+                    .collect::<Result<Vec<_>>>()?;
+                let span = match (row.first(), row.last()) {
+                    (Some(first), Some(last)) => {
+                        let first = self.source_span(first)?;
+                        let last = self.source_span(last)?;
+                        SourceSpan::new(first.start, last.end)
+                    }
+                    _ => self.source_span(values)?,
+                };
+                Ok(ParsedValuesRow {
+                    id: self.alloc_id(),
+                    span,
+                    values: row_values,
+                })
+            })
+            .collect()
+    }
+
+    fn normalize_update_statement(&mut self, update: &Update) -> Result<ParsedStatement> {
+        if update.optimizer_hint.is_some() || update.or.is_some() || update.limit.is_some() {
+            return Err(self.unsupported_node(
+                update,
+                "typed_sql v1 only supports UPDATE ... SET ... WHERE ... with optional explicit RETURNING columns",
+            ));
+        }
+        if update.from.is_some() {
+            return Err(
+                self.unsupported_node(update, "typed_sql v1 does not support UPDATE ... FROM")
+            );
+        }
+        if !update.table.joins.is_empty() {
+            return Err(self.unsupported_node(
+                update,
+                "typed_sql v1 does not support joined UPDATE targets",
+            ));
+        }
+
+        let target = self.normalize_table_factor(
+            &update.table.relation,
+            self.source_span(&update.table.relation)?,
+        )?;
+        let assignments = update
+            .assignments
+            .iter()
+            .map(|assignment| self.normalize_assignment(assignment))
+            .collect::<Result<Vec<_>>>()?;
+        let Some(selection) = update.selection.as_ref() else {
+            return Err(self.unsupported_node(
+                update,
+                "typed_sql v1 requires UPDATE statements to include a WHERE predicate",
+            ));
+        };
+        let filter = self.normalize_expr(selection, ExprContext::Predicate)?;
+        let returning = self.normalize_returning(&update.returning)?;
+        self.reject_unconsumed_optional_groups()?;
+
+        let update = ParsedUpdate {
+            id: self.alloc_id(),
+            span: self.source_span(update)?,
+            target,
+            assignments,
+            filter,
+            returning,
+        };
+        Ok(if update.returning.is_empty() {
+            ParsedStatement::command(
+                StatementKind::Update,
+                ParsedCommandStatement::update(update),
+            )
+        } else {
+            ParsedStatement::rows(StatementKind::Update, ParsedRowStatement::update(update))
+        })
+    }
+
+    fn normalize_delete_statement(&mut self, delete: &Delete) -> Result<ParsedStatement> {
+        if delete.optimizer_hint.is_some()
+            || !delete.tables.is_empty()
+            || !delete.order_by.is_empty()
+            || delete.limit.is_some()
+        {
+            return Err(self.unsupported_node(
+                delete,
+                "typed_sql v1 only supports DELETE ... WHERE ... with optional explicit RETURNING columns",
+            ));
+        }
+        if delete.using.is_some() {
+            return Err(
+                self.unsupported_node(delete, "typed_sql v1 does not support DELETE ... USING")
+            );
+        }
+
+        let target = self.normalize_delete_target(delete)?;
+        let Some(selection) = delete.selection.as_ref() else {
+            return Err(self.unsupported_node(
+                delete,
+                "typed_sql v1 requires DELETE statements to include a WHERE predicate",
+            ));
+        };
+        let filter = self.normalize_expr(selection, ExprContext::Predicate)?;
+        let returning = self.normalize_returning(&delete.returning)?;
+        self.reject_unconsumed_optional_groups()?;
+
+        let delete = ParsedDelete {
+            id: self.alloc_id(),
+            span: self.source_span(delete)?,
+            target,
+            filter,
+            returning,
+        };
+        Ok(if delete.returning.is_empty() {
+            ParsedStatement::command(
+                StatementKind::Delete,
+                ParsedCommandStatement::delete(delete),
+            )
+        } else {
+            ParsedStatement::rows(StatementKind::Delete, ParsedRowStatement::delete(delete))
+        })
+    }
+
+    fn normalize_delete_target(&mut self, delete: &Delete) -> Result<ParsedFrom> {
+        let tables = match &delete.from {
+            FromTable::WithFromKeyword(tables) | FromTable::WithoutKeyword(tables) => tables,
+        };
+        if tables.len() != 1 {
+            return Err(self.unsupported_node(
+                delete,
+                "typed_sql v1 supports DELETE from exactly one target table",
+            ));
+        }
+        let table = &tables[0];
+        if !table.joins.is_empty() {
+            return Err(self.unsupported_node(
+                delete,
+                "typed_sql v1 does not support joined DELETE targets",
+            ));
+        }
+        self.normalize_table_factor(&table.relation, self.source_span(&table.relation)?)
+    }
+
+    fn normalize_assignment(&mut self, assignment: &Assignment) -> Result<ParsedAssignment> {
+        let target = match &assignment.target {
+            AssignmentTarget::ColumnName(name) => self.normalize_assignment_target(name)?,
+            AssignmentTarget::Tuple(_) => {
+                return Err(self.unsupported_node(
+                    assignment,
+                    "typed_sql v1 does not support tuple assignments in UPDATE",
+                ))
+            }
+        };
+        Ok(ParsedAssignment {
+            id: self.alloc_id(),
+            span: self.source_span(assignment)?,
+            target,
+            value: self.normalize_expr(&assignment.value, ExprContext::Projection)?,
+        })
+    }
+
+    fn normalize_assignment_target(&self, name: &ObjectName) -> Result<ParsedAssignmentTarget> {
+        let span = self.source_span(name)?;
+        let parts = name
+            .0
+            .iter()
+            .map(|part| match part {
+                ObjectNamePart::Identifier(ident) => self.normalize_ident(ident),
+                ObjectNamePart::Function(_) => Err(self.unsupported_node(
+                    name,
+                    "typed_sql v1 does not support function-based assignment targets",
+                )),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        match parts.as_slice() {
+            [column] => Ok(ParsedAssignmentTarget {
+                span,
+                binding: None,
+                column: column.clone(),
+            }),
+            [binding, column] => Ok(ParsedAssignmentTarget {
+                span,
+                binding: Some(binding.clone()),
+                column: column.clone(),
+            }),
+            _ => Err(TypedSqlError::unsupported_at(
+                "typed_sql v1 only supports single-column UPDATE assignments",
+                span,
+            )),
+        }
+    }
+
+    fn normalize_returning(
+        &mut self,
+        returning: &Option<Vec<SelectItem>>,
+    ) -> Result<Vec<ParsedProjection>> {
+        returning
+            .as_ref()
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| self.normalize_returning_projection(item))
+                    .collect()
+            })
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+
+    fn normalize_returning_projection(&mut self, item: &SelectItem) -> Result<ParsedProjection> {
+        match item {
+            SelectItem::UnnamedExpr(expr) => {
+                let output_name = self.infer_output_name(expr)?;
+                Ok(ParsedProjection {
+                    id: self.alloc_id(),
+                    span: self.source_span(item)?,
+                    expr: self.normalize_expr(expr, ExprContext::Projection)?,
+                    output_name,
+                })
+            }
+            SelectItem::ExprWithAlias { expr, alias } => Ok(ParsedProjection {
+                id: self.alloc_id(),
+                span: self.source_span(item)?,
+                expr: self.normalize_expr(expr, ExprContext::Projection)?,
+                output_name: OutputNameSyntax::Explicit(self.normalize_ident(alias)?),
+            }),
+            SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => Err(self
+                .unsupported_node(
+                    item,
+                    "typed_sql v1 does not support wildcard RETURNING projections",
+                )),
+        }
     }
 
     fn reject_select_features(&self, select: &Select) -> Result<()> {

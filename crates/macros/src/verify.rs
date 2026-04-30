@@ -8,6 +8,8 @@ use proc_macro2::Span;
 use syn::spanned::Spanned;
 use syn::{Expr, ExprCall, ExprGroup, ExprParen, ExprPath};
 
+use crate::typed_sql::{Nullability, SqlType};
+
 const BABAR_DATABASE_URL_ENV: &str = "BABAR_DATABASE_URL";
 const DATABASE_URL_ENV: &str = "DATABASE_URL";
 
@@ -115,6 +117,19 @@ pub(crate) struct ColumnMetadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReferencedTable {
+    pub(crate) name: String,
+    pub(crate) columns: Vec<ReferencedColumn>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReferencedColumn {
+    pub(crate) name: String,
+    pub(crate) type_: DeclaredType,
+    pub(crate) nullability: Nullability,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DeclaredType {
     pub(crate) oid: u32,
     pub(crate) display: String,
@@ -135,21 +150,87 @@ impl Probe {
     }
 
     pub(crate) fn describe(&self, sql: &str) -> Result<StatementMetadata, VerificationError> {
-        let mut client = Client::connect(&self.config.database_url, NoTls).map_err(|err| {
+        let mut client = self.connect()?;
+        Self::describe_with_client(&mut client, sql)
+    }
+
+    fn connect(&self) -> Result<Client, VerificationError> {
+        Client::connect(&self.config.database_url, NoTls).map_err(|err| {
             VerificationError::connection(format!(
                 "failed to connect using {}: {err}",
                 self.config.source.env_var()
             ))
-        })?;
+        })
+    }
+
+    fn describe_with_client(
+        client: &mut Client,
+        sql: &str,
+    ) -> Result<StatementMetadata, VerificationError> {
         let statement = client.prepare(sql).map_err(|err| {
             VerificationError::sql(format!(
-                "failed to prepare SQL against {}: {}",
-                self.config.source.env_var(),
+                "failed to prepare SQL against live database: {}",
                 format_postgres_error(&err)
             ))
         })?;
         Ok(StatementMetadata::from_statement(&statement))
     }
+
+    fn load_table_columns_with_client(
+        client: &mut Client,
+        table_name: &str,
+    ) -> Result<Vec<TableColumnMetadata>, VerificationError> {
+        let row = client
+            .query_one("SELECT to_regclass($1)::oid", &[&table_name])
+            .map_err(|err| {
+                VerificationError::sql(format!(
+                    "failed to resolve referenced table `{table_name}` against live database: {}",
+                    format_postgres_error(&err)
+                ))
+            })?;
+        let relation_oid = row.get::<_, Option<u32>>(0).ok_or_else(|| {
+            VerificationError::schema(format!(
+                "referenced authored schema table `{table_name}` was not found in the live database"
+            ))
+        })?;
+        let rows = client
+            .query(
+                "SELECT a.attname, a.atttypid::oid, t.typname, NOT a.attnotnull \
+                 FROM pg_attribute AS a \
+                 JOIN pg_type AS t ON t.oid = a.atttypid \
+                 WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped \
+                 ORDER BY a.attnum",
+                &[&relation_oid],
+            )
+            .map_err(|err| {
+                VerificationError::sql(format!(
+                    "failed to describe referenced table `{table_name}` against live database: {}",
+                    format_postgres_error(&err)
+                ))
+            })?;
+        Ok(rows
+            .into_iter()
+            .map(|row| TableColumnMetadata {
+                name: row.get(0),
+                type_: TypeMetadata {
+                    oid: row.get(1),
+                    name: row.get(2),
+                },
+                nullability: if row.get::<_, bool>(3) {
+                    Nullability::Nullable
+                } else {
+                    Nullability::NonNull
+                },
+            })
+            .collect())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TableColumnMetadata {
+    name: String,
+    type_: TypeMetadata,
+    nullability: Nullability,
 }
 
 pub(crate) fn parse_declared_types(expr: &Expr) -> Result<Vec<DeclaredType>, CodecDslError> {
@@ -293,6 +374,101 @@ pub(crate) fn verify_statement_against_probe(
         verify_row_metadata(&statement.columns, rows)?;
     }
     Ok(())
+}
+
+pub(crate) fn declared_type_for_sql_type(sql_type: SqlType) -> DeclaredType {
+    let (oid, display) = match sql_type {
+        SqlType::Bool => (16, "bool"),
+        SqlType::Bytea => (17, "bytea"),
+        SqlType::Varchar => (1043, "varchar"),
+        SqlType::Text => (25, "text"),
+        SqlType::Int2 => (21, "int2"),
+        SqlType::Int4 => (23, "int4"),
+        SqlType::Int8 => (20, "int8"),
+        SqlType::Float4 => (700, "float4"),
+        SqlType::Float8 => (701, "float8"),
+        SqlType::Uuid => (2950, "uuid"),
+        SqlType::Date => (1082, "date"),
+        SqlType::Time => (1083, "time"),
+        SqlType::Timestamp => (1114, "timestamp"),
+        SqlType::Timestamptz => (1184, "timestamptz"),
+        SqlType::Json => (114, "json"),
+        SqlType::Jsonb => (3802, "jsonb"),
+        SqlType::Numeric => (1700, "numeric"),
+        SqlType::Other(name) => (0, name),
+    };
+    DeclaredType {
+        oid,
+        display: display.to_owned(),
+    }
+}
+
+pub(crate) fn verify_typed_statement_against_probe(
+    sql: &str,
+    referenced_tables: &[ReferencedTable],
+    params: &[DeclaredType],
+    rows: Option<&[DeclaredType]>,
+) -> Result<(), VerificationError> {
+    let Some(probe) = Probe::discover()? else {
+        return Ok(());
+    };
+
+    let mut client = probe.connect()?;
+    verify_referenced_tables_with_client(&mut client, referenced_tables)?;
+    let statement = Probe::describe_with_client(&mut client, sql)?;
+    verify_param_metadata(&statement.params, params)?;
+    if let Some(rows) = rows {
+        verify_row_metadata(&statement.columns, rows)?;
+    }
+    Ok(())
+}
+
+fn verify_referenced_tables_with_client(
+    client: &mut Client,
+    referenced_tables: &[ReferencedTable],
+) -> Result<(), VerificationError> {
+    for table in referenced_tables {
+        let actual_columns = Probe::load_table_columns_with_client(client, &table.name)?;
+        for expected in &table.columns {
+            let Some(actual) = actual_columns
+                .iter()
+                .find(|column| column.name == expected.name)
+            else {
+                return Err(VerificationError::schema(format!(
+                    "referenced authored schema column `{}.{}` was not found in the live database",
+                    table.name, expected.name
+                )));
+            };
+            if actual.type_.oid != expected.type_.oid {
+                return Err(VerificationError::schema(format!(
+                    "referenced authored schema column `{}.{}` has database type {} (oid {}) but the authored schema expects {} (oid {})",
+                    table.name,
+                    expected.name,
+                    actual.type_.name,
+                    actual.type_.oid,
+                    expected.type_.display,
+                    expected.type_.oid,
+                )));
+            }
+            if actual.nullability != expected.nullability {
+                return Err(VerificationError::schema(format!(
+                    "referenced authored schema column `{}.{}` has live nullability {} but the authored schema expects {}",
+                    table.name,
+                    expected.name,
+                    describe_nullability(actual.nullability),
+                    describe_nullability(expected.nullability),
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn describe_nullability(nullability: Nullability) -> &'static str {
+    match nullability {
+        Nullability::NonNull => "NOT NULL",
+        Nullability::Nullable => "nullable",
+    }
 }
 
 fn verify_shape(

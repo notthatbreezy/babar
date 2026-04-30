@@ -1,0 +1,5 @@
+error: compile-time SQL verification configuration error: BABAR_DATABASE_URL does not contain a valid PostgreSQL connection string: invalid connection string
+  --> tests/ui/typed_query/fail/verify_invalid_config.rs:12:9
+   |
+12 |         SELECT verify_live_users.name
+   |         ^^^^^^

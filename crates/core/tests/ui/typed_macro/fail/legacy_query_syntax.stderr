@@ -1,0 +1,5 @@
+error: `query!` no longer accepts the old explicit-codec form `query!("...", params = ..., row = ...)`; use schema-aware typed SQL (`query!(schema = { ... }, SELECT ...)`). During this transition, `typed_query!` remains the compatibility alias and authored schema modules expose schema-scoped wrappers like `app_schema::query!(...)`. For unsupported statements or migration-time fallbacks, use `Query::raw` / `Command::raw`.
+ --> tests/ui/typed_macro/fail/legacy_query_syntax.rs:5:9
+  |
+5 |         "SELECT name FROM users WHERE id = $1",
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

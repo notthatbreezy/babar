@@ -21,7 +21,8 @@ pub(crate) fn expand_schema(input: TokenStream) -> TokenStream {
 
 fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
     let SchemaModuleInput { vis, name, tables } = input;
-    let typed_query_macro_ident = format_ident!("__babar_typed_query_{}", name);
+    let query_macro_ident = format_ident!("__babar_query_{}", name);
+    let command_macro_ident = format_ident!("__babar_command_{}", name);
     let mut seen_tables = HashMap::<String, proc_macro2::Span>::new();
     let mut table_modules = Vec::with_capacity(tables.len());
     let mut table_defs = Vec::with_capacity(tables.len());
@@ -102,9 +103,9 @@ fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
 
             #[doc(hidden)]
             #[macro_export]
-            macro_rules! #typed_query_macro_ident {
+            macro_rules! #query_macro_ident {
                 ($($sql:tt)*) => {
-                    ::babar::typed_query!(
+                    ::babar::query!(
                         __babar_schema = {
                             #(#typed_query_tables,)*
                         },
@@ -113,7 +114,24 @@ fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
                 };
             }
 
-            pub use #typed_query_macro_ident as typed_query;
+            pub use #query_macro_ident as query;
+            pub use #query_macro_ident as typed_query;
+
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! #command_macro_ident {
+                ($($sql:tt)*) => {
+                    ::babar::command!(
+                        __babar_schema = {
+                            #(#typed_query_tables,)*
+                        },
+                        $($sql)*
+                    )
+                };
+            }
+
+            pub use #command_macro_ident as command;
+            pub use #command_macro_ident as typed_command;
 
             pub const TABLES: &[::babar::schema::TableDef] = &[#(#table_defs),*];
             pub const SCHEMA: ::babar::schema::SchemaDef =

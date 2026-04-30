@@ -6,12 +6,14 @@ use syn::LitStr;
 
 use super::ir::{
     AstId, BinaryOp, BoolOp, ColumnRefSyntax, JoinKind, Literal, NullsOrder, ObjectNameSyntax,
-    OrderDirection, OutputNameSyntax, ParsedExpr, ParsedFrom, ParsedOrderBy, ParsedProjection,
-    ParsedSelect, PlaceholderId, PlaceholderRef, UnaryOp,
+    OrderDirection, OutputNameSyntax, ParsedAssignment, ParsedAssignmentTarget, ParsedDelete,
+    ParsedExpr, ParsedFrom, ParsedInsert, ParsedOrderBy, ParsedProjection, ParsedSelect,
+    ParsedStatementBody, ParsedUpdate, ParsedValuesRow, PlaceholderId, PlaceholderRef, UnaryOp,
 };
 use super::resolver::{
-    CheckedExpr, CheckedExprNode, CheckedParameter, CheckedProjection, CheckedSelect, Nullability,
-    SqlType,
+    CheckedDelete, CheckedExpr, CheckedExprNode, CheckedInsert, CheckedParameter,
+    CheckedProjection, CheckedSelect, CheckedStatement, CheckedStatementBody, CheckedUpdate,
+    Nullability, SqlType,
 };
 use super::{ParsedSql, Result, SourceSpan, TypedSqlError};
 
@@ -70,6 +72,32 @@ impl LoweredQuery {
         }}
     }
 
+    pub(crate) fn emit_command_tokens(&self) -> TokenStream {
+        if self.parameters.iter().any(|parameter| parameter.optional)
+            || !self.toggle_group_ids.is_empty()
+        {
+            return self.emit_dynamic_command_tokens();
+        }
+
+        let sql = LitStr::new(&self.sql, Span::call_site());
+        let params = self.parameter_codec_tokens();
+        let n_params = self.parameters.len();
+
+        quote! {{
+            let __babar_fragment = ::babar::query::Fragment::__from_parts(
+                #sql,
+                #params,
+                #n_params,
+                ::core::option::Option::Some(::babar::query::Origin::new(
+                    file!(),
+                    line!(),
+                    column!(),
+                )),
+            );
+            ::babar::query::Command::from_fragment(__babar_fragment)
+        }}
+    }
+
     fn emit_dynamic_query_tokens(&self) -> TokenStream {
         let sql = LitStr::new(&self.sql, Span::call_site());
         let params = self.parameter_codec_tokens();
@@ -90,6 +118,28 @@ impl LoweredQuery {
                 #renderer,
             );
             ::babar::query::Query::from_fragment(__babar_fragment, #row)
+        }}
+    }
+
+    fn emit_dynamic_command_tokens(&self) -> TokenStream {
+        let sql = LitStr::new(&self.sql, Span::call_site());
+        let params = self.parameter_codec_tokens();
+        let n_params = self.parameters.len();
+        let renderer = self.runtime_sql_renderer_tokens();
+
+        quote! {{
+            let __babar_fragment = ::babar::query::Fragment::__from_dynamic_parts(
+                #sql,
+                #params,
+                #n_params,
+                ::core::option::Option::Some(::babar::query::Origin::new(
+                    file!(),
+                    line!(),
+                    column!(),
+                )),
+                #renderer,
+            );
+            ::babar::query::Command::from_fragment(__babar_fragment)
         }}
     }
 
@@ -313,6 +363,14 @@ enum RuntimeCodec {
     Int8,
     Float4,
     Float8,
+    Uuid,
+    Date,
+    Time,
+    Timestamp,
+    Timestamptz,
+    Json,
+    Jsonb,
+    Numeric,
     Nullable(BaseRuntimeCodec),
 }
 
@@ -327,6 +385,14 @@ enum BaseRuntimeCodec {
     Int8,
     Float4,
     Float8,
+    Uuid,
+    Date,
+    Time,
+    Timestamp,
+    Timestamptz,
+    Json,
+    Jsonb,
+    Numeric,
 }
 
 impl RuntimeCodec {
@@ -341,6 +407,14 @@ impl RuntimeCodec {
             Self::Int8 => return quote! { ::babar::codec::int8 },
             Self::Float4 => return quote! { ::babar::codec::float4 },
             Self::Float8 => return quote! { ::babar::codec::float8 },
+            Self::Uuid => return quote! { ::babar::codec::uuid },
+            Self::Date => return quote! { ::babar::codec::date },
+            Self::Time => return quote! { ::babar::codec::time },
+            Self::Timestamp => return quote! { ::babar::codec::timestamp },
+            Self::Timestamptz => return quote! { ::babar::codec::timestamptz },
+            Self::Json => return quote! { ::babar::codec::json },
+            Self::Jsonb => return quote! { ::babar::codec::jsonb },
+            Self::Numeric => return quote! { ::babar::codec::numeric },
             Self::Nullable(base) => base,
         };
 
@@ -358,6 +432,13 @@ impl RuntimeCodec {
             Self::Int8 => return quote! { i64 },
             Self::Float4 => return quote! { f32 },
             Self::Float8 => return quote! { f64 },
+            Self::Uuid => return quote! { ::uuid::Uuid },
+            Self::Date => return quote! { ::time::Date },
+            Self::Time => return quote! { ::time::Time },
+            Self::Timestamp => return quote! { ::time::PrimitiveDateTime },
+            Self::Timestamptz => return quote! { ::time::OffsetDateTime },
+            Self::Json | Self::Jsonb => return quote! { ::serde_json::Value },
+            Self::Numeric => return quote! { ::rust_decimal::Decimal },
             Self::Nullable(base) => base,
         };
 
@@ -398,6 +479,14 @@ impl BaseRuntimeCodec {
             Self::Int8 => quote! { ::babar::codec::int8 },
             Self::Float4 => quote! { ::babar::codec::float4 },
             Self::Float8 => quote! { ::babar::codec::float8 },
+            Self::Uuid => quote! { ::babar::codec::uuid },
+            Self::Date => quote! { ::babar::codec::date },
+            Self::Time => quote! { ::babar::codec::time },
+            Self::Timestamp => quote! { ::babar::codec::timestamp },
+            Self::Timestamptz => quote! { ::babar::codec::timestamptz },
+            Self::Json => quote! { ::babar::codec::json },
+            Self::Jsonb => quote! { ::babar::codec::jsonb },
+            Self::Numeric => quote! { ::babar::codec::numeric },
         }
     }
 
@@ -411,11 +500,22 @@ impl BaseRuntimeCodec {
             Self::Int8 => quote! { i64 },
             Self::Float4 => quote! { f32 },
             Self::Float8 => quote! { f64 },
+            Self::Uuid => quote! { ::uuid::Uuid },
+            Self::Date => quote! { ::time::Date },
+            Self::Time => quote! { ::time::Time },
+            Self::Timestamp => quote! { ::time::PrimitiveDateTime },
+            Self::Timestamptz => quote! { ::time::OffsetDateTime },
+            Self::Json | Self::Jsonb => quote! { ::serde_json::Value },
+            Self::Numeric => quote! { ::rust_decimal::Decimal },
         }
     }
 }
 
 pub(crate) fn lower_select(parsed: &ParsedSql, checked: &CheckedSelect) -> Result<LoweredQuery> {
+    let select = parsed
+        .select
+        .as_ref()
+        .expect("lower_select should only run on SELECT statements");
     let parameters = checked
         .parameters
         .iter()
@@ -426,13 +526,113 @@ pub(crate) fn lower_select(parsed: &ParsedSql, checked: &CheckedSelect) -> Resul
         .iter()
         .map(lower_projection)
         .collect::<Result<Vec<_>>>()?;
-    let renderer = SqlRenderer::new(&parsed.select);
+    let renderer = SqlRenderer::new(select);
     let toggle_group_ids = collect_toggle_group_ids_select(checked);
     let sql = renderer.render(
         parameters.iter().map(|parameter| parameter.id).collect(),
         renderer.optional_group_ids().into_iter().collect(),
     )?;
 
+    Ok(LoweredQuery {
+        sql,
+        parameters,
+        columns,
+        renderer,
+        toggle_group_ids,
+    })
+}
+
+pub(crate) fn lower_statement(
+    parsed: &ParsedSql,
+    checked: &CheckedStatement,
+) -> Result<LoweredQuery> {
+    match &checked.body {
+        CheckedStatementBody::Select(select) => lower_select(parsed, select),
+        CheckedStatementBody::Insert(insert) => lower_insert(parsed, insert),
+        CheckedStatementBody::Update(update) => lower_update(parsed, update),
+        CheckedStatementBody::Delete(delete) => lower_delete(parsed, delete),
+    }
+}
+
+fn lower_insert(parsed: &ParsedSql, checked: &CheckedInsert) -> Result<LoweredQuery> {
+    let insert = match &parsed.statement.body {
+        ParsedStatementBody::Rows(rows) => match &rows.body {
+            super::ir::ParsedRowStatementBody::Insert(insert) => insert,
+            _ => unreachable!("checked insert should align with parsed insert"),
+        },
+        ParsedStatementBody::Command(command) => match &command.body {
+            super::ir::ParsedCommandStatementBody::Insert(insert) => insert,
+            _ => unreachable!("checked insert should align with parsed insert"),
+        },
+    };
+    lower_dml(
+        parsed,
+        &checked.parameters,
+        &checked.projections,
+        SqlRenderer::insert(insert),
+        Vec::new(),
+    )
+}
+
+fn lower_update(parsed: &ParsedSql, checked: &CheckedUpdate) -> Result<LoweredQuery> {
+    let update = match &parsed.statement.body {
+        ParsedStatementBody::Rows(rows) => match &rows.body {
+            super::ir::ParsedRowStatementBody::Update(update) => update,
+            _ => unreachable!("checked update should align with parsed update"),
+        },
+        ParsedStatementBody::Command(command) => match &command.body {
+            super::ir::ParsedCommandStatementBody::Update(update) => update,
+            _ => unreachable!("checked update should align with parsed update"),
+        },
+    };
+    lower_dml(
+        parsed,
+        &checked.parameters,
+        &checked.projections,
+        SqlRenderer::update(update),
+        collect_toggle_group_ids_exprs([Some(&checked.filter)]),
+    )
+}
+
+fn lower_delete(parsed: &ParsedSql, checked: &CheckedDelete) -> Result<LoweredQuery> {
+    let delete = match &parsed.statement.body {
+        ParsedStatementBody::Rows(rows) => match &rows.body {
+            super::ir::ParsedRowStatementBody::Delete(delete) => delete,
+            _ => unreachable!("checked delete should align with parsed delete"),
+        },
+        ParsedStatementBody::Command(command) => match &command.body {
+            super::ir::ParsedCommandStatementBody::Delete(delete) => delete,
+            _ => unreachable!("checked delete should align with parsed delete"),
+        },
+    };
+    lower_dml(
+        parsed,
+        &checked.parameters,
+        &checked.projections,
+        SqlRenderer::delete(delete),
+        collect_toggle_group_ids_exprs([Some(&checked.filter)]),
+    )
+}
+
+fn lower_dml(
+    parsed: &ParsedSql,
+    checked_parameters: &[CheckedParameter],
+    checked_projections: &[CheckedProjection],
+    renderer: SqlRenderer,
+    toggle_group_ids: Vec<AstId>,
+) -> Result<LoweredQuery> {
+    let parameters = checked_parameters
+        .iter()
+        .map(|parameter| lower_parameter(parsed, parameter))
+        .collect::<Result<Vec<_>>>()?;
+    let columns = checked_projections
+        .iter()
+        .map(lower_projection)
+        .collect::<Result<Vec<_>>>()?;
+    let sql = renderer.render(
+        parameters.iter().map(|parameter| parameter.id).collect(),
+        renderer.optional_group_ids().into_iter().collect(),
+    )?;
     Ok(LoweredQuery {
         sql,
         parameters,
@@ -479,13 +679,40 @@ fn lower_projection(projection: &CheckedProjection) -> Result<LoweredColumn> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SqlRenderer {
-    select: ParsedSelect,
+    statement: RenderedStatement,
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RenderedStatement {
+    Select(ParsedSelect),
+    Insert(ParsedInsert),
+    Update(ParsedUpdate),
+    Delete(ParsedDelete),
 }
 
 impl SqlRenderer {
     fn new(select: &ParsedSelect) -> Self {
         Self {
-            select: select.clone(),
+            statement: RenderedStatement::Select(select.clone()),
+        }
+    }
+
+    fn insert(insert: &ParsedInsert) -> Self {
+        Self {
+            statement: RenderedStatement::Insert(insert.clone()),
+        }
+    }
+
+    fn update(update: &ParsedUpdate) -> Self {
+        Self {
+            statement: RenderedStatement::Update(update.clone()),
+        }
+    }
+
+    fn delete(delete: &ParsedDelete) -> Self {
+        Self {
+            statement: RenderedStatement::Delete(delete.clone()),
         }
     }
 
@@ -494,76 +721,201 @@ impl SqlRenderer {
         active_placeholders: HashSet<PlaceholderId>,
         active_groups: HashSet<AstId>,
     ) -> Result<String> {
-        let mut sql = String::new();
-        sql.push_str("SELECT ");
-        sql.push_str(
-            &self
-                .select
-                .projections
-                .iter()
-                .map(render_projection)
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
-        sql.push_str(" FROM ");
-        sql.push_str(&render_from(&self.select.from));
-        for join in &self.select.joins {
-            sql.push(' ');
-            sql.push_str(join_kind_sql(join.kind));
-            sql.push(' ');
-            sql.push_str("JOIN ");
-            sql.push_str(&render_from(&join.right));
-            sql.push_str(" ON ");
-            match render_predicate_expr(&join.on, &active_placeholders, &active_groups)? {
-                Some(on) => sql.push_str(&on),
-                None => sql.push_str("TRUE"),
-            }
-        }
-        if let Some(filter) = &self.select.filter {
-            if let Some(filter) =
-                render_predicate_expr(filter, &active_placeholders, &active_groups)?
-            {
-                sql.push_str(" WHERE ");
-                sql.push_str(&filter);
-            }
-        }
+        match &self.statement {
+            RenderedStatement::Select(select) => {
+                let mut sql = String::new();
+                sql.push_str("SELECT ");
+                sql.push_str(
+                    &select
+                        .projections
+                        .iter()
+                        .map(render_projection)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+                sql.push_str(" FROM ");
+                sql.push_str(&render_from(&select.from));
+                for join in &select.joins {
+                    sql.push(' ');
+                    sql.push_str(join_kind_sql(join.kind));
+                    sql.push(' ');
+                    sql.push_str("JOIN ");
+                    sql.push_str(&render_from(&join.right));
+                    sql.push_str(" ON ");
+                    match render_predicate_expr(&join.on, &active_placeholders, &active_groups)? {
+                        Some(on) => sql.push_str(&on),
+                        None => sql.push_str("TRUE"),
+                    }
+                }
+                if let Some(filter) = &select.filter {
+                    if let Some(filter) =
+                        render_predicate_expr(filter, &active_placeholders, &active_groups)?
+                    {
+                        sql.push_str(" WHERE ");
+                        sql.push_str(&filter);
+                    }
+                }
 
-        let mut order_by = Vec::new();
-        for item in &self.select.order_by {
-            if let Some(rendered) =
-                render_order_by_item(item, &active_placeholders, &active_groups)?
-            {
-                order_by.push(rendered);
-            }
-        }
-        if !order_by.is_empty() {
-            sql.push_str(" ORDER BY ");
-            sql.push_str(&order_by.join(", "));
-        }
+                let mut order_by = Vec::new();
+                for item in &select.order_by {
+                    if let Some(rendered) =
+                        render_order_by_item(item, &active_placeholders, &active_groups)?
+                    {
+                        order_by.push(rendered);
+                    }
+                }
+                if !order_by.is_empty() {
+                    sql.push_str(" ORDER BY ");
+                    sql.push_str(&order_by.join(", "));
+                }
 
-        if let Some(limit) = &self.select.limit {
-            if let Some(limit_sql) =
-                render_value_expr(&limit.expr, &active_placeholders, &active_groups)?
-            {
-                sql.push_str(" LIMIT ");
-                sql.push_str(&limit_sql);
-            }
-        }
-        if let Some(offset) = &self.select.offset {
-            if let Some(offset_sql) =
-                render_value_expr(&offset.expr, &active_placeholders, &active_groups)?
-            {
-                sql.push_str(" OFFSET ");
-                sql.push_str(&offset_sql);
-            }
-        }
+                if let Some(limit) = &select.limit {
+                    if let Some(limit_sql) =
+                        render_value_expr(&limit.expr, &active_placeholders, &active_groups)?
+                    {
+                        sql.push_str(" LIMIT ");
+                        sql.push_str(&limit_sql);
+                    }
+                }
+                if let Some(offset) = &select.offset {
+                    if let Some(offset_sql) =
+                        render_value_expr(&offset.expr, &active_placeholders, &active_groups)?
+                    {
+                        sql.push_str(" OFFSET ");
+                        sql.push_str(&offset_sql);
+                    }
+                }
 
-        Ok(sql)
+                Ok(sql)
+            }
+            RenderedStatement::Insert(insert) => {
+                let mut sql = String::new();
+                sql.push_str("INSERT INTO ");
+                sql.push_str(&render_from(&insert.target));
+                if !insert.columns.is_empty() {
+                    sql.push_str(" (");
+                    sql.push_str(
+                        &insert
+                            .columns
+                            .iter()
+                            .map(|column| column.value.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                    sql.push(')');
+                }
+                sql.push_str(" VALUES ");
+                sql.push_str(
+                    &insert
+                        .values
+                        .iter()
+                        .map(render_values_row)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+                if !insert.returning.is_empty() {
+                    sql.push_str(" RETURNING ");
+                    sql.push_str(
+                        &insert
+                            .returning
+                            .iter()
+                            .map(render_projection)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                }
+                Ok(sql)
+            }
+            RenderedStatement::Update(update) => {
+                let mut sql = String::new();
+                sql.push_str("UPDATE ");
+                sql.push_str(&render_from(&update.target));
+                sql.push_str(" SET ");
+                sql.push_str(
+                    &update
+                        .assignments
+                        .iter()
+                        .map(render_assignment)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+                if let Some(filter) =
+                    render_predicate_expr(&update.filter, &active_placeholders, &active_groups)?
+                {
+                    sql.push_str(" WHERE ");
+                    sql.push_str(&filter);
+                }
+                if !update.returning.is_empty() {
+                    sql.push_str(" RETURNING ");
+                    sql.push_str(
+                        &update
+                            .returning
+                            .iter()
+                            .map(render_projection)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                }
+                Ok(sql)
+            }
+            RenderedStatement::Delete(delete) => {
+                let mut sql = String::new();
+                sql.push_str("DELETE FROM ");
+                sql.push_str(&render_from(&delete.target));
+                if let Some(filter) =
+                    render_predicate_expr(&delete.filter, &active_placeholders, &active_groups)?
+                {
+                    sql.push_str(" WHERE ");
+                    sql.push_str(&filter);
+                }
+                if !delete.returning.is_empty() {
+                    sql.push_str(" RETURNING ");
+                    sql.push_str(
+                        &delete
+                            .returning
+                            .iter()
+                            .map(render_projection)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    );
+                }
+                Ok(sql)
+            }
+        }
     }
 
     fn optional_group_ids(&self) -> Vec<AstId> {
         let mut ids = Vec::new();
-        collect_optional_group_ids_select(&self.select, &mut ids);
+        match &self.statement {
+            RenderedStatement::Select(select) => {
+                collect_optional_group_ids_select(select, &mut ids)
+            }
+            RenderedStatement::Insert(insert) => {
+                for row in &insert.values {
+                    for value in &row.values {
+                        collect_optional_group_ids_expr(value, &mut ids);
+                    }
+                }
+                for projection in &insert.returning {
+                    collect_optional_group_ids_expr(&projection.expr, &mut ids);
+                }
+            }
+            RenderedStatement::Update(update) => {
+                for assignment in &update.assignments {
+                    collect_optional_group_ids_expr(&assignment.value, &mut ids);
+                }
+                collect_optional_group_ids_expr(&update.filter, &mut ids);
+                for projection in &update.returning {
+                    collect_optional_group_ids_expr(&projection.expr, &mut ids);
+                }
+            }
+            RenderedStatement::Delete(delete) => {
+                collect_optional_group_ids_expr(&delete.filter, &mut ids);
+                for projection in &delete.returning {
+                    collect_optional_group_ids_expr(&projection.expr, &mut ids);
+                }
+            }
+        }
         ids.sort_by_key(|id| id.0);
         ids.dedup();
         ids
@@ -594,6 +946,32 @@ fn render_from(from: &ParsedFrom) -> String {
         render_object_name(&from.table_name),
         from.binding_name.value
     )
+}
+
+fn render_values_row(row: &ParsedValuesRow) -> String {
+    format!(
+        "({})",
+        row.values
+            .iter()
+            .map(render_expr_sql)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn render_assignment(assignment: &ParsedAssignment) -> String {
+    format!(
+        "{} = {}",
+        render_assignment_target(&assignment.target),
+        render_expr_sql(&assignment.value)
+    )
+}
+
+fn render_assignment_target(target: &ParsedAssignmentTarget) -> String {
+    match &target.binding {
+        Some(binding) => format!("{}.{}", binding.value, target.column.value),
+        None => target.column.value.clone(),
+    }
 }
 
 fn render_object_name(name: &ObjectNameSyntax) -> String {
@@ -1009,6 +1387,18 @@ fn collect_toggle_group_ids_select(select: &CheckedSelect) -> Vec<AstId> {
     ids
 }
 
+fn collect_toggle_group_ids_exprs<'a>(
+    exprs: impl IntoIterator<Item = Option<&'a CheckedExpr>>,
+) -> Vec<AstId> {
+    let mut ids = Vec::new();
+    for expr in exprs.into_iter().flatten() {
+        collect_toggle_group_ids_expr(expr, &mut ids);
+    }
+    ids.sort_by_key(|id| id.0);
+    ids.dedup();
+    ids
+}
+
 fn collect_toggle_group_ids_expr(expr: &CheckedExpr, ids: &mut Vec<AstId>) {
     match &expr.node {
         CheckedExprNode::OptionalGroup {
@@ -1054,10 +1444,18 @@ fn lower_runtime_codec(
         SqlType::Int8 => BaseRuntimeCodec::Int8,
         SqlType::Float4 => BaseRuntimeCodec::Float4,
         SqlType::Float8 => BaseRuntimeCodec::Float8,
+        SqlType::Uuid => BaseRuntimeCodec::Uuid,
+        SqlType::Date => BaseRuntimeCodec::Date,
+        SqlType::Time => BaseRuntimeCodec::Time,
+        SqlType::Timestamp => BaseRuntimeCodec::Timestamp,
+        SqlType::Timestamptz => BaseRuntimeCodec::Timestamptz,
+        SqlType::Json => BaseRuntimeCodec::Json,
+        SqlType::Jsonb => BaseRuntimeCodec::Jsonb,
+        SqlType::Numeric => BaseRuntimeCodec::Numeric,
         unsupported => {
             return Err(TypedSqlError::unsupported_with_optional_span(
                 format!(
-                    "typed_sql v1 runtime lowering does not yet support SQL type `{}`; supported lowered codecs are bool, bytea, varchar, text, int2, int4, int8, float4, and float8",
+                    "typed_sql v1 runtime lowering does not yet support SQL type `{}`; supported lowered codecs are bool, bytea, varchar, text, int2, int4, int8, float4, float8, uuid, date, time, timestamp, timestamptz, json, jsonb, and numeric",
                     unsupported.name()
                 ),
                 span,
@@ -1076,6 +1474,14 @@ fn lower_runtime_codec(
             BaseRuntimeCodec::Int8 => RuntimeCodec::Int8,
             BaseRuntimeCodec::Float4 => RuntimeCodec::Float4,
             BaseRuntimeCodec::Float8 => RuntimeCodec::Float8,
+            BaseRuntimeCodec::Uuid => RuntimeCodec::Uuid,
+            BaseRuntimeCodec::Date => RuntimeCodec::Date,
+            BaseRuntimeCodec::Time => RuntimeCodec::Time,
+            BaseRuntimeCodec::Timestamp => RuntimeCodec::Timestamp,
+            BaseRuntimeCodec::Timestamptz => RuntimeCodec::Timestamptz,
+            BaseRuntimeCodec::Json => RuntimeCodec::Json,
+            BaseRuntimeCodec::Jsonb => RuntimeCodec::Jsonb,
+            BaseRuntimeCodec::Numeric => RuntimeCodec::Numeric,
         },
         Nullability::Nullable => RuntimeCodec::Nullable(base),
     })
@@ -1107,9 +1513,25 @@ mod tests {
                     SchemaColumn::new("manager_id", SqlType::Int4, Nullability::Nullable),
                     SchemaColumn::new("score", SqlType::Float8, Nullability::Nullable),
                     SchemaColumn::new("name", SqlType::Text, Nullability::NonNull),
+                    SchemaColumn::new("nickname", SqlType::Other("citext"), Nullability::Nullable),
                 ],
             )
             .expect("users table"),
+            SchemaTable::new(
+                Some("public"),
+                "events",
+                vec![
+                    SchemaColumn::new("id", SqlType::Uuid, Nullability::NonNull),
+                    SchemaColumn::new("event_date", SqlType::Date, Nullability::NonNull),
+                    SchemaColumn::new("event_time", SqlType::Time, Nullability::NonNull),
+                    SchemaColumn::new("created_at", SqlType::Timestamp, Nullability::NonNull),
+                    SchemaColumn::new("published_at", SqlType::Timestamptz, Nullability::Nullable),
+                    SchemaColumn::new("payload", SqlType::Json, Nullability::NonNull),
+                    SchemaColumn::new("meta", SqlType::Jsonb, Nullability::Nullable),
+                    SchemaColumn::new("amount", SqlType::Numeric, Nullability::NonNull),
+                ],
+            )
+            .expect("events table"),
             SchemaTable::new(
                 Some("public"),
                 "pets",
@@ -1127,7 +1549,7 @@ mod tests {
 
     fn parse_resolve_and_lower(sql: &str) -> Result<LoweredQuery> {
         let parsed = parse_select(sql)?;
-        let checked = resolve_select(&parsed.select, &fixture_catalog())?;
+        let checked = resolve_select(parsed.select.as_ref().expect("select"), &fixture_catalog())?;
         lower_select(&parsed, &checked)
     }
 
@@ -1295,29 +1717,34 @@ mod tests {
     }
 
     #[test]
-    fn rejects_projection_types_without_a_lowered_runtime_codec() {
-        let err = parse_resolve_and_lower(
-            "SELECT p.deleted_at FROM users AS u INNER JOIN pets AS p ON p.owner_id = u.id",
+    fn lowers_prioritized_runtime_codecs_for_parameters_and_rows() {
+        let lowered = parse_resolve_and_lower(
+            "SELECT e.id, e.event_date, e.event_time, e.created_at, e.published_at, e.payload, e.meta, e.amount \
+             FROM events AS e \
+             WHERE e.id = $id AND e.event_date = $event_date AND e.event_time = $event_time \
+               AND e.created_at = $created_at AND e.published_at = $published_at \
+               AND e.payload = $payload AND e.meta = $meta AND e.amount = $amount",
         )
-        .expect_err("unsupported projection type should fail lowering");
+        .expect("extended codecs should lower");
 
-        assert_eq!(err.kind, TypedSqlErrorKind::Unsupported);
-        assert!(err
-            .message
-            .contains("runtime lowering does not yet support SQL type `timestamptz`"));
+        assert_eq!(
+            normalize_tokens(lowered.parameter_codec_tokens()),
+            "(:: babar :: codec :: uuid , :: babar :: codec :: date , :: babar :: codec :: time , :: babar :: codec :: timestamp , :: babar :: codec :: nullable (:: babar :: codec :: timestamptz) , :: babar :: codec :: json , :: babar :: codec :: nullable (:: babar :: codec :: jsonb) , :: babar :: codec :: numeric ,)"
+        );
+        assert_eq!(
+            normalize_tokens(lowered.row_codec_tokens()),
+            "(:: babar :: codec :: uuid , :: babar :: codec :: date , :: babar :: codec :: time , :: babar :: codec :: timestamp , :: babar :: codec :: nullable (:: babar :: codec :: timestamptz) , :: babar :: codec :: json , :: babar :: codec :: nullable (:: babar :: codec :: jsonb) , :: babar :: codec :: numeric ,)"
+        );
     }
 
     #[test]
-    fn rejects_parameter_types_without_a_lowered_runtime_codec() {
-        let err = parse_resolve_and_lower(
-            "SELECT u.id FROM users AS u INNER JOIN pets AS p ON p.owner_id = u.id WHERE p.deleted_at = $deleted_at",
-        )
-        .expect_err("unsupported parameter type should fail lowering");
+    fn still_rejects_types_without_a_lowered_runtime_codec() {
+        let err = parse_resolve_and_lower("SELECT u.nickname FROM users AS u WHERE u.id = $id")
+            .expect_err("unsupported projection type should fail lowering");
 
         assert_eq!(err.kind, TypedSqlErrorKind::Unsupported);
         assert!(err
             .message
-            .contains("runtime lowering does not yet support SQL type `timestamptz`"));
-        assert!(err.span.is_some());
+            .contains("runtime lowering does not yet support SQL type `citext`"));
     }
 }

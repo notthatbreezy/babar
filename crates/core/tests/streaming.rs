@@ -121,3 +121,43 @@ async fn dropping_stream_releases_temporary_statement() {
 
     session.close().await.expect("close");
 }
+
+#[tokio::test]
+async fn runtime_dynamic_typed_query_still_streams_rows() {
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    session
+        .simple_query_raw(
+            "CREATE TABLE streaming_dynamic_users (id int4 PRIMARY KEY, name text NOT NULL);\
+             INSERT INTO streaming_dynamic_users (id, name) VALUES (1, 'alice'), (2, 'bob'), (3, 'carol')",
+        )
+        .await
+        .expect("seed table");
+
+    let query: Query<(Option<i32>,), (String,)> = babar::typed_query!(
+        schema = {
+            table public.streaming_dynamic_users {
+                id: int4,
+                name: text,
+            },
+        },
+        SELECT streaming_dynamic_users.name
+        FROM public.streaming_dynamic_users
+        WHERE (streaming_dynamic_users.id >= $min_id?)?
+        ORDER BY streaming_dynamic_users.id
+    );
+
+    let mut stream = session
+        .stream_with_batch_size(&query, (Some(2_i32),), 1)
+        .await
+        .expect("dynamic stream");
+    let mut rows = Vec::new();
+    while let Some(row) = stream.next().await {
+        rows.push(row.expect("row").0);
+    }
+    assert_eq!(rows, vec!["bob".to_string(), "carol".to_string()]);
+
+    session.close().await.expect("close");
+}

@@ -19,7 +19,29 @@ pub(crate) struct SqlSource {
     line_starts: Vec<usize>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CanonicalizedSql {
+    canonical_sql: String,
+    source_map: SourceMap,
+    placeholders: PlaceholderTable,
+    optional_groups: OptionalGroupTable,
+}
+
 impl SqlSource {
+    pub(crate) fn from_canonicalized(
+        original_sql: String,
+        canonicalized: CanonicalizedSql,
+    ) -> Self {
+        Self {
+            original_sql,
+            line_starts: line_starts(&canonicalized.canonical_sql),
+            canonical_sql: canonicalized.canonical_sql,
+            source_map: canonicalized.source_map,
+            placeholders: canonicalized.placeholders,
+            optional_groups: canonicalized.optional_groups,
+        }
+    }
+
     pub(crate) fn canonical_span_for_parser(
         &self,
         span: sqlparser::tokenizer::Span,
@@ -292,7 +314,7 @@ enum OffsetAnchor {
     End,
 }
 
-pub(crate) fn canonicalize(sql: &str) -> Result<SqlSource> {
+pub(crate) fn canonicalize_parts(sql: &str) -> Result<CanonicalizedSql> {
     let mut canonical_sql = String::with_capacity(sql.len());
     let mut replacements = Vec::new();
     let mut placeholder_slots = HashMap::<String, usize>::new();
@@ -509,15 +531,7 @@ pub(crate) fn canonicalize(sql: &str) -> Result<SqlSource> {
         }
     }
 
-    let mut line_starts = vec![0usize];
-    for (idx, ch) in canonical_sql.char_indices() {
-        if ch == '\n' {
-            line_starts.push(idx + 1);
-        }
-    }
-
-    Ok(SqlSource {
-        original_sql: sql.to_owned(),
+    Ok(CanonicalizedSql {
         canonical_sql,
         source_map: SourceMap { replacements },
         placeholders: PlaceholderTable {
@@ -526,8 +540,12 @@ pub(crate) fn canonicalize(sql: &str) -> Result<SqlSource> {
         optional_groups: OptionalGroupTable {
             entries: optional_groups,
         },
-        line_starts,
     })
+}
+
+pub(crate) fn canonicalize(sql: &str) -> Result<SqlSource> {
+    canonicalize_parts(sql)
+        .map(|canonicalized| SqlSource::from_canonicalized(sql.to_owned(), canonicalized))
 }
 
 #[derive(Clone, Copy)]
@@ -569,6 +587,16 @@ fn nth_char_boundary(input: &str, n: usize) -> Option<usize> {
     } else {
         None
     }
+}
+
+fn line_starts(sql: &str) -> Vec<usize> {
+    let mut line_starts = vec![0usize];
+    for (idx, ch) in sql.char_indices() {
+        if ch == '\n' {
+            line_starts.push(idx + 1);
+        }
+    }
+    line_starts
 }
 
 fn to_u32(value: usize) -> Result<u32> {

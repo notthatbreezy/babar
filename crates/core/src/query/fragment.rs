@@ -352,6 +352,10 @@ impl<A> Fragment<A> {
     }
 
     /// Construct a fragment whose final SQL depends on the runtime arguments.
+    ///
+    /// These fragments remain executable, but callers must not assume they are
+    /// generically preparable because the concrete SQL shape is only known once
+    /// arguments are bound.
     #[doc(hidden)]
     pub fn __from_dynamic_parts<E, D>(
         sql: impl Into<String>,

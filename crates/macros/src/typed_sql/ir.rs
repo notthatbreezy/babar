@@ -25,7 +25,6 @@ pub(crate) struct IdentSyntax {
 }
 
 pub(crate) type BindingNameSyntax = IdentSyntax;
-
 pub(crate) type ColumnNameSyntax = IdentSyntax;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,6 +40,223 @@ pub(crate) enum OutputNameSyntax {
     Anonymous,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(crate) enum StatementKind {
+    Query,
+    Insert,
+    Update,
+    Delete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(crate) enum StatementResultKind {
+    Rows,
+    Command,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(crate) enum RowStatementKind {
+    Select,
+    Insert,
+    Update,
+    Delete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub(crate) enum CommandStatementKind {
+    Insert,
+    Update,
+    Delete,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParsedStatement {
+    pub(crate) kind: StatementKind,
+    pub(crate) result: StatementResultKind,
+    pub(crate) body: ParsedStatementBody,
+}
+
+impl ParsedStatement {
+    pub(crate) fn query(rows: ParsedRowStatement) -> Self {
+        Self {
+            kind: StatementKind::Query,
+            result: StatementResultKind::Rows,
+            body: ParsedStatementBody::Rows(rows),
+        }
+    }
+
+    pub(crate) fn rows(kind: StatementKind, rows: ParsedRowStatement) -> Self {
+        Self {
+            kind,
+            result: StatementResultKind::Rows,
+            body: ParsedStatementBody::Rows(rows),
+        }
+    }
+
+    pub(crate) fn command(kind: StatementKind, command: ParsedCommandStatement) -> Self {
+        Self {
+            kind,
+            result: StatementResultKind::Command,
+            body: ParsedStatementBody::Command(command),
+        }
+    }
+
+    pub(crate) fn row_statement(&self) -> Option<&ParsedRowStatement> {
+        match &self.body {
+            ParsedStatementBody::Rows(rows) => Some(rows),
+            ParsedStatementBody::Command(_) => None,
+        }
+    }
+
+    pub(crate) fn command_statement(&self) -> Option<&ParsedCommandStatement> {
+        match &self.body {
+            ParsedStatementBody::Rows(_) => None,
+            ParsedStatementBody::Command(command) => Some(command),
+        }
+    }
+
+    pub(crate) fn as_select(&self) -> Option<&ParsedSelect> {
+        self.row_statement().and_then(ParsedRowStatement::as_select)
+    }
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ParsedStatementBody {
+    Rows(ParsedRowStatement),
+    Command(ParsedCommandStatement),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParsedRowStatement {
+    pub(crate) kind: RowStatementKind,
+    pub(crate) shape: ParsedRowShape,
+    pub(crate) body: ParsedRowStatementBody,
+}
+
+impl ParsedRowStatement {
+    pub(crate) fn select(select: ParsedSelect) -> Self {
+        let shape = ParsedRowShape::from_projections(&select.projections);
+        Self {
+            kind: RowStatementKind::Select,
+            shape,
+            body: ParsedRowStatementBody::Select(select),
+        }
+    }
+
+    pub(crate) fn insert(insert: ParsedInsert) -> Self {
+        let shape = ParsedRowShape::from_projections(&insert.returning);
+        Self {
+            kind: RowStatementKind::Insert,
+            shape,
+            body: ParsedRowStatementBody::Insert(insert),
+        }
+    }
+
+    pub(crate) fn update(update: ParsedUpdate) -> Self {
+        let shape = ParsedRowShape::from_projections(&update.returning);
+        Self {
+            kind: RowStatementKind::Update,
+            shape,
+            body: ParsedRowStatementBody::Update(update),
+        }
+    }
+
+    pub(crate) fn delete(delete: ParsedDelete) -> Self {
+        let shape = ParsedRowShape::from_projections(&delete.returning);
+        Self {
+            kind: RowStatementKind::Delete,
+            shape,
+            body: ParsedRowStatementBody::Delete(delete),
+        }
+    }
+
+    pub(crate) fn as_select(&self) -> Option<&ParsedSelect> {
+        match &self.body {
+            ParsedRowStatementBody::Select(select) => Some(select),
+            _ => None,
+        }
+    }
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ParsedRowStatementBody {
+    Select(ParsedSelect),
+    Insert(ParsedInsert),
+    Update(ParsedUpdate),
+    Delete(ParsedDelete),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParsedCommandStatement {
+    pub(crate) kind: CommandStatementKind,
+    pub(crate) body: ParsedCommandStatementBody,
+}
+
+impl ParsedCommandStatement {
+    pub(crate) fn insert(insert: ParsedInsert) -> Self {
+        Self {
+            kind: CommandStatementKind::Insert,
+            body: ParsedCommandStatementBody::Insert(insert),
+        }
+    }
+
+    pub(crate) fn update(update: ParsedUpdate) -> Self {
+        Self {
+            kind: CommandStatementKind::Update,
+            body: ParsedCommandStatementBody::Update(update),
+        }
+    }
+
+    pub(crate) fn delete(delete: ParsedDelete) -> Self {
+        Self {
+            kind: CommandStatementKind::Delete,
+            body: ParsedCommandStatementBody::Delete(delete),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ParsedCommandStatementBody {
+    Insert(ParsedInsert),
+    Update(ParsedUpdate),
+    Delete(ParsedDelete),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParsedRowShape {
+    pub(crate) columns: Vec<ParsedRowColumn>,
+}
+
+impl ParsedRowShape {
+    fn from_projections(projections: &[ParsedProjection]) -> Self {
+        Self {
+            columns: projections
+                .iter()
+                .map(ParsedRowColumn::from_projection)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParsedRowColumn {
+    pub(crate) id: AstId,
+    pub(crate) span: SourceSpan,
+    pub(crate) output_name: OutputNameSyntax,
+}
+
+impl ParsedRowColumn {
+    fn from_projection(projection: &ParsedProjection) -> Self {
+        Self {
+            id: projection.id,
+            span: projection.span,
+            output_name: projection.output_name.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ParsedSelect {
     pub(crate) id: AstId,
@@ -52,6 +268,57 @@ pub(crate) struct ParsedSelect {
     pub(crate) order_by: Vec<ParsedOrderBy>,
     pub(crate) limit: Option<ParsedLimit>,
     pub(crate) offset: Option<ParsedOffset>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParsedInsert {
+    pub(crate) id: AstId,
+    pub(crate) span: SourceSpan,
+    pub(crate) target: ParsedFrom,
+    pub(crate) columns: Vec<ColumnNameSyntax>,
+    pub(crate) values: Vec<ParsedValuesRow>,
+    pub(crate) returning: Vec<ParsedProjection>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParsedValuesRow {
+    pub(crate) id: AstId,
+    pub(crate) span: SourceSpan,
+    pub(crate) values: Vec<ParsedExpr>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParsedUpdate {
+    pub(crate) id: AstId,
+    pub(crate) span: SourceSpan,
+    pub(crate) target: ParsedFrom,
+    pub(crate) assignments: Vec<ParsedAssignment>,
+    pub(crate) filter: ParsedExpr,
+    pub(crate) returning: Vec<ParsedProjection>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParsedDelete {
+    pub(crate) id: AstId,
+    pub(crate) span: SourceSpan,
+    pub(crate) target: ParsedFrom,
+    pub(crate) filter: ParsedExpr,
+    pub(crate) returning: Vec<ParsedProjection>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParsedAssignment {
+    pub(crate) id: AstId,
+    pub(crate) span: SourceSpan,
+    pub(crate) target: ParsedAssignmentTarget,
+    pub(crate) value: ParsedExpr,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ParsedAssignmentTarget {
+    pub(crate) span: SourceSpan,
+    pub(crate) binding: Option<BindingNameSyntax>,
+    pub(crate) column: ColumnNameSyntax,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

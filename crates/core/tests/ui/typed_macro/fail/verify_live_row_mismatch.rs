@@ -1,7 +1,12 @@
 fn main() {
     let _ = babar::query!(
-        "SELECT 1::int4 AS id",
-        params = (),
-        row = (babar::codec::text,),
+        schema = {
+            table public.verify_live_users {
+                id: int4,
+                name: int4,
+                active: bool,
+            },
+        },
+        SELECT verify_live_users.id, verify_live_users.name FROM public.verify_live_users WHERE verify_live_users.id = $id
     );
 }

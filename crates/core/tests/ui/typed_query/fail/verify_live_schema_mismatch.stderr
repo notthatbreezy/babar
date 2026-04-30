@@ -1,0 +1,5 @@
+error: compile-time SQL verification schema mismatch: referenced authored schema column `public.verify_live_users.id` has database type int4 (oid 23) but the authored schema expects int8 (oid 20)
+  --> tests/ui/typed_query/fail/verify_live_schema_mismatch.rs:12:9
+   |
+12 |         SELECT verify_live_users.name
+   |         ^^^^^^

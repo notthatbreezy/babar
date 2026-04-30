@@ -23,13 +23,22 @@ cargo add babar
 
 ## Connect, type, query
 
-Three values: a `Config`, a `Command`, and a `Query`. Codecs come in by
-name so the compiler can read your intent.
+Three values: a `Config`, a `Command`, and a `Query`. The default SQL path is
+schema-aware `query!` / `command!`; raw SQL stays available as an explicit
+fallback.
 
 ```rust
-use babar::codec::{int4, text};
-use babar::query::Query;
+use babar::query::{Command, Query};
 use babar::{Config, Session};
+
+babar::schema! {
+    mod app_schema {
+        table demo_users {
+            id: primary_key(int4),
+            name: text,
+        }
+    }
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> babar::Result<()> {
@@ -40,11 +49,21 @@ async fn main() -> babar::Result<()> {
     )
     .await?;
 
+    let create: Command<()> = Command::raw(
+        "CREATE TEMP TABLE demo_users (id int4 PRIMARY KEY, name text NOT NULL)",
+        (),
+    );
+    session.execute(&create, ()).await?;
+
+    let insert: Command<(i32, String)> =
+        app_schema::command!(INSERT INTO demo_users (id, name) VALUES ($id, $name));
+    session.execute(&insert, (1, "Ada".to_string())).await?;
+
     let select: Query<(), (i32, String)> =             // type: Query<(), (i32, String)>
-        Query::raw(
-            "SELECT 1::int4 AS id, 'Ada'::text AS name",
-            (),
-            (int4, text),
+        app_schema::query!(
+            SELECT demo_users.id, demo_users.name
+            FROM demo_users
+            ORDER BY demo_users.id
         );
 
     let rows: Vec<(i32, String)> = session.query(&select, ()).await?; // type: Vec<(i32, String)>
@@ -55,10 +74,11 @@ async fn main() -> babar::Result<()> {
 }
 ```
 
-You wrote three things: 
- 1. a `Config` describing where to connect
- 2. a `Query<A, B>` describing the round-trip (parameters in, rows out)
- 3. the codec tuple ties it all together:  `(int4, text)` **is** the schema of the rows you'll get back
+You wrote three things:
+  1. a `Config` describing where to connect
+  2. a `Query<A, B>` describing the round-trip (parameters in, rows out)
+  3. an authored schema module that drives `query!` / `command!`, while
+     `Command::raw` stays available for unsupported setup SQL
 
 ## Where to go next
 

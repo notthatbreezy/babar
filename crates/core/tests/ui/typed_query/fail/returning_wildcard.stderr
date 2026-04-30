@@ -1,0 +1,8 @@
+error: this SQL construct is outside the typed_sql v1 subset: typed_sql v1 does not support wildcard RETURNING projections
+          |
+        1 | DELETE FROM users WHERE users.id = $id RETURNING *
+          |                                                  ^
+  --> tests/ui/typed_query/fail/returning_wildcard.rs:10:58
+   |
+10 |         DELETE FROM users WHERE users.id = $id RETURNING *
+   |                                                          ^
