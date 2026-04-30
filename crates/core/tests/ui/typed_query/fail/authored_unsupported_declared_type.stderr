@@ -9,8 +9,8 @@ error[E0425]: cannot find value `timestamptz` in module `::babar::codec`
  8 | | }
    | |_^ not found in `::babar::codec`
 ...
-11 |       let _query = app_schema::typed_query!(SELECT users.deleted_at FROM users);
-   |                    ------------------------------------------------------------ in this macro invocation
+11 |       let _query = app_schema::query!(SELECT users.deleted_at FROM users);
+   |                    ------------------------------------------------------ in this macro invocation
    |
 note: found an item that was configured out
   --> src/codec/mod.rs
@@ -20,4 +20,4 @@ note: found an item that was configured out
    | pub use time::{
    |     date, time, timestamp, timestamptz, DateCodec, OffsetDateTimeCodec, PrimitiveDateTimeCodec,
    |                            ^^^^^^^^^^^
-   = note: this error originates in the macro `::babar::query` which comes from the expansion of the macro `app_schema::typed_query` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the macro `::babar::query` which comes from the expansion of the macro `app_schema::query` (in Nightly builds, run with -Z macro-backtrace for more info)

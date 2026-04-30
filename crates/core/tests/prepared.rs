@@ -41,7 +41,7 @@ async fn prepared_query_basic_roundtrip() {
         return;
     };
 
-    let q: Query<(i32,), (i32,)> = Query::raw("SELECT $1::int4", (int4,), (int4,));
+    let q: Query<(i32,), (i32,)> = Query::raw_with("SELECT $1::int4", (int4,), (int4,));
     let pq = session.prepare_query(&q).await.expect("prepare");
 
     // Execute multiple times — reuses the same server-side statement.
@@ -66,7 +66,7 @@ async fn prepared_command_insert_and_count() {
         .await
         .expect("create table");
 
-    let cmd: Command<(i32, String)> = Command::raw(
+    let cmd: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO prep_test (id, name) VALUES ($1, $2)",
         (int4, text),
     );
@@ -85,11 +85,8 @@ async fn prepared_command_insert_and_count() {
     assert_eq!(affected, 1);
 
     // Verify data.
-    let q: Query<(), (i32, String)> = Query::raw(
-        "SELECT id, name FROM prep_test ORDER BY id",
-        (),
-        (int4, text),
-    );
+    let q: Query<(), (i32, String)> =
+        Query::raw("SELECT id, name FROM prep_test ORDER BY id", (int4, text));
     let rows = session.query(&q, ()).await.expect("select");
     assert_eq!(rows, vec![(1, "alice".to_string()), (2, "bob".to_string())]);
 
@@ -108,7 +105,7 @@ async fn prepared_static_typed_dml_command_roundtrip() {
         .await
         .expect("create table");
 
-    let cmd: Command<(i32, String, bool)> = babar::typed_query!(
+    let cmd: Command<(i32, String, bool)> = babar::command!(
         schema = {
             table public.typed_prep_users {
                 id: int4,
@@ -131,7 +128,6 @@ async fn prepared_static_typed_dml_command_roundtrip() {
 
     let query: Query<(), (i32, String, bool)> = Query::raw(
         "SELECT id, name, active FROM typed_prep_users",
-        (),
         (int4, text, babar::codec::bool),
     );
     let rows = session
@@ -158,7 +154,7 @@ async fn runtime_dynamic_typed_query_remains_executable_but_not_preparable() {
         .await
         .expect("seed table");
 
-    let query: Query<(Option<i32>,), (String,)> = babar::typed_query!(
+    let query: Query<(Option<i32>,), (String,)> = babar::query!(
         schema = {
             table public.prep_dynamic_users {
                 id: int4,
@@ -183,7 +179,7 @@ async fn runtime_dynamic_typed_query_remains_executable_but_not_preparable() {
         .expect_err("dynamic typed query should not prepare");
     match err {
         Error::Codec(message) => assert!(
-            message.contains("runtime-dependent optional typed_query! SQL cannot be prepared"),
+            message.contains("runtime-dependent optional schema-aware SQL cannot be prepared"),
             "unexpected message: {message}"
         ),
         other => panic!("expected codec error, got {other:?}"),
@@ -198,7 +194,7 @@ async fn prepared_query_cache_reuses_statement() {
         return;
     };
 
-    let q: Query<(i32,), (i32,)> = Query::raw("SELECT $1::int4 + 1", (int4,), (int4,));
+    let q: Query<(i32,), (i32,)> = Query::raw_with("SELECT $1::int4 + 1", (int4,), (int4,));
 
     // Prepare twice — should get the same server-side statement name.
     let pq1 = session.prepare_query(&q).await.expect("prepare 1");
@@ -220,7 +216,7 @@ async fn prepared_query_cache_keeps_statement_open_until_last_handle_closes() {
         return;
     };
 
-    let q: Query<(i32,), (i32,)> = Query::raw("SELECT $1::int4 + 1", (int4,), (int4,));
+    let q: Query<(i32,), (i32,)> = Query::raw_with("SELECT $1::int4 + 1", (int4,), (int4,));
     let pq1 = session.prepare_query(&q).await.expect("prepare 1");
     let pq2 = session.prepare_query(&q).await.expect("prepare 2");
     let name = pq1.name().to_string();
@@ -233,7 +229,7 @@ async fn prepared_query_cache_keeps_statement_open_until_last_handle_closes() {
         .expect("query via surviving handle");
     assert_eq!(rows, vec![(11,)]);
 
-    let check_q: Query<(String,), (String,)> = Query::raw(
+    let check_q: Query<(String,), (String,)> = Query::raw_with(
         "SELECT name FROM pg_prepared_statements WHERE name = $1",
         (text,),
         (text,),
@@ -261,12 +257,12 @@ async fn prepared_query_drop_deallocates_on_server() {
         return;
     };
 
-    let q: Query<(i32,), (i32,)> = Query::raw("SELECT $1::int4", (int4,), (int4,));
+    let q: Query<(i32,), (i32,)> = Query::raw_with("SELECT $1::int4", (int4,), (int4,));
     let pq = session.prepare_query(&q).await.expect("prepare");
     let name = pq.name().to_string();
 
     // Verify the statement exists in pg_prepared_statements.
-    let check_q2: Query<(String,), (String,)> = Query::raw(
+    let check_q2: Query<(String,), (String,)> = Query::raw_with(
         "SELECT name FROM pg_prepared_statements WHERE name = $1",
         (text,),
         (text,),
@@ -303,7 +299,7 @@ async fn schema_mismatch_detected_at_prepare_time() {
     };
 
     // Server returns int4 but we declare decoder expects int8.
-    let q: Query<(), (i64,)> = Query::raw("SELECT 42::int4", (), (int8,));
+    let q: Query<(), (i64,)> = Query::raw("SELECT 42::int4", (int8,));
     let err = session
         .prepare_query(&q)
         .await
@@ -333,7 +329,7 @@ async fn schema_mismatch_column_count() {
     };
 
     // Server returns 2 columns but decoder expects 1.
-    let q: Query<(), (i32,)> = Query::raw("SELECT 1::int4, 2::int4", (), (int4,));
+    let q: Query<(), (i32,)> = Query::raw("SELECT 1::int4, 2::int4", (int4,));
     let err = session
         .prepare_query(&q)
         .await

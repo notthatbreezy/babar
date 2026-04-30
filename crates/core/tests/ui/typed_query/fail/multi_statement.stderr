@@ -1,7 +1,7 @@
 error: this SQL construct is outside the typed_sql v1 subset: typed_sql v1 expects exactly one statement
   --> tests/ui/typed_query/fail/multi_statement.rs:4:37
    |
- 4 |       let _command: Command<(i32,)> = babar::typed_query!(
+ 4 |       let _command: Command<(i32,)> = babar::command!(
    |  _____________________________________^
  5 | |         schema = {
  6 | |             table public.users {
@@ -11,4 +11,4 @@ error: this SQL construct is outside the typed_sql v1 subset: typed_sql v1 expec
 11 | |     );
    | |_____^
    |
-   = note: this error originates in the macro `babar::typed_query` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the macro `babar::command` (in Nightly builds, run with -Z macro-backtrace for more info)

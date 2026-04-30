@@ -40,7 +40,7 @@
 //!     session.copy_in(&copy, rows).await?;
 //!
 //!     let select: Query<(), UserRow> =
-//!         Query::raw("SELECT id, name, handle FROM users ORDER BY id", (), UserRow::CODEC);
+//!         Query::raw("SELECT id, name, handle FROM users ORDER BY id", UserRow::CODEC);
 //!     session.query(&select, ()).await
 //! }
 //! ```

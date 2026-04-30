@@ -68,14 +68,12 @@ async fn run(session: &Session) -> babar::Result<()> {
             visits int8 NOT NULL,\
             handle varchar NOT NULL\
         )",
-        (),
     );
     session.execute(&create, ()).await?;
 
-    let insert: Command<UserRow> = Command::raw(
+    let insert: Command<UserRow> = Command::raw_with(
         "INSERT INTO derive_codec_demo (id, name, active, note, visits, handle) VALUES ($1, $2, $3, $4, $5, $6)",
-        UserRow::CODEC,
-    );
+        UserRow::CODEC);
     for row in [
         UserRow {
             id: 1,
@@ -99,7 +97,6 @@ async fn run(session: &Session) -> babar::Result<()> {
 
     let select: Query<(), UserRow> = Query::raw(
         "SELECT id, name, active, note, visits, handle FROM derive_codec_demo ORDER BY id",
-        (),
         UserRow::CODEC,
     );
     let rows = session.query(&select, ()).await?;

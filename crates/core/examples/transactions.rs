@@ -49,15 +49,10 @@ async fn main() -> ExitCode {
 }
 
 async fn run(session: &Session) -> babar::Result<()> {
-    let create: Command<()> = Command::raw(
-        "CREATE TEMP TABLE tx_example (id int4 PRIMARY KEY, note text NOT NULL)",
-        (),
-    );
-    let select: Query<(), (i32, String)> = Query::raw(
-        "SELECT id, note FROM tx_example ORDER BY id",
-        (),
-        (int4, text),
-    );
+    let create: Command<()> =
+        Command::raw("CREATE TEMP TABLE tx_example (id int4 PRIMARY KEY, note text NOT NULL)");
+    let select: Query<(), (i32, String)> =
+        Query::raw("SELECT id, note FROM tx_example ORDER BY id", (int4, text));
     session.execute(&create, ()).await?;
 
     session.transaction(transaction_body).await?;
@@ -70,7 +65,7 @@ async fn run(session: &Session) -> babar::Result<()> {
 }
 
 async fn transaction_body(tx: Transaction<'_>) -> babar::Result<()> {
-    let insert: Command<(i32, String)> = Command::raw(
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO tx_example (id, note) VALUES ($1, $2)",
         (int4, text),
     );
@@ -82,7 +77,7 @@ async fn transaction_body(tx: Transaction<'_>) -> babar::Result<()> {
 }
 
 async fn rollbacking_savepoint(sp: Savepoint<'_>) -> babar::Result<()> {
-    let insert: Command<(i32, String)> = Command::raw(
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO tx_example (id, note) VALUES ($1, $2)",
         (int4, text),
     );

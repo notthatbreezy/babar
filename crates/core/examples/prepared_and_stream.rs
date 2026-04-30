@@ -59,11 +59,10 @@ async fn run(session: &Session) -> babar::Result<()> {
             id int4 PRIMARY KEY,
             title text NOT NULL
          )",
-        (),
     );
     session.execute(&create, ()).await?;
 
-    let insert: Command<(i32, String)> = Command::raw(
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO prepared_demo (id, title) VALUES ($1, $2)",
         (int4, text),
     );
@@ -80,7 +79,7 @@ async fn run(session: &Session) -> babar::Result<()> {
     }
     prepared_insert.close().await?;
 
-    let lookup: Query<(i32,), (i32, String)> = Query::raw(
+    let lookup: Query<(i32,), (i32, String)> = Query::raw_with(
         "SELECT id, title FROM prepared_demo WHERE id >= $1 ORDER BY id",
         (int4,),
         (int4, text),
@@ -102,7 +101,6 @@ async fn run(session: &Session) -> babar::Result<()> {
 
     let stream_query: Query<(), (i32, String)> = Query::raw(
         "SELECT id, title FROM prepared_demo ORDER BY id",
-        (),
         (int4, text),
     );
     let mut rows = session.stream_with_batch_size(&stream_query, (), 2).await?;

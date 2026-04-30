@@ -12,7 +12,7 @@ use std::borrow::Cow;
 pub(crate) use ir::*;
 #[allow(unused_imports)]
 pub(crate) use public_input::PublicSqlInput;
-pub(crate) use public_schema::{expand_command, expand_query, expand_typed_query};
+pub(crate) use public_schema::{expand_command, expand_query};
 pub(crate) use resolver::{Nullability, SqlType};
 pub(crate) use source::SqlSource;
 

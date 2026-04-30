@@ -102,7 +102,6 @@ async fn run(session: &Session) -> babar::Result<()> {
 
     let select: Query<(), VisitRow> = Query::raw(
         "SELECT id, email, active, note, visits FROM bulk_visits ORDER BY id",
-        (),
         VisitRow::CODEC,
     );
     for row in session.query(&select, ()).await? {

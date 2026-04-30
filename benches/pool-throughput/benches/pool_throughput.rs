@@ -225,7 +225,7 @@ fn pool_throughput(c: &mut Criterion) {
     let babar_counter = AtomicI32::new(0);
     let bb8_counter = AtomicI32::new(0);
     let sqlx_counter = AtomicI32::new(0);
-    let babar_query: Query<(i32,), (i32,)> = Query::raw(SQL, (int4,), (int4,));
+    let babar_query: Query<(i32,), (i32,)> = Query::raw_with(SQL, (int4,), (int4,));
 
     let mut group = c.benchmark_group("pool_throughput");
     group.sample_size(10);

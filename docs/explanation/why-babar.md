@@ -3,62 +3,52 @@
 > See also: [Get started](../getting-started/first-query.md), the
 > [Book](../book/01-connecting.md).
 
-babar is a Rust client for Postgres. There are several already. Why
-another one?
+babar is a Rust client for Postgres. The project is organized around a simple
+idea: one clear shape for each database task.
 
-The short answer is *one obvious way to do each thing*. Connect, run a
-typed query, run a command, stream a result, manage a transaction,
-hold a pool, ingest with COPY, run migrations — there is one shape per
-task, and the codecs are values you import by name. The next time you
-read your own code (or some code that AI wrote), you can read it.
+Connect, run a typed query, run a command, stream a result, manage a
+transaction, hold a pool, ingest with COPY, run migrations — each task has a
+small surface area, and the codec layer stays explicit when you need it.
 
 ## Three pillars
 
 ### Ergonomic by design
 
-Read it once, understand it forever. Queries are typed values. Codecs
-are imported by name. There is one way to start a transaction, one way
-to bind a parameter, one way to run a migration. You will not spend an
-afternoon learning which of seven options to use.
+Read it once, understand it forever. Queries are typed values, commands are
+typed values, and codecs are imported by name when you work at the raw layer.
 
 ### Postgres at heart
 
-The wire protocol, faithfully. babar speaks Postgres directly —
-extended-protocol prepares, binary results, SCRAM-SHA-256, channel
-binding over TLS, and binary `COPY FROM STDIN` for bulk ingest. There
-is no translation layer between you and the server.
-
-Over time `babar` will take advantage of unique features and advantages of PostgreSQL because it does not need to worry about the lowest common denominator among databases.
+babar speaks Postgres directly: extended-protocol prepares, binary results,
+SCRAM-SHA-256, channel binding over TLS, and binary `COPY FROM STDIN` for bulk
+ingest.
 
 ### Built for the herd
 
-Predictable under load. A single background task owns the socket and
-serializes wire I/O, so every public call is cancellation-safe. Pool,
-statement cache, and `tracing` spans are first-class — not bolted on
-later.
+A single background task owns the socket and serializes wire I/O, so public calls
+stay cancellation-safe. Pools, statement caches, and `tracing` spans are part of
+the design.
 
-## What "typed query" actually means
+## What “typed query” means here
 
 In babar, a `Query<Params, Row>` is a runtime value. It carries:
 
-- The SQL text.
-- A parameter encoder (`Encoder<Params>`).
-- A row decoder (`Decoder<Row>`).
+- SQL text
+- a parameter encoder for `Params`
+- a row decoder for `Row`
 
-When the type system says `Query<(i32,), (Uuid, String, i64)>`, the compiler
-knows the parameter shape, the row shape, and which codecs participate. There
-is no magic — `query!` is now the default schema-aware path, `typed_query!`
-remains a compatibility alias during the transition, and `Query::raw`
-constructs the same runtime value explicitly when you need an unsupported raw
-fallback.
+The schema-aware path uses `schema!`, `query!`, and `command!` to build those
+runtime values from authored schema facts and SQL. The explicit fallback path
+uses `Query::raw`, `Query::raw_with`, `Command::raw`, and `Command::raw_with`
+when you want to provide codecs yourself.
 
 ## Where to read next
 
-- [Design principles](./design-principles.md) — typed, async, native
-  protocol, validate-early, no-unsafe.
-- [The driver task](./driver-task.md) — the per-connection background
-  task that makes every call cancellation-safe.
-- [Comparisons](./comparisons.md) — a trade-off-focused comparison table
-  for `tokio-postgres`, `sqlx`, and `diesel`.
-- [Roadmap](./roadmap.md) — what's in, what's deferred, and where the
-  project is going.
+- [Design principles](./design-principles.md) — typed boundaries, validation,
+  and runtime model.
+- [The driver task](./driver-task.md) — how the background task keeps the socket
+  consistent.
+- [Comparisons](./comparisons.md) — trade-offs against other Rust Postgres
+  clients.
+- [The typed-SQL macro pipeline](./typed-sql-macro-pipeline.md) — how the public
+  typed-SQL surface is assembled.

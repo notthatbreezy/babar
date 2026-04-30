@@ -4,7 +4,7 @@ use proc_macro::TokenStream;
 use proc_macro2::{TokenStream as TokenStream2, TokenTree};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
-use syn::{braced, parenthesized, parse_macro_input, token, Error, Ident, Result, Token};
+use syn::{braced, parenthesized, token, Error, Ident, Result, Token};
 
 use super::lower;
 use super::lower::LoweredQuery;
@@ -58,19 +58,10 @@ pub(crate) fn expand_command(input: TokenStream) -> TokenStream {
     }
 }
 
-pub(crate) fn expand_typed_query(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as TypedQueryInput);
-    match compile_typed_query(input, MacroEntrypoint::TypedQuery) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.into_compile_error().into(),
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MacroEntrypoint {
     Query,
     Command,
-    TypedQuery,
 }
 
 impl MacroEntrypoint {
@@ -78,7 +69,6 @@ impl MacroEntrypoint {
         match self {
             Self::Query => "query!",
             Self::Command => "command!",
-            Self::TypedQuery => "typed_query!",
         }
     }
 }
@@ -128,16 +118,8 @@ fn enforce_entrypoint_contract(
     }
 }
 
-fn rewrite_entrypoint_error(err: Error, entrypoint: MacroEntrypoint) -> Error {
-    let rewritten = err
-        .to_string()
-        .replace("typed_query!", entrypoint.name())
-        .replace(
-            "typed_query schema",
-            &format!("{} schema", entrypoint.name()),
-        )
-        .replace("typed_query SQL", &format!("{} SQL", entrypoint.name()));
-    Error::new(err.span(), rewritten)
+fn rewrite_entrypoint_error(err: Error, _entrypoint: MacroEntrypoint) -> Error {
+    Error::new(err.span(), err.to_string())
 }
 
 fn verify_live_schema(
@@ -288,7 +270,7 @@ impl Parse for TypedSqlFrontDoorInput {
             input.parse::<kw::__babar_schema>()?;
             SchemaSourceKind::AuthoredBridge
         } else {
-            return Err(input.error("expected `schema = { ... }` before typed_query SQL"));
+            return Err(input.error("expected `schema = { ... }` before schema-aware SQL"));
         };
         input.parse::<Token![=]>()?;
         let schema = input.parse()?;
@@ -396,16 +378,16 @@ fn reject_extra_schema_argument(
 
     let message = match (source_kind, name.as_str()) {
         (SchemaSourceKind::AuthoredBridge, "schema") => {
-            "schema-scoped authored `typed_query!` already supplies the external schema; inline `schema = { ... }` blocks cannot be mixed into this call"
+            "schema-scoped wrapper already supplies the schema; inline `schema = { ... }` blocks cannot be mixed into this call"
         }
         (SchemaSourceKind::AuthoredBridge, "__babar_schema") => {
-            "schema-scoped authored `typed_query!` already supplies its internal schema bridge; do not pass `__babar_schema = { ... }` manually"
+            "schema-scoped wrapper already supplies its internal schema bridge; do not pass `__babar_schema = { ... }` manually"
         }
         (SchemaSourceKind::Inline, "__babar_schema") => {
-            "cannot mix inline `schema = { ... }` with the authored external schema bridge `__babar_schema = { ... }` in one typed_query! call"
+            "cannot mix inline `schema = { ... }` with the authored external schema bridge `__babar_schema = { ... }` in one schema-aware typed SQL call"
         }
         (SchemaSourceKind::Inline, "schema") => {
-            "typed_query! accepts only one `schema = { ... }` block before the SQL input"
+            "schema-aware typed SQL accepts only one `schema = { ... }` block before the SQL input"
         }
         _ => unreachable!("schema argument name was validated above"),
     };
@@ -447,7 +429,7 @@ impl SchemaInput {
             if let Some(previous) = seen_tables.insert(qualified_name.clone(), table.name.span()) {
                 let mut err = Error::new(
                     table.name.span(),
-                    format!("duplicate table `{qualified_name}` in typed_query schema"),
+                    format!("duplicate table `{qualified_name}` in schema block"),
                 );
                 err.combine(Error::new(previous, "first defined here"));
                 return Err(err);
@@ -470,7 +452,7 @@ impl SchemaInput {
                     let mut err = Error::new(
                         column.name.span(),
                         format!(
-                            "duplicate column `{column_name}` in typed_query schema table `{display_name}`"
+                            "duplicate column `{column_name}` in schema table `{display_name}`"
                         ),
                     );
                     err.combine(Error::new(previous, "first defined here"));
@@ -615,7 +597,7 @@ fn resolve_sql_type(name: &Ident) -> Result<SqlType> {
         other => Err(Error::new(
             name.span(),
             format!(
-                "unsupported typed_query schema type `{other}`; supported types are bool, bytea, varchar, text, int2, int4, int8, float4, float8, uuid, date, time, timestamp, timestamptz, json, jsonb, and numeric"
+                "unsupported schema type `{other}`; supported types are bool, bytea, varchar, text, int2, int4, int8, float4, float8, uuid, date, time, timestamp, timestamptz, json, jsonb, and numeric"
             ),
         )),
     }
@@ -679,9 +661,9 @@ mod tests {
             Err(err) => err,
         };
 
-        assert!(err.to_string().contains(
-            "schema-scoped authored `typed_query!` already supplies the external schema"
-        ));
+        assert!(err
+            .to_string()
+            .contains("schema-scoped wrapper already supplies the schema"));
     }
 
     #[test]

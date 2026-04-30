@@ -161,7 +161,7 @@ impl BabarState {
         let session = Session::connect(pg.babar_config("prepared-throughput-babar"))
             .await
             .expect("connect babar");
-        let query: Query<(i32,), (i32,)> = Query::raw(SQL, (int4,), (int4,));
+        let query: Query<(i32,), (i32,)> = Query::raw_with(SQL, (int4,), (int4,));
         let prepared = session.prepare_query(&query).await.expect("prepare babar");
         Self { session, prepared }
     }

@@ -14,10 +14,10 @@ babar::schema! {
 }
 
 fn main() {
-    let _users: Query<(), (i32, String)> = app_schema::typed_query!(
+    let _users: Query<(), (i32, String)> = app_schema::query!(
         SELECT users.id, users.name FROM public.users
     );
-    let _events: Query<(), (i64, String)> = app_schema::typed_query!(
+    let _events: Query<(), (i64, String)> = app_schema::query!(
         SELECT events.id, events.title FROM audit_logs.events
     );
 }

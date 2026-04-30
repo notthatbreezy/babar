@@ -60,15 +60,13 @@ async fn main() -> ExitCode {
 
 async fn run(pool: &Pool) -> babar::Result<()> {
     let conn = pool.acquire().await.map_err(pool_error)?;
-    let create: Command<()> = Command::raw(
-        "CREATE TEMP TABLE pool_example (id int4 PRIMARY KEY, note text NOT NULL)",
-        (),
-    );
-    let insert: Command<(i32, String)> = Command::raw(
+    let create: Command<()> =
+        Command::raw("CREATE TEMP TABLE pool_example (id int4 PRIMARY KEY, note text NOT NULL)");
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO pool_example (id, note) VALUES ($1, $2)",
         (int4, text),
     );
-    let lookup: Query<(i32,), (String,)> = Query::raw(
+    let lookup: Query<(i32,), (String,)> = Query::raw_with(
         "SELECT note FROM pool_example WHERE id = $1",
         (int4,),
         (text,),

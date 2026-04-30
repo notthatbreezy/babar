@@ -36,7 +36,7 @@ async fn admin_session(pg: &PgContainer, application_name: &str) -> Session {
 async fn terminate_backend(pg: &PgContainer, pid: i32) {
     let admin = admin_session(pg, "babar-m4-admin").await;
     let terminate: Query<(i32,), (bool,)> =
-        Query::raw("SELECT pg_terminate_backend($1)", (int4,), (bool,));
+        Query::raw_with("SELECT pg_terminate_backend($1)", (int4,), (bool,));
     let rows = admin
         .query(&terminate, (pid,))
         .await
@@ -80,13 +80,13 @@ async fn pool_handles_concurrent_load_without_deadlock() {
 
     let pool = Arc::new(pool);
     let query: Query<(i32,), (i32,)> =
-        Query::raw("SELECT $1::int4 FROM pg_sleep(0.01)", (int4,), (int4,));
+        Query::raw_with("SELECT $1::int4 FROM pg_sleep(0.01)", (int4,), (int4,));
 
     let started = Instant::now();
     let mut tasks = Vec::new();
     for i in 0..100_i32 {
         let pool = Arc::clone(&pool);
-        let query = Query::raw(query.sql().to_string(), (int4,), (int4,));
+        let query = Query::raw_with(query.sql().to_string(), (int4,), (int4,));
         tasks.push(tokio::spawn(async move {
             let conn = pool.acquire().await.expect("acquire pooled connection");
             let rows = conn.query(&query, (i,)).await.expect("run query");
@@ -128,7 +128,7 @@ async fn acquire_replaces_dead_idle_connection() {
         .await
         .expect("acquire replacement connection");
     let second_pid = second.backend_key().expect("backend key available").0;
-    let ping: Query<(), (i32,)> = Query::raw("SELECT 1::int4", (), (int4,));
+    let ping: Query<(), (i32,)> = Query::raw("SELECT 1::int4", (int4,));
     assert_eq!(
         second.query(&ping, ()).await.expect("query replacement"),
         vec![(1,)]
@@ -155,7 +155,7 @@ async fn transaction_panic_returns_clean_connection_to_pool() {
     };
 
     let conn = pool.acquire().await.expect("acquire connection");
-    let create: Command<()> = Command::raw("CREATE TEMP TABLE pooled_panic_demo (id int4)", ());
+    let create: Command<()> = Command::raw("CREATE TEMP TABLE pooled_panic_demo (id int4)");
     conn.execute(&create, ()).await.expect("create temp table");
 
     let panic_result = std::panic::AssertUnwindSafe(conn.transaction(pooled_panic_body))
@@ -167,11 +167,8 @@ async fn transaction_panic_returns_clean_connection_to_pool() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let conn = pool.acquire().await.expect("reacquire connection");
-    let txid: Query<(), (Option<i64>,)> = Query::raw(
-        "SELECT txid_current_if_assigned()::int8",
-        (),
-        (nullable(int8),),
-    );
+    let txid: Query<(), (Option<i64>,)> =
+        Query::raw("SELECT txid_current_if_assigned()::int8", (nullable(int8),));
     assert_eq!(
         conn.query(&txid, ()).await.expect("txid check"),
         vec![(None,)]
@@ -197,16 +194,14 @@ async fn nested_savepoints_and_prepared_cache_survive_checkout_return_checkout()
     };
 
     let conn = pool.acquire().await.expect("acquire connection");
-    let create: Command<()> = Command::raw(
-        "CREATE TEMP TABLE pool_prepare_demo (id int4 PRIMARY KEY, note text)",
-        (),
-    );
+    let create: Command<()> =
+        Command::raw("CREATE TEMP TABLE pool_prepare_demo (id int4 PRIMARY KEY, note text)");
     conn.execute(&create, ()).await.expect("create temp table");
     conn.transaction(pooled_savepoint_body)
         .await
         .expect("transaction succeeds");
 
-    let select: Query<(i32,), (String,)> = Query::raw(
+    let select: Query<(i32,), (String,)> = Query::raw_with(
         "SELECT note FROM pool_prepare_demo WHERE id = $1",
         (int4,),
         (text,),
@@ -239,13 +234,13 @@ async fn nested_savepoints_and_prepared_cache_survive_checkout_return_checkout()
 
 async fn pooled_panic_body(tx: PooledTransaction<'_>) -> babar::Result<()> {
     let insert: Command<(i32,)> =
-        Command::raw("INSERT INTO pooled_panic_demo (id) VALUES ($1)", (int4,));
+        Command::raw_with("INSERT INTO pooled_panic_demo (id) VALUES ($1)", (int4,));
     tx.execute(&insert, (1,)).await?;
     panic!("panic inside pooled transaction");
 }
 
 async fn pooled_savepoint_body(tx: PooledTransaction<'_>) -> babar::Result<()> {
-    let insert: Command<(i32, String)> = Command::raw(
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO pool_prepare_demo (id, note) VALUES ($1, $2)",
         (int4, text),
     );
@@ -256,7 +251,7 @@ async fn pooled_savepoint_body(tx: PooledTransaction<'_>) -> babar::Result<()> {
 }
 
 async fn pooled_rollback_savepoint(tx: PooledSavepoint<'_>) -> babar::Result<()> {
-    let insert: Command<(i32, String)> = Command::raw(
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO pool_prepare_demo (id, note) VALUES ($1, $2)",
         (int4, text),
     );
@@ -281,7 +276,8 @@ async fn connection_error_during_transaction_evicts_connection() {
 
     let conn = pool.acquire().await.expect("acquire connection");
     let pid = conn.backend_key().expect("backend key available").0;
-    let begin_insert: Command<(i32,)> = Command::raw("SELECT pg_sleep(0.1), $1::int4", (int4,));
+    let begin_insert: Command<(i32,)> =
+        Command::raw_with("SELECT pg_sleep(0.1), $1::int4", (int4,));
 
     terminate_backend(&pg, pid).await;
 
@@ -301,7 +297,7 @@ async fn connection_error_during_transaction_evicts_connection() {
         .acquire()
         .await
         .expect("acquire replacement connection");
-    let ping: Query<(), (i32,)> = Query::raw("SELECT 1::int4", (), (int4,));
+    let ping: Query<(), (i32,)> = Query::raw("SELECT 1::int4", (int4,));
     assert_eq!(
         conn.query(&ping, ()).await.expect("ping replacement"),
         vec![(1,)]

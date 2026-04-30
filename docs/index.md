@@ -1,35 +1,45 @@
 # The Book of Babar
 
-*Ergonomic Postgres for Rust.*
-*Typed, async, no surprises.*
+Typed Postgres for Rust, built directly on Tokio and the PostgreSQL wire
+protocol.
 
 ![The Babar brand sheet — wordmark, palette, and the herd at work](assets/img/babar-brand-sheet.png)
 
-`babar` is a typed, async Postgres driver for Tokio that speaks the PostgreSQL wire
-protocol directly. No `libpq`. No magic. Just queries, codecs, and clear
-errors — composed the way you'd compose any other Rust value.
+`babar` gives you a small set of Postgres-shaped building blocks:
 
-```
+- `Config` describes how to connect.
+- `Session` owns one connection and a background driver task.
+- `query!` and `command!` define typed SQL from authored schema facts.
+- `Query::raw`, `Query::raw_with`, `Command::raw`, and `Command::raw_with`
+  stay available when you need an explicit fallback.
+
+```text
 cargo add babar
 ```
 
-## Why babar
+## One typed-SQL path
 
-| Pillar | Headline | What you get |
-|---|---|---|
-| **Ergonomic by Design** | Read it once, understand it forever. | Queries are typed values. Codecs are imported by name. There is one way to start a transaction, one way to bind a parameter, one way to run a migration. |
-| **Postgres at Heart** | Why use any other database? | Extended-protocol prepares, binary results, SCRAM-SHA-256, channel binding over TLS, and binary `COPY FROM STDIN` for bulk ingest. No translation layer between you and the server. |
-| **Built for the Herd** | Predictable under load. | A single background task owns the socket and serializes wire I/O, so every public call is cancellation-safe. Pool, statement cache, and `tracing` spans are first-class. |
+The primary application story is:
 
-## Connect, type, query
-
-Three values: a `Config`, a `Command`, and a `Query`. The default SQL path is
-schema-aware `query!` / `command!`; raw SQL stays available as an explicit
-fallback.
+1. author schema facts with `schema!`
+2. build statements with schema-scoped `query!` / `command!`
+3. pass Rust values that already match the SQL shape
 
 ```rust
 use babar::query::{Command, Query};
 use babar::{Config, Session};
+
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct NewDemoUser {
+    id: i32,
+    name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct DemoUser {
+    id: i32,
+    name: String,
+}
 
 babar::schema! {
     mod app_schema {
@@ -42,53 +52,69 @@ babar::schema! {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> babar::Result<()> {
-    let session: Session = Session::connect(           // type: Session
+    let session: Session = Session::connect(
         Config::new("localhost", 5432, "postgres", "postgres")
             .password("secret")
             .application_name("hello-babar"),
     )
     .await?;
 
-    let create: Command<()> = Command::raw(
-        "CREATE TEMP TABLE demo_users (id int4 PRIMARY KEY, name text NOT NULL)",
-        (),
-    );
+    let create: Command<()> =
+        Command::raw("CREATE TEMP TABLE demo_users (id int4 PRIMARY KEY, name text NOT NULL)");
     session.execute(&create, ()).await?;
 
-    let insert: Command<(i32, String)> =
+    let insert: Command<NewDemoUser> =
         app_schema::command!(INSERT INTO demo_users (id, name) VALUES ($id, $name));
-    session.execute(&insert, (1, "Ada".to_string())).await?;
+    session
+        .execute(
+            &insert,
+            NewDemoUser {
+                id: 1,
+                name: "Ada".to_string(),
+            },
+        )
+        .await?;
 
-    let select: Query<(), (i32, String)> =             // type: Query<(), (i32, String)>
-        app_schema::query!(
-            SELECT demo_users.id, demo_users.name
-            FROM demo_users
-            ORDER BY demo_users.id
-        );
+    let select: Query<(), DemoUser> = app_schema::query!(
+        SELECT demo_users.id, demo_users.name
+        FROM demo_users
+        ORDER BY demo_users.id
+    );
 
-    let rows: Vec<(i32, String)> = session.query(&select, ()).await?; // type: Vec<(i32, String)>
-    println!("{rows:?}");
+    let rows: Vec<DemoUser> = session.query(&select, ()).await?;
+    for row in &rows {
+        println!("{}	{}", row.id, row.name);
+    }
 
     session.close().await?;
     Ok(())
 }
 ```
 
-You wrote three things:
-  1. a `Config` describing where to connect
-  2. a `Query<A, B>` describing the round-trip (parameters in, rows out)
-  3. an authored schema module that drives `query!` / `command!`, while
-     `Command::raw` stays available for unsupported setup SQL
+That example shows the intended split:
+
+- schema-aware macros for application SQL
+- explicit raw fallbacks for bootstrap or unsupported statements
+- structs as the normal shape for application-facing rows and parameters
+
+## How the docs are organized
+
+- **[Get Started](getting-started/first-query.md)** teaches the first successful round-trip.
+- **[The Book](book/01-connecting.md)** walks feature-by-feature through everyday usage.
+- **[Explanation](explanation/what-makes-babar-babar.md)** covers architecture, design,
+  and trade-offs.
+- **[Reference](reference/codecs.md)** is the catalog for codecs, errors, features,
+  and configuration.
 
 ## Where to go next
 
-> **New here?** Read **[What makes babar babar →](explanation/what-makes-babar-babar.md)**
-> first — a one-page tour of where babar sits and what makes it
-> distinctive.
-
-- **[Prerequisites →](getting-started/prerequisites.md)** — start a postgreSQL instance locally and see every query, command, and operation `babar` makes to the server.
-- **[Your first query →](getting-started/first-query.md)** — make your first query, with explanations of every step broken down along the way.
-- **[The Book of Babar →](book/01-connecting.md)** — covers everything A-Z when it comes to babary: connecting, querying, transactions, pooling, COPY,
-  migrations, errors, codecs, web services, TLS, and observability.
-- **[Reference →](reference/codecs.md)** — codec catalog, error catalog, feature flags, configuration knobs.
-- **[Why babar →](explanation/why-babar.md)** — understand the philosophy behind the design and what makes babar different.
+- **[Prerequisites →](getting-started/prerequisites.md)** — start a local Postgres and
+  make the examples observable.
+- **[Your first query →](getting-started/first-query.md)** — connect, create a table,
+  insert a row, and read it back.
+- **[Selecting rows →](book/02-selecting.md)** — learn the standard query shape with
+  schema-scoped wrappers and row structs.
+- **[What makes babar babar →](explanation/what-makes-babar-babar.md)** — see how the
+  driver task, typed boundaries, and Postgres-specific design fit together.
+- **[The typed-SQL macro pipeline →](explanation/typed-sql-macro-pipeline.md)** — follow
+  `schema!`, `query!`, and `command!` from authored schema facts to runtime values.

@@ -46,7 +46,7 @@ async fn select_one_int_with_param() {
 
     // SELECT $1::int4 — round-trips an integer through the parameter and
     // result paths.
-    let q: Query<(i32,), (i32,)> = Query::raw("SELECT $1::int4", (int4,), (int4,));
+    let q: Query<(i32,), (i32,)> = Query::raw_with("SELECT $1::int4", (int4,), (int4,));
     let rows = session.query(&q, (42_i32,)).await.expect("query");
     assert_eq!(rows, vec![(42_i32,)]);
 
@@ -60,7 +60,7 @@ async fn select_two_columns_decodes_tuple() {
     };
 
     let q: Query<(i32, String), (i32, String)> =
-        Query::raw("SELECT $1::int4, $2::text", (int4, text), (int4, text));
+        Query::raw_with("SELECT $1::int4, $2::text", (int4, text), (int4, text));
     let rows = session
         .query(&q, (7_i32, "hello".to_string()))
         .await
@@ -77,13 +77,13 @@ async fn nullable_decodes_sql_null() {
     };
 
     // Server-emitted NULL for a nullable int column.
-    let q: Query<(), (Option<i32>,)> = Query::raw("SELECT NULL::int4", (), (nullable(int4),));
+    let q: Query<(), (Option<i32>,)> = Query::raw("SELECT NULL::int4", (nullable(int4),));
     let rows = session.query(&q, ()).await.expect("query");
     assert_eq!(rows, vec![(None,)]);
 
     // Round-trip a Some.
     let q: Query<(Option<i32>,), (Option<i32>,)> =
-        Query::raw("SELECT $1::int4", (nullable(int4),), (nullable(int4),));
+        Query::raw_with("SELECT $1::int4", (nullable(int4),), (nullable(int4),));
     let rows = session.query(&q, (Some(99_i32),)).await.expect("query");
     assert_eq!(rows, vec![(Some(99_i32),)]);
 
@@ -101,12 +101,11 @@ async fn create_insert_select_workflow() {
 
     let create: Command<()> = Command::raw(
         "CREATE TEMP TABLE babar_users (id int4 PRIMARY KEY, name text NOT NULL, active bool)",
-        (),
     );
     let affected = session.execute(&create, ()).await.expect("create");
     assert_eq!(affected, 0, "DDL reports no affected rows");
 
-    let insert: Command<(i32, String, core::primitive::bool)> = Command::raw(
+    let insert: Command<(i32, String, core::primitive::bool)> = Command::raw_with(
         "INSERT INTO babar_users (id, name, active) VALUES ($1, $2, $3)",
         (int4, text, bool),
     );
@@ -128,7 +127,6 @@ async fn create_insert_select_workflow() {
 
     let select: Query<(), (i32, String, core::primitive::bool)> = Query::raw(
         "SELECT id, name, active FROM babar_users ORDER BY id",
-        (),
         (int4, text, bool),
     );
     let rows = session.query(&select, ()).await.expect("select");
@@ -141,7 +139,7 @@ async fn create_insert_select_workflow() {
         ]
     );
 
-    let update: Command<(core::primitive::bool, i32)> = Command::raw(
+    let update: Command<(core::primitive::bool, i32)> = Command::raw_with(
         "UPDATE babar_users SET active = $1 WHERE id = $2",
         (bool, int4),
     );
@@ -151,7 +149,8 @@ async fn create_insert_select_workflow() {
         .expect("update");
     assert_eq!(n, 1);
 
-    let delete: Command<(i32,)> = Command::raw("DELETE FROM babar_users WHERE id = $1", (int4,));
+    let delete: Command<(i32,)> =
+        Command::raw_with("DELETE FROM babar_users WHERE id = $1", (int4,));
     let n = session.execute(&delete, (3_i32,)).await.expect("delete");
     assert_eq!(n, 1);
 
@@ -169,7 +168,7 @@ async fn column_alignment_mismatch_surfaces_as_error() {
     // With binary format codes the server itself may reject the Bind message
     // ("bind message has N result formats but query has M columns"), which is
     // equally valid.
-    let q: Query<(), (i32,)> = Query::raw("SELECT 1::int4, 2::int4", (), (int4,));
+    let q: Query<(), (i32,)> = Query::raw("SELECT 1::int4, 2::int4", (int4,));
     let err = session.query(&q, ()).await.expect_err("must mismatch");
     match &err {
         Error::ColumnAlignment {
@@ -190,7 +189,7 @@ async fn column_alignment_mismatch_surfaces_as_error() {
     let Some((_pg2, session2)) = fresh_session().await else {
         return;
     };
-    let q: Query<(), (i32, i32)> = Query::raw("SELECT 1::int4", (), (int4, int4));
+    let q: Query<(), (i32, i32)> = Query::raw("SELECT 1::int4", (int4, int4));
     let err = session2.query(&q, ()).await.expect_err("must mismatch");
     match &err {
         Error::ColumnAlignment {
@@ -214,7 +213,7 @@ async fn float_and_bigint_and_bytea_roundtrip() {
         return;
     };
 
-    let q: Query<Tri, Tri> = Query::raw(
+    let q: Query<Tri, Tri> = Query::raw_with(
         "SELECT $1::float8, $2::int8, $3::bytea",
         (float8, int8, bytea),
         (float8, int8, bytea),
@@ -243,7 +242,7 @@ async fn server_error_during_extended_propagates() {
     // Bad cast — server returns ErrorResponse, ReadyForQuery 'I'. The
     // driver must surface the server error and stay usable for the next
     // command.
-    let q: Query<(), (i32,)> = Query::raw("SELECT 'not an int'::int4", (), (int4,));
+    let q: Query<(), (i32,)> = Query::raw("SELECT 'not an int'::int4", (int4,));
     match session.query(&q, ()).await {
         Err(Error::Server { code, .. }) => {
             // 22P02 = invalid_text_representation
@@ -253,7 +252,7 @@ async fn server_error_during_extended_propagates() {
     }
 
     // Session should still work afterwards.
-    let q: Query<(), (i32,)> = Query::raw("SELECT 1::int4", (), (int4,));
+    let q: Query<(), (i32,)> = Query::raw("SELECT 1::int4", (int4,));
     assert_eq!(session.query(&q, ()).await.unwrap(), vec![(1,)]);
 
     session.close().await.expect("close");

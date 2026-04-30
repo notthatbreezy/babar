@@ -42,7 +42,6 @@ async fn streams_large_result_sets_with_backpressure() {
 
     let q: Query<(), (i32,)> = Query::raw(
         "SELECT gs::int4 FROM generate_series(1, 10000) AS gs ORDER BY gs",
-        (),
         (int4,),
     );
     let mut stream = session
@@ -62,7 +61,7 @@ async fn streams_large_result_sets_with_backpressure() {
     }
     assert_eq!(expected, 10_001);
 
-    let check: Query<(), (i32,)> = Query::raw("SELECT 1::int4", (), (int4,));
+    let check: Query<(), (i32,)> = Query::raw("SELECT 1::int4", (int4,));
     assert_eq!(
         session.query(&check, ()).await.expect("session usable"),
         vec![(1,)]
@@ -79,7 +78,6 @@ async fn dropping_stream_releases_temporary_statement() {
 
     let q: Query<(), (i32,)> = Query::raw(
         "SELECT gs::int4 FROM generate_series(1, 1000) AS gs ORDER BY gs",
-        (),
         (int4,),
     );
     let mut stream = session
@@ -99,7 +97,7 @@ async fn dropping_stream_releases_temporary_statement() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let check_prepared: Query<(String,), (String,)> = Query::raw(
+    let check_prepared: Query<(String,), (String,)> = Query::raw_with(
         "SELECT name FROM pg_prepared_statements WHERE name LIKE $1 ORDER BY name",
         (text,),
         (text,),
@@ -113,7 +111,7 @@ async fn dropping_stream_releases_temporary_statement() {
         "temporary stream statements should be cleaned up, found {rows:?}"
     );
 
-    let check: Query<(), (i32,)> = Query::raw("SELECT 1::int4", (), (int4,));
+    let check: Query<(), (i32,)> = Query::raw("SELECT 1::int4", (int4,));
     assert_eq!(
         session.query(&check, ()).await.expect("session usable"),
         vec![(1,)]
@@ -136,7 +134,7 @@ async fn runtime_dynamic_typed_query_still_streams_rows() {
         .await
         .expect("seed table");
 
-    let query: Query<(Option<i32>,), (String,)> = babar::typed_query!(
+    let query: Query<(Option<i32>,), (String,)> = babar::query!(
         schema = {
             table public.streaming_dynamic_users {
                 id: int4,

@@ -115,7 +115,6 @@ fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
             }
 
             pub use #query_macro_ident as query;
-            pub use #query_macro_ident as typed_query;
 
             #[doc(hidden)]
             #[macro_export]
@@ -131,7 +130,6 @@ fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
             }
 
             pub use #command_macro_ident as command;
-            pub use #command_macro_ident as typed_command;
 
             pub const TABLES: &[::babar::schema::TableDef] = &[#(#table_defs),*];
             pub const SCHEMA: ::babar::schema::SchemaDef =

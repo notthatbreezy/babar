@@ -77,7 +77,6 @@ async fn run(session: &Session) -> babar::Result<()> {
             active bool NOT NULL,
             note text
          )",
-        (),
     );
     let _ = session.execute(&create, ()).await?;
     println!("created TEMP TABLE quickstart");

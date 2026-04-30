@@ -96,7 +96,6 @@ async fn initialize(pool: &Pool) -> babar::Result<()> {
     let conn = pool.acquire().await.map_err(pool_error)?;
     let create: Command<()> = Command::raw(
         "CREATE TABLE IF NOT EXISTS widgets (id int4 PRIMARY KEY, name text NOT NULL)",
-        (),
     );
     conn.execute(&create, ()).await?;
     Ok(())

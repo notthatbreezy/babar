@@ -490,7 +490,7 @@ mod tests {
     }
 
     async fn count_rows(session: &babar::Session, sql: &str) -> i64 {
-        let query: Query<(), (i64,)> = Query::raw(sql, (), (int8,));
+        let query: Query<(), (i64,)> = Query::raw(sql, (int8,));
         session.query(&query, ()).await.expect("count rows")[0].0
     }
 

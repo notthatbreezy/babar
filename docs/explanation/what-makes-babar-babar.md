@@ -1,11 +1,11 @@
 # What makes babar babar
 
-> See also: [Why babar](./why-babar.md), [Design principles](./design-principles.md), [Comparisons](./comparisons.md).
+> See also: [Why babar](./why-babar.md),
+> [Design principles](./design-principles.md), and
+> [The typed-SQL macro pipeline](./typed-sql-macro-pipeline.md).
 
-If you only read one explanation page, read this one. This page
-describes *where* babar sits, *what* makes it distinctive, what it
-deliberately is **not**, and *when* it is the right tool to reach
-for.
+This page explains where babar sits, what its public API is optimizing for, and
+which trade-offs stay visible in the design.
 
 ## Where babar sits
 
@@ -13,8 +13,8 @@ for.
 ┌─────────────────────────────────────────┐
 │ your app                                │
 ├─────────────────────────────────────────┤
-│ babar  (typed Query/Command, codecs,    │
-│         pool, COPY, migrations)         │
+│ babar  (typed Query/Command values,     │
+│         codecs, pool, COPY, migrations) │
 ├─────────────────────────────────────────┤
 │ tokio  (TcpStream, tasks, cancellation) │
 ├─────────────────────────────────────────┤
@@ -22,188 +22,148 @@ for.
 └─────────────────────────────────────────┘
 ```
 
-There is no `libpq`, no `tokio-postgres` underneath, and no abstraction
-layer that pretends Postgres is a generic SQL backend. babar speaks the
-Postgres v3 protocol directly on top of Tokio.
+babar speaks the PostgreSQL wire protocol directly on top of Tokio. There is no
+`libpq`, no other Rust Postgres client under the surface, and no generic
+multi-database layer between your application and the server.
 
-A driver that supports four databases has to find the lowest common denominator across four protocols. babar
-picks one protocol and exposes its shape — extended-protocol prepare,
-binary results, channel binding, binary `COPY FROM STDIN` — without
-flattening it.
+That keeps the exposed shapes recognizably Postgres-shaped: extended-protocol
+prepares, binary results, SCRAM authentication, channel binding over TLS, and
+binary `COPY FROM STDIN`.
 
-## What's distinctive
+## Four design choices that show up everywhere
 
-Four properties show up everywhere in the API.
-
-### 1. The background driver task
+### 1. One background driver task owns the socket
 
 ```rust
-let session: Session = Session::connect(cfg).await?;   // type: Session
+let session: Session = Session::connect(cfg).await?;
 ```
 
-`session` is a thin handle. The TCP socket lives in a Tokio task that
-`Session::connect` spawned for you. Every public call on `Session`
-sends a request down an `mpsc` channel and awaits a `oneshot` reply;
-the driver task is the only thing that ever reads or writes the
-socket.
+`Session` is a handle. The connection itself lives in a Tokio task started by
+`Session::connect`. Public methods send requests to that task over channels and
+wait for the reply.
 
-Two things fall out of that.
+That design does two things:
 
-First, every public call is **cancellation-safe**. If you
-`tokio::select!` away from a query halfway through, the driver task
-keeps reading the in-flight messages and returns the protocol to a
-consistent state. You don't end up with a half-parsed `RowDescription`
-hanging off your socket the next time you ask for a query.
+- it keeps public calls cancellation-safe
+- it guarantees there is one writer to the socket, even when `Session` is cloned
+  and shared across tasks
 
-Second, there is exactly **one writer** to the socket. You can `clone`
-the `Session` handle, share it across tasks, and the driver still
-serializes commands. There is no locking on top of
-the socket — the channel *is* the lock. The
-[Driver task](./driver-task.md) page goes into more depth on what the
-task owns and how shutdown works.
+The [background driver task page](./driver-task.md) covers the runtime mechanics
+in more detail.
 
-### 2. Typestate at the boundary
+### 2. Types describe the database boundary
 
-The shape of every database operation is in the type signature.
+`Query<A, B>` says which value shape goes in and which row shape comes back.
+`Command<A>` says which value shape goes in when no rows come back.
 
 ```rust
-use babar::codec::{int4, text, nullable};
-use babar::query::Query;
-use babar::query::Command;
+use babar::query::{Command, Query};
 
-let select: Query<(i32,), (String, Option<i32>)> =        // type: Query<(i32,), (String, Option<i32>)>
-    Query::raw(
-        "SELECT name, parent_id FROM users WHERE id = $1",
-        (int4,),
-        (text, nullable(int4)),
-    );
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct NewUser {
+    id: i32,
+    name: String,
+    parent_id: Option<i32>,
+}
 
-let insert: Command<(String, i32)> =                      // type: Command<(String, i32)>
-    Command::raw(
-        "INSERT INTO users(name, parent_id) VALUES ($1, $2)",
-        (text, int4),
-    );
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct UserLookup {
+    id: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct UserRow {
+    name: String,
+    parent_id: Option<i32>,
+}
+
+babar::schema! {
+    mod app_schema {
+        table public.users {
+            id: primary_key(int4),
+            name: text,
+            parent_id: nullable(int4),
+        }
+    }
+}
+
+let insert: Command<NewUser> =
+    app_schema::command!(INSERT INTO users (id, name, parent_id) VALUES ($id, $name, $parent_id));
+
+let select: Query<UserLookup, UserRow> = app_schema::query!(
+    SELECT users.name, users.parent_id
+    FROM users
+    WHERE users.id = $id
+);
 ```
 
-`Query<P, R>` says "I take parameters of shape `P` and produce rows of
-shape `R`." `Command<P>` says "I take parameters of shape `P` and
-produce nothing readable." You cannot accidentally call
-`session.query(&insert, ...)` — it doesn't compile.
+Those statement values are plain Rust values. The type system prevents mixing up
+row-returning and rowless operations, and it keeps parameter and row shapes
+visible at the call site.
 
-Transactions extend the same idea. `session.transaction(|tx| ...)`
-hands you a `Transaction<'_>` whose lifetime is tied to the closure
-body, and the borrow checker prevents you from using the underlying
-`Session` while the `Transaction` is alive. There is no "did I forget
-to commit?" question because the compiler verifies it for you. See
-[Transactions](../book/05-transactions.md) for the full pattern,
-including savepoints.
+### 3. Schema-aware macros and explicit raw builders are separate tools
 
-Prepared queries are a separate type:
+The main application path is authored schema plus schema-scoped `query!` /
+`command!`. That keeps ordinary SQL concise and lets babar infer parameter and
+row shapes from the statement.
 
-```rust
-let prepared: PreparedQuery<(i32,), (String,)> =          // type: PreparedQuery<(i32,), (String,)>
-    session.prepare_query(&select).await?;
-```
+The explicit fallback path stays available too:
 
-A `PreparedQuery` is *not* a `Query`. The compiler knows it has been
-sent to the server, and once you have one you can stream rows from it
-without re-prepare overhead. Streaming `COPY FROM STDIN` ingest works
-the same way: `CopyIn<T>` has its own type, and the compiler tracks
-when you've finalized it.
+- `Command::raw` / `Command::raw_with`
+- `Query::raw` / `Query::raw_with`
+- `sql!` for lower-level fragment composition
 
-### 3. Codecs are values you import by name
+That split is intentional. babar does not try to hide which statements are in the
+schema-aware typed-SQL subset and which ones need explicit codecs.
 
-```rust
-use babar::codec::{int4, text, nullable};
+### 4. Validation happens as early as the API can make it happen
 
-let row_codec = (int4, text, nullable(int4));   // type: (Int4Codec, TextCodec, Nullable<Int4Codec>)
-```
+babar prefers to surface mismatches at the statement boundary.
 
-Codecs are runtime values, not derived types. The tuple `(int4, text,
-nullable(int4))` *is* the schema of the row, written by hand, sitting
-in your source file where you can read it. The `i32`, `String`, and
-`Option<i32>` that come back are determined by the codec, not by
-inference from a SQL string.
+- At bind time, the parameter shape is already part of the statement type.
+- At prepare time, row decoders are checked against `RowDescription` so schema
+  drift shows up before row decoding begins.
+- At display time, server-positioned errors include SQL text and origin
+  information so failures point back to the authored statement.
+- At macro expansion time, supported schema-aware `SELECT` statements can be
+  checked against a live database when `BABAR_DATABASE_URL` or `DATABASE_URL` is
+  set.
 
-This means three things in practice:
+The result is not “every bug is impossible.” The result is that several classes
+of query-shape mistakes become impossible or fail earlier than runtime row
+handling.
 
-- You don't need a live database at compile time to write a query.
-- Adding a new type — say, an enum with a custom OID — means writing a
-  `Codec` impl and importing the value. There is no proc-macro to
-  re-run, no `schema.rs` to regenerate.
-- The codec tuple is the documentation. You can read a `Query` value
-  and know exactly what wire types it expects and what Rust types it
-  produces, without leaving the file.
+## What babar is deliberately not
 
-The trade-off is honest: the cost is paid once per query and the legibility is
-paid back every time you read it.
+- **Not multi-database.** babar is for Postgres.
+- **Not synchronous.** The runtime model is async Tokio.
+- **Not an ORM.** SQL stays visible.
+- **Not a fluent AST builder.** babar keeps SQL text front and center.
+- **Not a full migration platform.** It ships a focused migration runner instead
+  of a separate migration product surface.
 
-### 4. Validate early
+Those boundaries keep the API small and keep the implementation aligned with the
+Postgres protocol it is built on.
 
-babar pushes "is this query well-formed?" as far left as it can.
+## When babar is a good fit
 
-- **At bind time**, the parameter codec tuple is statically the same
-  shape as `P` in `Query<P, R>`. You cannot under- or over-bind.
-- **At prepare time** `Session::prepare` cross-checks
-  the row codec tuple `(int4, text, nullable(int4))` against the
-  `RowDescription` Postgres sends back. If the column types or order
-  drifted, you get an `Error::SchemaMismatch { position, expected_oid,
-  actual_oid, column_name, sql, origin }` at *prepare* time, not when
-  you decode a row in production.
-- **At display time**, errors carry the `sql` and `origin` (file +
-  line where you wrote the SQL). The `Display` impl renders a `^`
-  caret under the offending byte for `Error::Server { position, .. }`
-  so you don't have to re-count columns by hand.
+Reach for babar when you want:
 
-The net effect is that "compiles + prepares" is a strong signal. You
-still have to test, but you don't have to test for "did I bind two
-parameters when the SQL wants three" — the type system already knows.
+- Postgres-specific behavior without a lowest-common-denominator abstraction
+- typed statement values at the database boundary
+- schema-aware typed SQL for common application queries and commands
+- explicit raw fallbacks for the cases that need them
+- early feedback when statement shape and schema drift apart
 
-## What babar deliberately is **not**
-
-A short list, because every "not" saves us from a feature you didn't
-want.
-
-- **Not multi-database.** No MySQL, no SQLite, no MSSQL. If you need
-  multi-database, reach for a multi-database driver. We point at
-  `sqlx` in [Comparisons](./comparisons.md).
-- **Not synchronous.** babar is async-only on Tokio.
-- **Not an ORM.** There is no `Queryable` derive, no `Insertable`, and no
-  generated schema module. SQL stays visible. Schema-aware `query!` /
-  `command!` are a narrow typed SQL surface, not a full ORM layer.
-- **Not a general query builder.** `query!`, `command!`, `Query::raw`,
-  `Command::raw`, and `sql!` keep SQL front and center; we still do not provide
-  a fluent typed AST you build up with `.select().from().where_(...)`.
-- **Not a migration tool.** babar ships a small migration runner for
-  the `embed_migrations!` workflow, but if you want a full migration
-  CLI with rollbacks and squashing, `refinery` or `sqlx-cli` are
-  better-fit tools.
-
-## When babar is the right pick
-
-Reach for babar when:
-
-- You target **Postgres specifically** and you'd rather see protocol
-  features (channel binding, binary `COPY`, prepared statements as a
-  type) than have them hidden behind a generic abstraction.
-- You want **types on the query** — `Query<P, R>`, `Command<P>`,
-  `Transaction<'_>` — with schema-aware `query!` / `command!` as the default,
-  `typed_query!` as a compatibility alias during migration, and explicit raw
-  fallbacks when the current typed SQL subset is not enough.
-- You want **`validate-early` semantics**: schema drift surfaces at
-  prepare time as `Error::SchemaMismatch`, not at row 4,723.
-
-Reach for something else when you need multi-database support, a
-mature ORM, or a feature babar has [deferred](./roadmap.md) — those
-are real needs and there are good answers for them.
+If you need multi-database support, a full ORM, or a much broader SQL rewrite
+surface, another tool will fit better.
 
 ## Where to read next
 
-- [Why babar](./why-babar.md) — the elevator pitch.
-- [Design principles](./design-principles.md) — the rule book.
-- [The background driver task](./driver-task.md) — how the task,
-  channels, and shutdown work.
-- [Comparisons](./comparisons.md) — a trade-off-focused comparison table
-  for `tokio-postgres`, `sqlx`, and `diesel`.
-- [Roadmap](./roadmap.md) — what's shipped, what's next, what's
-  deferred by design.
+- [Why babar](./why-babar.md) — a shorter statement of intent.
+- [Design principles](./design-principles.md) — the API rules behind these
+  choices.
+- [The background driver task](./driver-task.md) — runtime mechanics and
+  shutdown.
+- [The typed-SQL macro pipeline](./typed-sql-macro-pipeline.md) — how the typed
+  SQL surface lowers into runtime statement values.

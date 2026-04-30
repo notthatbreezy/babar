@@ -11,7 +11,7 @@ babar::schema! {
 }
 
 fn main() {
-    let _command: Command<(i32, String, bool)> = app_schema::typed_command!(
+    let _command: Command<(i32, String, bool)> = app_schema::command!(
         INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
     );
 }

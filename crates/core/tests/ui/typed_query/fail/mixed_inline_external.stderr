@@ -1,4 +1,4 @@
-error: schema-scoped authored `query!` already supplies the external schema; inline `schema = { ... }` blocks cannot be mixed into this call
+error: schema-scoped wrapper already supplies the schema; inline `schema = { ... }` blocks cannot be mixed into this call
   --> tests/ui/typed_query/fail/mixed_inline_external.rs:14:9
    |
 14 |         schema = {

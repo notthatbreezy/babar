@@ -66,6 +66,7 @@ fn typed_macro_ui() {
             tests.pass("tests/ui/typed_macro/pass/basic.rs");
             tests.compile_fail("tests/ui/typed_macro/fail/legacy_command_syntax.rs");
             tests.compile_fail("tests/ui/typed_macro/fail/legacy_query_syntax.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/typed_query_alias_removed.rs");
         },
     );
 }

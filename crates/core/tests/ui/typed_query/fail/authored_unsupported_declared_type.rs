@@ -8,5 +8,5 @@ babar::schema! {
 }
 
 fn main() {
-    let _query = app_schema::typed_query!(SELECT users.deleted_at FROM users);
+    let _query = app_schema::query!(SELECT users.deleted_at FROM users);
 }

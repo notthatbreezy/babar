@@ -11,5 +11,5 @@ babar::schema! {
 
 fn main() {
     let _query: Query<(), (::time::OffsetDateTime,)> =
-        app_schema::typed_query!(SELECT users.deleted_at FROM users);
+        app_schema::query!(SELECT users.deleted_at FROM users);
 }

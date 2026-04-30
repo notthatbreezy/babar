@@ -167,7 +167,7 @@ async fn derive_codec_roundtrips_struct_rows() {
         .await
         .expect("create table");
 
-    let insert: Command<DerivedRow> = Command::raw(
+    let insert: Command<DerivedRow> = Command::raw_with(
         "INSERT INTO derive_rows (id, name, active, note, visits) VALUES ($1, $2, $3, $4, $5)",
         DerivedRow::CODEC,
     );
@@ -197,7 +197,6 @@ async fn derive_codec_roundtrips_struct_rows() {
 
     let select: DerivedQuery = Query::raw(
         "SELECT id, name, active, note, visits FROM derive_rows ORDER BY id",
-        (),
         DerivedRow::CODEC,
     );
     let actual = session.query(&select, ()).await.expect("select rows");
@@ -226,10 +225,9 @@ async fn derive_codec_roundtrips_inferred_rows() {
         .await
         .expect("create table");
 
-    let insert: Command<InferredRow> = Command::raw(
+    let insert: Command<InferredRow> = Command::raw_with(
         "INSERT INTO inferred_rows (id, name, active, payload, note, visits) VALUES ($1, $2, $3, $4, $5, $6)",
-        InferredRow::CODEC,
-    );
+        InferredRow::CODEC);
     let expected = vec![
         InferredRow {
             id: 1,
@@ -258,7 +256,6 @@ async fn derive_codec_roundtrips_inferred_rows() {
 
     let select: Query<(), InferredRow> = Query::raw(
         "SELECT id, name, active, payload, note, visits FROM inferred_rows ORDER BY id",
-        (),
         InferredRow::CODEC,
     );
     let actual = session.query(&select, ()).await.expect("select rows");
@@ -285,7 +282,7 @@ async fn derive_codec_roundtrips_mixed_inferred_and_explicit_rows() {
         .await
         .expect("create table");
 
-    let insert: Command<MixedOverrideRow> = Command::raw(
+    let insert: Command<MixedOverrideRow> = Command::raw_with(
         "INSERT INTO mixed_override_rows (id, label, note, active) VALUES ($1, $2, $3, $4)",
         MixedOverrideRow::CODEC,
     );
@@ -313,7 +310,6 @@ async fn derive_codec_roundtrips_mixed_inferred_and_explicit_rows() {
 
     let select: Query<(), MixedOverrideRow> = Query::raw(
         "SELECT id, label, note, active FROM mixed_override_rows ORDER BY id",
-        (),
         MixedOverrideRow::CODEC,
     );
     let actual = session.query(&select, ()).await.expect("select rows");
@@ -334,7 +330,7 @@ async fn uuid_codec_roundtrip() {
         .parse::<::uuid::Uuid>()
         .unwrap();
     let query: Query<(::uuid::Uuid,), (::uuid::Uuid,)> =
-        Query::raw("SELECT $1::uuid", (uuid,), (uuid,));
+        Query::raw_with("SELECT $1::uuid", (uuid,), (uuid,));
     let rows = session.query(&query, (value,)).await.expect("select uuid");
     assert_eq!(rows, vec![(value,)]);
     session.close().await.expect("close");
@@ -351,7 +347,7 @@ async fn macaddr_codecs_roundtrip() {
 
     let mac = MacAddr::from([0x08, 0x00, 0x2b, 0x01, 0x02, 0x03]);
     let mac8 = MacAddr8::from([0x08, 0x00, 0x2b, 0xff, 0xfe, 0x01, 0x02, 0x03]);
-    let query: Query<(MacAddr, MacAddr8), (MacAddr, MacAddr8)> = Query::raw(
+    let query: Query<(MacAddr, MacAddr8), (MacAddr, MacAddr8)> = Query::raw_with(
         "SELECT $1::macaddr, $2::macaddr8",
         (macaddr, macaddr8),
         (macaddr, macaddr8),
@@ -376,7 +372,7 @@ async fn bit_codecs_roundtrip() {
 
     let fixed = BitString::from_text("10110010").expect("fixed bit string");
     let varying = BitString::from_text("10110").expect("varying bit string");
-    let query: Query<(BitString, BitString), (BitString, BitString)> = Query::raw(
+    let query: Query<(BitString, BitString), (BitString, BitString)> = Query::raw_with(
         "SELECT $1::bit(8), $2::varbit",
         (bit, varbit),
         (bit, varbit),
@@ -405,7 +401,8 @@ async fn citext_codec_roundtrip_with_dynamic_type_resolution() {
         .expect("create citext extension");
 
     let value = "MiXeD".to_string();
-    let query: Query<(String,), (String,)> = Query::raw("SELECT $1::citext", (citext,), (citext,));
+    let query: Query<(String,), (String,)> =
+        Query::raw_with("SELECT $1::citext", (citext,), (citext,));
     let rows = session
         .query(&query, (value.clone(),))
         .await
@@ -439,7 +436,8 @@ async fn hstore_codec_roundtrip_with_stable_map_surface() {
     map.insert("quoted".to_string(), Some("a\"b".to_string()));
     let value = Hstore::from(map);
 
-    let query: Query<(Hstore,), (Hstore,)> = Query::raw("SELECT $1::hstore", (hstore,), (hstore,));
+    let query: Query<(Hstore,), (Hstore,)> =
+        Query::raw_with("SELECT $1::hstore", (hstore,), (hstore,));
     let rows = session
         .query(&query, (value.clone(),))
         .await
@@ -468,7 +466,7 @@ async fn time_codecs_roundtrip() {
     let clock = ::time::Time::from_hms_micro(9, 26, 53, 123_456).unwrap();
     let ts = day.with_time(clock);
     let tsz = ts.assume_utc();
-    let query: Query<TimeTuple, TimeTuple> = Query::raw(
+    let query: Query<TimeTuple, TimeTuple> = Query::raw_with(
         "SELECT $1::date, $2::time, $3::timestamp, $4::timestamptz",
         (time_date, time_time, time_timestamp, time_timestamptz),
         (time_date, time_time, time_timestamp, time_timestamptz),
@@ -493,7 +491,7 @@ async fn chrono_codecs_roundtrip() {
     let clock = ::chrono::NaiveTime::from_hms_micro_opt(9, 26, 53, 123_456).unwrap();
     let ts = day.and_time(clock);
     let tsz = ::chrono::DateTime::from_naive_utc_and_offset(ts, ::chrono::Utc);
-    let query: Query<ChronoTuple, ChronoTuple> = Query::raw(
+    let query: Query<ChronoTuple, ChronoTuple> = Query::raw_with(
         "SELECT $1::date, $2::time, $3::timestamp, $4::timestamptz",
         (
             chrono_date,
@@ -538,7 +536,7 @@ async fn json_codecs_roundtrip() {
         id: 7,
         tags: vec!["a".into(), "b".into()],
     };
-    let query: Query<(serde_json::Value, Payload), (serde_json::Value, Payload)> = Query::raw(
+    let query: Query<(serde_json::Value, Payload), (serde_json::Value, Payload)> = Query::raw_with(
         "SELECT $1::json, $2::jsonb",
         (json, typed_json::<Payload>()),
         (json, typed_json::<Payload>()),
@@ -550,7 +548,7 @@ async fn json_codecs_roundtrip() {
     assert_eq!(rows, vec![(raw, typed)]);
 
     let query_b: Query<(serde_json::Value,), (serde_json::Value,)> =
-        Query::raw("SELECT $1::jsonb", (jsonb,), (jsonb,));
+        Query::raw_with("SELECT $1::jsonb", (jsonb,), (jsonb,));
     let value = json_value!({"typed": false});
     let rows = session
         .query(&query_b, (value.clone(),))
@@ -571,7 +569,7 @@ async fn numeric_codec_roundtrip() {
 
     let value = Decimal::from_i128_with_scale(123_456_789, 4);
     let query: Query<(Decimal,), (Decimal,)> =
-        Query::raw("SELECT $1::numeric", (numeric,), (numeric,));
+        Query::raw_with("SELECT $1::numeric", (numeric,), (numeric,));
     let rows = session
         .query(&query, (value,))
         .await
@@ -590,7 +588,7 @@ async fn net_codecs_roundtrip() {
 
     let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42));
     let query: Query<(IpAddr, IpAddr), (IpAddr, IpAddr)> =
-        Query::raw("SELECT $1::inet, $2::cidr", (inet, cidr), (inet, cidr));
+        Query::raw_with("SELECT $1::inet, $2::cidr", (inet, cidr), (inet, cidr));
     let rows = session
         .query(&query, (addr, addr))
         .await
@@ -609,7 +607,7 @@ async fn interval_codec_roundtrip() {
 
     let value = Interval::new(14, 3, 987_654_321);
     let query: Query<(Interval,), (Interval,)> =
-        Query::raw("SELECT $1::interval", (interval,), (interval,));
+        Query::raw_with("SELECT $1::interval", (interval,), (interval,));
     let rows = session
         .query(&query, (value,))
         .await
@@ -634,7 +632,7 @@ async fn array_codec_roundtrip() {
     )
     .expect("valid 2d array");
 
-    let query: Query<IntTextArrays, IntTextArrays> = Query::raw(
+    let query: Query<IntTextArrays, IntTextArrays> = Query::raw_with(
         "SELECT $1::int4[], $2::text[][]",
         (array(int4), array(text)),
         (array(int4), array(text)),
@@ -660,7 +658,7 @@ async fn range_codec_roundtrip() {
         upper: RangeBound::Exclusive(42_i32),
     };
     let query: Query<(Range<i32>,), (Range<i32>,)> =
-        Query::raw("SELECT $1::int4range", (range(int4),), (range(int4),));
+        Query::raw_with("SELECT $1::int4range", (range(int4),), (range(int4),));
     let rows = session
         .query(&query, (value.clone(),))
         .await
@@ -699,7 +697,7 @@ async fn postgis_codecs_roundtrip_common_shapes() {
     )]));
     let earth = Geography::wgs84(Point::new(-73.9857, 40.7484));
 
-    let query: Query<PostgisRow, PostgisRow> = Query::raw(
+    let query: Query<PostgisRow, PostgisRow> = Query::raw_with(
         "SELECT $1::geometry, $2::geometry, $3::geometry, $4::geometry, $5::geography",
         (
             geometry::<Point<f64>>(),
@@ -747,7 +745,6 @@ async fn postgis_reports_documented_geometry_collection_limit() {
 
     let query: Query<(), Geometry<GeoGeometry<f64>>> = Query::raw(
         "SELECT ST_GeomFromText('GEOMETRYCOLLECTION(POINT(1 2))')::geometry",
-        (),
         geometry::<GeoGeometry<f64>>(),
     );
     let error = session
@@ -777,7 +774,7 @@ async fn multirange_codec_roundtrip() {
             upper: RangeBound::Exclusive(15_i32),
         },
     ]);
-    let query: Query<Int4Multiranges, Int4Multiranges> = Query::raw(
+    let query: Query<Int4Multiranges, Int4Multiranges> = Query::raw_with(
         "SELECT $1::int4multirange",
         (multirange(int4),),
         (multirange(int4),),
@@ -810,7 +807,8 @@ async fn pgvector_codec_roundtrip() {
     }
 
     let value = Vector::new(vec![1.0, -2.5, 3.25]).expect("vector");
-    let query: Query<(Vector,), (Vector,)> = Query::raw("SELECT $1::vector", (vector,), (vector,));
+    let query: Query<(Vector,), (Vector,)> =
+        Query::raw_with("SELECT $1::vector", (vector,), (vector,));
     let prepared = session.prepare_query(&query).await.expect("prepare vector");
     let rows = prepared
         .query((value.clone(),))
@@ -832,7 +830,7 @@ async fn text_search_codecs_roundtrip() {
 
     let vector = TsVector::from("'fat':1 'rat':2");
     let query = TsQuery::from("fat & rat");
-    let roundtrip: Query<(TsVector, TsQuery), (TsVector, TsQuery)> = Query::raw(
+    let roundtrip: Query<(TsVector, TsQuery), (TsVector, TsQuery)> = Query::raw_with(
         "SELECT $1::tsvector, $2::tsquery",
         (tsvector, tsquery),
         (tsvector, tsquery),

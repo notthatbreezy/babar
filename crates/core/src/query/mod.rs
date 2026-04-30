@@ -31,6 +31,19 @@ pub struct Query<A, B> {
     pub(crate) decoder: Arc<dyn Decoder<B> + Send + Sync>,
 }
 
+impl<B> Query<(), B> {
+    /// Build a zero-parameter query directly from raw SQL plus a row decoder.
+    ///
+    /// This is the advanced fallback when schema-aware [`crate::query!`] is not
+    /// a fit and the statement takes no parameters.
+    pub fn raw<D>(sql: impl Into<String>, decoder: D) -> Self
+    where
+        D: Decoder<B> + Send + Sync + 'static,
+    {
+        Self::new(Fragment::__from_parts(sql, (), 0, None), decoder)
+    }
+}
+
 impl<A, B> Query<A, B> {
     /// Build a query directly from raw SQL plus explicit parameter/row codecs.
     ///
@@ -38,7 +51,7 @@ impl<A, B> Query<A, B> {
     /// a fit. SQL placeholders use Postgres' native `$1`, `$2`, ... numbering,
     /// and the encoder is responsible for producing exactly that many param
     /// slots in the same order.
-    pub fn raw<E, D>(sql: impl Into<String>, encoder: E, decoder: D) -> Self
+    pub fn raw_with<E, D>(sql: impl Into<String>, encoder: E, decoder: D) -> Self
     where
         E: Encoder<A> + Send + Sync + 'static,
         D: Decoder<B> + Send + Sync + 'static,
@@ -122,12 +135,22 @@ pub struct Command<A> {
     pub(crate) fragment: Fragment<A>,
 }
 
+impl Command<()> {
+    /// Build a zero-parameter command directly from raw SQL.
+    ///
+    /// This is the advanced fallback when schema-aware [`crate::command!`] is
+    /// not a fit and the statement takes no parameters.
+    pub fn raw(sql: impl Into<String>) -> Self {
+        Self::new(Fragment::__from_parts(sql, (), 0, None))
+    }
+}
+
 impl<A> Command<A> {
     /// Build a command directly from raw SQL and an explicit parameter encoder.
     ///
     /// This is the advanced fallback when schema-aware [`crate::command!`] is
     /// not a fit.
-    pub fn raw<E>(sql: impl Into<String>, encoder: E) -> Self
+    pub fn raw_with<E>(sql: impl Into<String>, encoder: E) -> Self
     where
         E: Encoder<A> + Send + Sync + 'static,
     {
@@ -222,8 +245,8 @@ mod tests {
     }
 
     #[test]
-    fn query_raw_carries_metadata() {
-        let q: Query<(i32, String), (i32,)> = Query::raw(
+    fn query_raw_with_carries_metadata() {
+        let q: Query<(i32, String), (i32,)> = Query::raw_with(
             "SELECT id FROM t WHERE name = $1 AND id > $2",
             (int4, text),
             (int4,),
@@ -236,10 +259,27 @@ mod tests {
     }
 
     #[test]
-    fn command_raw_carries_metadata() {
+    fn query_raw_uses_unit_encoder() {
+        let q: Query<(), (i32,)> = Query::raw("SELECT 1::int4", (int4,));
+        assert_eq!(q.sql(), "SELECT 1::int4");
+        assert_eq!(q.param_oids(), &[] as &[types::Oid]);
+        assert_eq!(q.output_oids(), &[types::INT4][..]);
+        assert!(q.origin().is_none());
+    }
+
+    #[test]
+    fn command_raw_with_carries_metadata() {
         let cmd: Command<(i32, core::primitive::bool)> =
-            Command::raw("UPDATE t SET active = $2 WHERE id = $1", (int4, bool));
+            Command::raw_with("UPDATE t SET active = $2 WHERE id = $1", (int4, bool));
         assert_eq!(cmd.param_oids(), &[types::INT4, types::BOOL][..]);
+        assert!(cmd.origin().is_none());
+    }
+
+    #[test]
+    fn command_raw_uses_unit_encoder() {
+        let cmd: Command<()> = Command::raw("VACUUM");
+        assert_eq!(cmd.sql(), "VACUUM");
+        assert_eq!(cmd.param_oids(), &[] as &[types::Oid]);
         assert!(cmd.origin().is_none());
     }
 
@@ -269,7 +309,7 @@ mod tests {
 
     #[test]
     fn query_exposes_dynamic_type_metadata() {
-        let q: Query<(), ()> = Query::raw(
+        let q: Query<(), ()> = Query::raw_with(
             "SELECT $1::geometry",
             DynamicGeometryCodec,
             DynamicGeometryCodec,

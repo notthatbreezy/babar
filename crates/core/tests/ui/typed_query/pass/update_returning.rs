@@ -1,7 +1,7 @@
 use babar::query::Query;
 
 fn main() {
-    let _query: Query<(String, i32), (i32, String)> = babar::typed_query!(
+    let _query: Query<(String, i32), (i32, String)> = babar::command!(
         schema = {
             table public.users {
                 id: int4,

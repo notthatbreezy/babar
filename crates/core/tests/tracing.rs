@@ -98,8 +98,8 @@ async fn session_emits_expected_tracing_spans() {
         .await
         .expect("connect");
 
-    let q: Query<(i32,), (i32,)> = Query::raw("SELECT $1::int4 + 1", (int4,), (int4,));
-    let cmd: Command<()> = Command::raw("CREATE TEMP TABLE tracing_demo (id int4)", ());
+    let q: Query<(i32,), (i32,)> = Query::raw_with("SELECT $1::int4 + 1", (int4,), (int4,));
+    let cmd: Command<()> = Command::raw("CREATE TEMP TABLE tracing_demo (id int4)");
 
     session.execute(&cmd, ()).await.expect("execute");
     session.prepare_query(&q).await.expect("prepare");
@@ -135,7 +135,7 @@ async fn pool_connect_preserves_tracing_on_acquire() {
         .await
         .expect("pool");
     let conn = pool.acquire().await.expect("acquire");
-    let q: Query<(i32,), (i32,)> = Query::raw("SELECT $1::int4", (int4,), (int4,));
+    let q: Query<(i32,), (i32,)> = Query::raw_with("SELECT $1::int4", (int4,), (int4,));
     let rows = conn.query(&q, (7,)).await.expect("query");
     assert_eq!(rows, vec![(7,)]);
     drop(conn);
@@ -147,7 +147,7 @@ async fn pool_connect_preserves_tracing_on_acquire() {
 }
 
 async fn traced_transaction_body(tx: babar::Transaction<'_>) -> babar::Result<()> {
-    let q: Query<(i32,), (i32,)> = Query::raw("SELECT $1::int4 + 1", (int4,), (int4,));
+    let q: Query<(i32,), (i32,)> = Query::raw_with("SELECT $1::int4 + 1", (int4,), (int4,));
     let rows = tx.query(&q, (41,)).await?;
     assert_eq!(rows, vec![(42,)]);
     Ok(())

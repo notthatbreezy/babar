@@ -19,10 +19,10 @@ fn main() {
     let _public_id = app_schema::public::users::id();
     let _reporting_id = app_schema::reporting::users::id();
 
-    let _public_users: Query<(), (String,)> = app_schema::typed_query!(
+    let _public_users: Query<(), (String,)> = app_schema::query!(
         SELECT users.name FROM public.users WHERE users.active = true
     );
-    let _reporting_users: Query<(), (String,)> = app_schema::typed_query!(
+    let _reporting_users: Query<(), (String,)> = app_schema::query!(
         SELECT users.name FROM reporting.users WHERE users.active = true
     );
 }

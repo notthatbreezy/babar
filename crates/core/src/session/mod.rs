@@ -274,7 +274,7 @@ impl Session {
         async {
             if query.fragment.dynamic.is_some() {
                 return Err(Error::Codec(
-                    "queries with runtime-dependent optional typed_query! SQL cannot be prepared; call Session::query or Session::stream with arguments instead".into(),
+                    "queries with runtime-dependent optional schema-aware SQL cannot be prepared; call Session::query or Session::stream with arguments instead".into(),
                 )
                 .with_sql(query.sql(), query.origin()));
             }
@@ -347,7 +347,7 @@ impl Session {
         async {
             if cmd.fragment.dynamic.is_some() {
                 return Err(Error::Codec(
-                    "commands with runtime-dependent optional typed_query! SQL cannot be prepared; call Session::execute with arguments instead".into(),
+                    "commands with runtime-dependent optional schema-aware SQL cannot be prepared; call Session::execute with arguments instead".into(),
                 )
                 .with_sql(cmd.sql(), cmd.origin()));
             }

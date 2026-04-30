@@ -180,27 +180,6 @@ pub fn command(input: TokenStream) -> TokenStream {
     expand_public_typed_macro::<CommandInput>(input, "command", "`command!(\"...\", params = ...)`")
 }
 
-/// Build a typed `babar::query::Query` by resolving SQL against an inline schema
-/// DSL that the proc macro can parse directly.
-///
-/// v0.1 keeps the schema surface intentionally small:
-///
-/// - `schema = { table public.users { id: int4, name: text } }`
-/// - identifier-like schema, table, and column names only
-/// - SQL type names: `bool`, `bytea`, `varchar`, `text`, `int2`, `int4`,
-///   `int8`, `float4`, `float8`, `uuid`, `date`, `time`, `timestamp`,
-///   `timestamptz`, `json`, `jsonb`, `numeric`
-/// - nullable columns via `nullable(...)`
-///
-/// The SQL input uses the same typed_sql v1 subset and named placeholders as the
-/// internal resolver pipeline. Parameter and row codecs are inferred from the
-/// checked query; runtime lowering remains limited to the currently supported
-/// lowered codecs.
-#[proc_macro]
-pub fn typed_query(input: TokenStream) -> TokenStream {
-    typed_sql::expand_typed_query(input)
-}
-
 /// Declare an authored schema module with reusable table and column symbols.
 ///
 /// The v0.1 surface is intentionally small:
@@ -209,7 +188,7 @@ pub fn typed_query(input: TokenStream) -> TokenStream {
 /// - one schema module can contain multiple `table` declarations
 /// - field markers currently support `nullable(...)`, `primary_key(...)`, and
 ///   `pk(...)`
-/// - SQL type names match the inline `typed_query!` schema type surface
+/// - SQL type names match the inline `query!` / `command!` schema type surface
 ///
 /// The generated module exposes one nested module per table with `TABLE`,
 /// per-column symbols, authored declaration metadata through `SCHEMA`, and
@@ -243,10 +222,9 @@ fn expand_public_typed_macro<T: Parse>(
             &tokens,
             format!(
                 "`{macro_name}!` no longer accepts the old explicit-codec form {legacy_example}; \
-use schema-aware typed SQL (`{macro_name}!(schema = {{ ... }}, {inline_example})`). During this \
-transition, `typed_query!` remains the compatibility alias and authored schema modules expose \
-schema-scoped wrappers like `{schema_wrapper}`. For unsupported statements or migration-time \
-fallbacks, use `Query::raw` / `Command::raw`."
+use schema-aware typed SQL (`{macro_name}!(schema = {{ ... }}, {inline_example})`) or an authored \
+schema wrapper like `{schema_wrapper}`. For unsupported statements, use `Query::raw` / \
+`Command::raw`."
             ),
         );
     }
@@ -255,15 +233,14 @@ fallbacks, use `Query::raw` / `Command::raw`."
         Some("schema") | Some("__babar_schema") => match macro_name {
             "query" => typed_sql::expand_query(input),
             "command" => typed_sql::expand_command(input),
-            _ => typed_sql::expand_typed_query(input),
+            _ => unreachable!("unsupported public typed SQL macro"),
         },
         _ => public_macro_error(
             &tokens,
             format!(
                 "`{macro_name}!` now expects schema-aware typed SQL. Start with `schema = {{ ... }}` \
-for inline examples/tests, or use the existing compatibility wrapper `{schema_wrapper}`. \
-Use `Query::raw` / `Command::raw` for explicit raw fallbacks. `typed_query!` remains a \
-compatibility alias during this round."
+for inline examples/tests, or use a schema-scoped wrapper like `{schema_wrapper}`. Use \
+`Query::raw` / `Command::raw` for explicit raw fallbacks."
             ),
         ),
     }

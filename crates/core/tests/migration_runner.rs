@@ -54,12 +54,12 @@ fn migrator(assets: Vec<MigrationAsset>) -> Migrator<MemoryMigrationSource> {
 }
 
 async fn count_rows(session: &Session, sql: &str) -> i64 {
-    let query: Query<(), (i64,)> = Query::raw(sql, (), (int8,));
+    let query: Query<(), (i64,)> = Query::raw(sql, (int8,));
     session.query(&query, ()).await.expect("count rows")[0].0
 }
 
 async fn optional_text(session: &Session, sql: &str) -> Option<String> {
-    let query: Query<(), (Option<String>,)> = Query::raw(sql, (), (nullable(text),));
+    let query: Query<(), (Option<String>,)> = Query::raw(sql, (nullable(text),));
     session
         .query(&query, ())
         .await

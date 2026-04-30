@@ -71,7 +71,6 @@ fn copy_users_statement() -> CopyIn<CopyUser> {
 async fn select_copy_users(session: &Session) -> Vec<CopyUser> {
     let select: Query<(), CopyUser> = Query::raw(
         "SELECT id, name, active, note, visits FROM copy_users ORDER BY id",
-        (),
         CopyUser::CODEC,
     );
     session.query(&select, ()).await.expect("select rows")
@@ -197,7 +196,7 @@ async fn typed_copy_in_constraint_failure_recovers_connection() {
         other => panic!("expected Error::Server, got {other:?}"),
     }
 
-    let count: Query<(), (i64,)> = Query::raw("SELECT count(*)::int8 FROM copy_users", (), (int8,));
+    let count: Query<(), (i64,)> = Query::raw("SELECT count(*)::int8 FROM copy_users", (int8,));
     assert_eq!(
         session.query(&count, ()).await.expect("count rows"),
         vec![(0,)]

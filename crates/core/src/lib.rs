@@ -1,16 +1,20 @@
 //! `babar` — a typed, async PostgreSQL driver for Tokio that speaks the wire
 //! protocol directly.
 //!
-//! `babar` centers application queries around schema-aware typed SQL:
+//! Choose the surface by role:
 //!
-//! - [`query!`] / [`command!`] are the primary typed SQL entrypoints.
-//! - [`schema!`] produces reusable authored schema modules with local
-//!   `query!` / `command!` wrappers.
+//! - [`query!`] / [`command!`] are the public typed-SQL entrypoints.
+//! - [`schema!`] defines reusable authored schema modules with local `query!` /
+//!   `command!` wrappers.
 //! - [`Query::raw`](query::Query::raw) / [`Command::raw`](query::Command::raw)
-//!   remain explicit advanced fallbacks for unsupported extended-protocol SQL.
+//!   build zero-parameter raw SQL; [`Query::raw_with`](query::Query::raw_with) /
+//!   [`Command::raw_with`](query::Command::raw_with) add explicit codecs for
+//!   parameterized raw SQL.
+//! - [`sql!`] builds lower-level fragments for explicit placeholder
+//!   composition.
 //! - A background task owns the socket so public API calls remain
-//!   cancellation-safe.
-//! - Errors retain SQL context, SQLSTATE metadata, and macro callsite origin.
+//!   cancellation-safe, and errors retain SQL context, SQLSTATE metadata, and
+//!   macro callsite origin.
 //!
 //! ## Feature highlights
 //!
@@ -71,7 +75,6 @@
 //!              name text NOT NULL,
 //!              note text
 //!          )",
-//!         (),
 //!     );
 //!     session.execute(&create, ()).await?;
 //!
@@ -86,36 +89,18 @@
 //!         SELECT users.id, users.name, users.note FROM users ORDER BY users.id
 //!     );
 //!     let rows = session.query(&select, ()).await?;
-//!     assert_eq!(
-//!         rows,
-//!         vec![(1, "Ada".to_string(), Some("first".to_string()))]
-//!     );
+//!     assert_eq!(rows, vec![(1, "Ada".to_string(), Some("first".to_string()))]);
 //!
 //!     session.close().await?;
 //!     Ok(())
 //! }
 //! ```
 //!
-//! ## `query!`, `command!`, and `typed_query!`
+//! ## Typed SQL
 //!
-//! [`query!`] and [`command!`] are the primary typed SQL entrypoints. They read
-//! schema facts from either an inline `schema = { ... }` block or a local
-//! schema-scoped wrapper produced by [`schema!`].
-//!
-//! Compile-time verification is optional and online-only in v0.1:
-//!
-//! - `BABAR_DATABASE_URL` takes precedence over `DATABASE_URL`
-//! - schema-aware `SELECT` statements from [`query!`], [`typed_query!`], and
-//!   schema-scoped wrappers verify referenced schema facts, parameters, and
-//!   returned columns against a live PostgreSQL server when either variable is
-//!   set during macro expansion
-//! - non-`RETURNING` typed commands and explicit-`RETURNING` DML are not yet
-//!   probe-verified through that path
-//! - without configuration, the macros still compile and emit the same runtime
-//!   statement values
-//! - there is no offline cache or generated schema snapshot in v0.1
-//!
-//! One-off examples and tests can still use inline schema declarations:
+//! Public typed SQL starts with [`query!`], [`command!`], and the
+//! schema-scoped wrappers that [`schema!`] emits. Inline `schema = { ... }`
+//! blocks are useful for one-off examples and tests:
 //! ```
 //! use babar::query::Query;
 //!
@@ -136,15 +121,23 @@
 //! );
 //! ```
 //!
-//! [`typed_query!`] remains available as a compatibility alias to the same
-//! schema-aware compiler during this transition, but [`query!`] / [`command!`]
-//! are the primary surface.
+//! Compile-time verification is optional and online-only in v0.1:
 //!
-//! For reusable authored declarations, [`schema!`] defines Rust-visible schema
-//! modules with multiple tables and narrow field markers, plus local `query!` /
-//! `command!` wrappers. This schema-scoped wrapper is the recommended v0.1
-//! pattern when multiple statements share one schema module:
+//! - `BABAR_DATABASE_URL` takes precedence over `DATABASE_URL`
+//! - schema-aware `SELECT` statements from [`query!`] and schema-scoped
+//!   `query!` wrappers verify referenced schema facts, parameters, and
+//!   returned columns against a live PostgreSQL server when either variable is
+//!   set during macro expansion
+//! - non-`RETURNING` typed commands and explicit-`RETURNING` DML are not yet
+//!   probe-verified through that path
+//! - without configuration, the macros still compile and emit the same runtime
+//!   statement values
+//! - there is no offline cache or generated schema snapshot in v0.1
 //!
+//! ## Authored schema modules
+//!
+//! [`schema!`] defines Rust-visible schema modules with reusable table and
+//! column symbols plus local `query!` / `command!` wrappers:
 //! ```
 //! use babar::query::Query;
 //!
@@ -193,6 +186,49 @@
 //! family, including nullable variants; the matching babar feature must still
 //! be enabled for optional families such as `uuid`, `time`, `json`, and
 //! `numeric`.
+//!
+//! ## Raw builders
+//!
+//! Use raw builders when you already have SQL text and explicit codecs.
+//! `raw(...)` is for zero-parameter statements; `raw_with(...)` is for raw SQL
+//! that still needs a parameter encoder:
+//! ```
+//! use babar::query::{Command, Query};
+//!
+//! #[derive(Clone, Debug, PartialEq, babar::Codec)]
+//! struct LookupArgs {
+//!     id: i32,
+//!     owner_id: i32,
+//! }
+//!
+//! #[derive(Clone, Debug, PartialEq, babar::Codec)]
+//! struct UserRow {
+//!     id: i32,
+//!     name: String,
+//! }
+//!
+//! let healthcheck: Query<(), UserRow> = Query::raw(
+//!     "SELECT 1::int4 AS id, 'ready'::text AS name",
+//!     UserRow::CODEC,
+//! );
+//! assert_eq!(healthcheck.sql(), "SELECT 1::int4 AS id, 'ready'::text AS name");
+//!
+//! let lookup: Query<LookupArgs, UserRow> = Query::raw_with(
+//!     "SELECT id, name FROM users WHERE id = $1 OR owner_id = $2",
+//!     LookupArgs::CODEC,
+//!     UserRow::CODEC,
+//! );
+//! assert_eq!(lookup.param_oids().len(), 2);
+//!
+//! let vacuum: Command<()> = Command::raw("VACUUM");
+//! assert_eq!(vacuum.sql(), "VACUUM");
+//!
+//! let touch: Command<LookupArgs> = Command::raw_with(
+//!     "UPDATE users SET owner_id = $2 WHERE id = $1",
+//!     LookupArgs::CODEC,
+//! );
+//! assert_eq!(touch.param_oids().len(), 2);
+//! ```
 //!
 //! ## `sql!` macro
 //!
@@ -247,7 +283,7 @@
 //! The driver task is the sole owner of the transport. Public futures communicate
 //! with it over `mpsc` + `oneshot`, which keeps cancellation localized to the
 //! caller while the protocol state machine continues to completion.
-
+//!
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 extern crate self as babar;
@@ -275,8 +311,7 @@ pub mod types;
 /// Build a schema-aware typed statement from SQL.
 ///
 /// Start with either `schema = { ... }` for inline examples/tests or use a
-/// schema-scoped wrapper such as `app_schema::query!(...)`. [`typed_query!`]
-/// remains available as a compatibility alias to the same compiler.
+/// schema-scoped wrapper such as `app_schema::query!(...)`.
 pub use babar_macros::query;
 
 /// Build a schema-aware typed command from SQL.
@@ -335,12 +370,6 @@ pub use babar_macros::schema;
 /// );
 /// ```
 pub use babar_macros::sql;
-
-/// Compatibility alias for the schema-aware typed SQL compiler.
-///
-/// Prefer [`query!`] / [`command!`] for new code; this alias remains available
-/// to smooth migration during the typed-SQL surface transition.
-pub use babar_macros::typed_query;
 
 pub use babar_macros::Codec;
 

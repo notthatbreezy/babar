@@ -64,16 +64,14 @@ async fn run(config: Config, command: Commands) -> babar::Result<()> {
 
 async fn init(session: &Session) -> babar::Result<()> {
     let create: Command<()> = Command::raw(
-        "CREATE TABLE IF NOT EXISTS todo_items (id int4 PRIMARY KEY, title text NOT NULL, done bool NOT NULL DEFAULT false)",
-        (),
-    );
+        "CREATE TABLE IF NOT EXISTS todo_items (id int4 PRIMARY KEY, title text NOT NULL, done bool NOT NULL DEFAULT false)");
     session.execute(&create, ()).await?;
     println!("todo_items is ready");
     Ok(())
 }
 
 async fn add(session: &Session, id: i32, title: String) -> babar::Result<()> {
-    let insert: Command<(i32, String)> = Command::raw(
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO todo_items (id, title) VALUES ($1, $2)",
         (int4, text),
     );
@@ -84,7 +82,7 @@ async fn add(session: &Session, id: i32, title: String) -> babar::Result<()> {
 
 async fn mark_done(session: &Session, id: i32) -> babar::Result<()> {
     let update: Command<(i32,)> =
-        Command::raw("UPDATE todo_items SET done = true WHERE id = $1", (int4,));
+        Command::raw_with("UPDATE todo_items SET done = true WHERE id = $1", (int4,));
     let updated = session.execute(&update, (id,)).await?;
     println!("marked {updated} row(s) done");
     Ok(())
@@ -93,7 +91,6 @@ async fn mark_done(session: &Session, id: i32) -> babar::Result<()> {
 async fn list(session: &Session) -> babar::Result<()> {
     let select: Query<(), (i32, String, bool)> = Query::raw(
         "SELECT id, title, done FROM todo_items ORDER BY id",
-        (),
         (int4, text, bool),
     );
     for (id, title, done) in session.query(&select, ()).await? {

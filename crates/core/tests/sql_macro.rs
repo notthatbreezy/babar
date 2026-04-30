@@ -172,7 +172,7 @@ fn sql_macro_query_and_command_match_raw_builders() {
         active = bool,
     )
     .query((int4, text));
-    let raw_query: Query<(i32, bool), (i32, String)> = Query::raw(
+    let raw_query: Query<(i32, bool), (i32, String)> = Query::raw_with(
         "SELECT id, name FROM users WHERE id = $1 AND active = $2",
         (int4, bool),
         (int4, text),
@@ -188,13 +188,13 @@ fn sql_macro_query_and_command_match_raw_builders() {
     )
     .command();
     let raw_command: Command<(i32, String)> =
-        Command::raw("INSERT INTO users (id, name) VALUES ($1, $2)", (int4, text));
+        Command::raw_with("INSERT INTO users (id, name) VALUES ($1, $2)", (int4, text));
     assert_eq!(macro_command.sql(), raw_command.sql());
     assert_eq!(macro_command.param_oids(), raw_command.param_oids());
 }
 
 #[test]
-fn public_query_and_command_macros_match_typed_query_alias_and_raw_builders() {
+fn public_query_and_command_macros_match_raw_builders() {
     let macro_query: Query<(i32, bool), (i32, String)> = babar::query!(
         schema = {
             table public.users {
@@ -205,24 +205,10 @@ fn public_query_and_command_macros_match_typed_query_alias_and_raw_builders() {
         },
         SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = $active
     );
-    let alias_query: Query<(i32, bool), (i32, String)> = babar::typed_query!(
-        schema = {
-            table public.users {
-                id: int4,
-                name: text,
-                active: bool,
-            },
-        },
-        SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = $active
-    );
-    let raw_query: Query<(i32, bool), (i32, String)> = Query::raw(
+    let raw_query: Query<(i32, bool), (i32, String)> = Query::raw_with(
         "SELECT users.id, users.name FROM users AS users WHERE ((users.id = $1) AND (users.active = $2))",
         (int4, bool),
-        (int4, text),
-    );
-    assert_eq!(macro_query.sql(), alias_query.sql());
-    assert_eq!(macro_query.param_oids(), alias_query.param_oids());
-    assert_eq!(macro_query.output_oids(), alias_query.output_oids());
+        (int4, text));
     assert_eq!(macro_query.sql(), raw_query.sql());
     assert_eq!(macro_query.param_oids(), raw_query.param_oids());
     assert_eq!(macro_query.output_oids(), raw_query.output_oids());
@@ -239,22 +225,10 @@ fn public_query_and_command_macros_match_typed_query_alias_and_raw_builders() {
         },
         INSERT INTO users (id, name) VALUES ($id, $name)
     );
-    let alias_command: Command<(i32, String)> = babar::typed_query!(
-        schema = {
-            table public.users {
-                id: int4,
-                name: text,
-                active: bool,
-            },
-        },
-        INSERT INTO users (id, name) VALUES ($id, $name)
-    );
-    let raw_command: Command<(i32, String)> = Command::raw(
+    let raw_command: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO users AS users (id, name) VALUES ($1, $2)",
         (int4, text),
     );
-    assert_eq!(macro_command.sql(), alias_command.sql());
-    assert_eq!(macro_command.param_oids(), alias_command.param_oids());
     assert_eq!(macro_command.sql(), raw_command.sql());
     assert_eq!(macro_command.param_oids(), raw_command.param_oids());
     let origin = macro_command.origin().expect("macro captures origin");
@@ -262,8 +236,8 @@ fn public_query_and_command_macros_match_typed_query_alias_and_raw_builders() {
 }
 
 #[test]
-fn typed_query_macro_matches_raw_builder() {
-    let macro_query: Query<(i32,), (i32, String)> = babar::typed_query!(
+fn public_query_macro_matches_raw_builder() {
+    let macro_query: Query<(i32,), (i32, String)> = babar::query!(
         schema = {
             table public.users {
                 id: int4,
@@ -273,11 +247,10 @@ fn typed_query_macro_matches_raw_builder() {
         },
         SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = true
     );
-    let raw_query: Query<(i32,), (i32, String)> = Query::raw(
+    let raw_query: Query<(i32,), (i32, String)> = Query::raw_with(
         "SELECT users.id, users.name FROM users AS users WHERE ((users.id = $1) AND (users.active = TRUE))",
         (int4,),
-        (int4, text),
-    );
+        (int4, text));
     assert_eq!(macro_query.sql(), raw_query.sql());
     assert_eq!(macro_query.param_oids(), raw_query.param_oids());
     assert_eq!(macro_query.output_oids(), raw_query.output_oids());
@@ -286,8 +259,8 @@ fn typed_query_macro_matches_raw_builder() {
 }
 
 #[test]
-fn typed_query_macro_lowers_insert_into_command_builder() {
-    let macro_command: Command<(i32, String, bool)> = babar::typed_query!(
+fn public_command_macro_lowers_insert_into_command_builder() {
+    let macro_command: Command<(i32, String, bool)> = babar::command!(
         schema = {
             table public.users {
                 id: int4,
@@ -297,7 +270,7 @@ fn typed_query_macro_lowers_insert_into_command_builder() {
         },
         INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
     );
-    let raw_command: Command<(i32, String, bool)> = Command::raw(
+    let raw_command: Command<(i32, String, bool)> = Command::raw_with(
         "INSERT INTO users AS users (id, name, active) VALUES ($1, $2, $3)",
         (int4, text, bool),
     );
@@ -306,8 +279,8 @@ fn typed_query_macro_lowers_insert_into_command_builder() {
 }
 
 #[test]
-fn typed_query_macro_lowers_update_returning_into_query_builder() {
-    let macro_query: Query<(String, i32), (i32, String)> = babar::typed_query!(
+fn public_command_macro_lowers_update_returning_into_query_builder() {
+    let macro_query: Query<(String, i32), (i32, String)> = babar::command!(
         schema = {
             table public.users {
                 id: int4,
@@ -317,7 +290,7 @@ fn typed_query_macro_lowers_update_returning_into_query_builder() {
         },
         UPDATE users SET name = $name WHERE users.id = $id RETURNING users.id, users.name
     );
-    let raw_query: Query<(String, i32), (i32, String)> = Query::raw(
+    let raw_query: Query<(String, i32), (i32, String)> = Query::raw_with(
         "UPDATE users AS users SET name = $1 WHERE (users.id = $2) RETURNING users.id, users.name",
         (text, int4),
         (int4, text),
@@ -328,7 +301,7 @@ fn typed_query_macro_lowers_update_returning_into_query_builder() {
 }
 
 babar::schema! {
-    mod authored_typed_query_schema {
+    mod authored_schema {
         table public.users {
             id: primary_key(int4),
             name: text,
@@ -384,7 +357,7 @@ babar::schema! {
 
 #[test]
 fn schema_scoped_query_matches_public_inline_pipeline() {
-    let schema_scoped: Query<(i32,), (i32, String)> = authored_typed_query_schema::query!(
+    let schema_scoped: Query<(i32,), (i32, String)> = authored_schema::query!(
         SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = true
     );
     let inline: Query<(i32,), (i32, String)> = babar::query!(
@@ -410,7 +383,7 @@ fn schema_scoped_query_matches_public_inline_pipeline() {
 
 #[test]
 fn schema_scoped_command_matches_public_inline_pipeline() {
-    let schema_scoped: Command<(i32, String, bool)> = authored_typed_query_schema::command!(
+    let schema_scoped: Command<(i32, String, bool)> = authored_schema::command!(
         INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
     );
     let inline: Command<(i32, String, bool)> = babar::command!(
@@ -706,7 +679,7 @@ async fn public_query_and_command_macros_execute_against_postgres() {
 }
 
 #[tokio::test]
-async fn typed_query_macro_executes_against_postgres() {
+async fn public_query_macro_executes_against_postgres() {
     let Some((_pg, session)) = fresh_session().await else {
         return;
     };
@@ -722,7 +695,7 @@ async fn typed_query_macro_executes_against_postgres() {
         .await
         .expect("create table");
 
-    let insert: Command<(i32, String, bool)> = Command::raw(
+    let insert: Command<(i32, String, bool)> = Command::raw_with(
         "INSERT INTO typed_query_users (id, name, active) VALUES ($1, $2, $3)",
         (int4, text, bool),
     );
@@ -735,7 +708,7 @@ async fn typed_query_macro_executes_against_postgres() {
         assert_eq!(affected, 1);
     }
 
-    let select: Query<(i32,), (String,)> = babar::typed_query!(
+    let select: Query<(i32,), (String,)> = babar::query!(
         schema = {
             table typed_query_users {
                 id: int4,
@@ -867,7 +840,7 @@ async fn public_query_macro_supports_prioritized_runtime_sql_types() {
     let meta = Some(json!({"region": "us-east-1"}));
     let amount = Decimal::new(12345, 2);
 
-    let insert: Command<ExtendedTypeRow> = Command::raw(
+    let insert: Command<ExtendedTypeRow> = Command::raw_with(
         "INSERT INTO typed_query_extended_types \
          (id, event_date, event_time, created_at, published_at, payload, meta, amount) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -964,7 +937,7 @@ async fn public_query_macro_supports_prioritized_runtime_sql_types() {
 }
 
 #[tokio::test]
-async fn schema_scoped_typed_query_executes_against_schema_qualified_tables() {
+async fn schema_scoped_query_executes_against_schema_qualified_tables() {
     let Some((_pg, session)) = fresh_session().await else {
         return;
     };
@@ -982,7 +955,7 @@ async fn schema_scoped_typed_query_executes_against_schema_qualified_tables() {
         .await
         .expect("create schema-qualified table");
 
-    let insert: Command<(i32, String, bool)> = Command::raw(
+    let insert: Command<(i32, String, bool)> = Command::raw_with(
         "INSERT INTO babar_authored.widgets (id, name, active) VALUES ($1, $2, $3)",
         (int4, text, bool),
     );
@@ -1031,7 +1004,7 @@ async fn schema_scoped_typed_query_executes_against_schema_qualified_tables() {
 }
 
 #[tokio::test]
-async fn typed_query_optional_suffixes_execute_against_postgres() {
+async fn optional_suffixes_execute_against_postgres() {
     let Some((_pg, session)) = fresh_session().await else {
         return;
     };
@@ -1047,7 +1020,7 @@ async fn typed_query_optional_suffixes_execute_against_postgres() {
         .await
         .expect("create table");
 
-    let insert: Command<(i32, String, bool)> = Command::raw(
+    let insert: Command<(i32, String, bool)> = Command::raw_with(
         "INSERT INTO typed_query_optional_users (id, name, active) VALUES ($1, $2, $3)",
         (int4, text, bool),
     );
@@ -1061,7 +1034,7 @@ async fn typed_query_optional_suffixes_execute_against_postgres() {
         assert_eq!(affected, 1);
     }
 
-    let select: Query<OptionalUserFilterParams, (String,)> = babar::typed_query!(
+    let select: Query<OptionalUserFilterParams, (String,)> = babar::query!(
         schema = {
             table typed_query_optional_users {
                 id: int4,

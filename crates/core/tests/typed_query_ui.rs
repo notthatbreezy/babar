@@ -1,4 +1,4 @@
-//! UI coverage for `typed_query!` diagnostics.
+//! UI coverage for schema-aware typed SQL diagnostics.
 
 mod common;
 
@@ -58,7 +58,7 @@ fn require_docker() -> bool {
 }
 
 #[test]
-fn typed_query_ui() {
+fn public_typed_sql_ui() {
     with_env(
         &[("BABAR_DATABASE_URL", None), ("DATABASE_URL", None)],
         || {
@@ -83,6 +83,7 @@ fn typed_query_ui() {
             tests.compile_fail("tests/ui/typed_query/fail/insert_on_conflict.rs");
             tests.compile_fail("tests/ui/typed_query/fail/insert_select.rs");
             tests.compile_fail("tests/ui/typed_query/fail/mixed_inline_external.rs");
+            tests.compile_fail("tests/ui/typed_query/fail/schema_scoped_aliases_removed.rs");
             tests.compile_fail("tests/ui/typed_query/fail/multi_statement.rs");
             tests.compile_fail("tests/ui/typed_query/fail/returning_wildcard.rs");
             tests.compile_fail("tests/ui/typed_query/fail/unsupported_type.rs");
@@ -96,7 +97,7 @@ fn typed_query_ui() {
 }
 
 #[test]
-fn typed_query_reports_configuration_errors_for_live_verification() {
+fn public_typed_sql_reports_configuration_errors_for_live_verification() {
     with_env(
         &[(
             "BABAR_DATABASE_URL",
@@ -110,7 +111,7 @@ fn typed_query_reports_configuration_errors_for_live_verification() {
 }
 
 #[test]
-fn typed_query_verifies_referenced_schema_facts_against_live_postgres() {
+fn public_typed_sql_verifies_referenced_schema_facts_against_live_postgres() {
     if !require_docker() {
         return;
     }

@@ -9,5 +9,5 @@ struct UserRow {
 }
 
 fn main() {
-    let _query: Query<(), UserRow> = Query::raw("SELECT id, name FROM users", (), UserRow::CODEC);
+    let _query: Query<(), UserRow> = Query::raw("SELECT id, name FROM users", UserRow::CODEC);
 }

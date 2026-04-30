@@ -1,0 +1,11 @@
+error[E0433]: cannot find `typed_query` in `app_schema`
+  --> tests/ui/typed_query/fail/schema_scoped_aliases_removed.rs:13:49
+   |
+13 |     let _query: Query<(), (i32,)> = app_schema::typed_query!(SELECT users.id FROM users);
+   |                                                 ^^^^^^^^^^^ could not find `typed_query` in `app_schema`
+
+error[E0433]: cannot find `typed_command` in `app_schema`
+  --> tests/ui/typed_query/fail/schema_scoped_aliases_removed.rs:14:56
+   |
+14 |     let _command: Command<(i32, String)> = app_schema::typed_command!(
+   |                                                        ^^^^^^^^^^^^^ could not find `typed_command` in `app_schema`

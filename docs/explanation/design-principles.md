@@ -1,116 +1,105 @@
 # Design principles
 
-> See also: [Why babar](./why-babar.md), the
-> [Book](../book/01-connecting.md).
+> See also: [Why babar](./why-babar.md),
+> [What makes babar babar](./what-makes-babar-babar.md), and
+> [The typed-SQL macro pipeline](./typed-sql-macro-pipeline.md).
 
-This page collects the principles babar is built around. They are not
-abstract — every one of them produces a concrete API choice you can
-point at.
+These principles explain why the public API looks the way it does.
 
 ## 1. Typed at the boundary
 
-Every public call carries the parameter and row types. `Query<P, R>`
-and `Command<P>` are values, not phantom decorations on a string. That
-means:
+Database operations are represented as typed values:
 
-- The compiler can reject `query.bind((1, 2))` against a
-  `Query<(i32, String), _>` long before any wire I/O.
-- A new reader of your code can see `Query<(i64,), (Uuid, String)>`
-  and know the column shape without running anything.
-- Refactoring a column type is a typecheck -- use the compiler.
+- `Query<P, R>` for row-returning statements
+- `Command<P>` for statements without rows
 
-The codecs are values too — `int4`, `text`, `bool` — not associated
-methods on a trait object you have to remember.
+That keeps the contract visible in the type itself. A reader can see the bound
+value shape and the decoded row shape without reconstructing it from runtime
+logic.
 
-## 2. Async
+The same rule shapes the macro surface. `schema!`, `query!`, and `command!`
+produce the same `Query<P, R>` and `Command<P>` values you could build by hand
+with the raw constructors.
 
-Every `Session` is backed by a background task that owns the
-`TcpStream`. All public API calls send messages to that task over
-channels and await the reply. This is the foundation of babar's
-[cancellation safety](./driver-task.md): if your `await` is cancelled,
-the task still finishes the in-flight protocol exchange before
-servicing the next request.
+## 2. Async by construction
 
-## 3. Native protocol
+Each `Session` is backed by a background task that owns the `TcpStream`. Public
+API calls communicate with that task over channels and await the reply.
 
-babar speaks the Postgres v3 wire protocol directly via
-`postgres-protocol`. It does not wrap `libpq`; it does not call out to
-a C library; it does not translate through a higher-level abstraction.
-That means:
+That runtime structure is what makes babar's cancellation-safety story work: if a
+waiting future is dropped, the driver task still completes the in-flight
+protocol exchange before moving to the next request.
 
-- Binary results by default.
-- Extended-protocol prepared statements with parameter codecs.
-- SCRAM-SHA-256 (and SCRAM-SHA-256-PLUS with channel binding over TLS).
-- Binary `COPY FROM STDIN` as a first-class API.
-- `RowDescription` is parsed, the OIDs are checked, and the
-  `Decoder` is given the bytes — no string-to-string conversion, no
-  magic re-parsing.
+## 3. Native Postgres protocol, not a translation layer
 
-If Postgres ships a new wire-level capability, the work to expose it
-in babar is *Postgres-shaped*, not *abstraction-shaped*.
+babar speaks the Postgres v3 wire protocol directly. It does not wrap `libpq`,
+it does not shell out to a C client, and it does not flatten Postgres behavior
+behind a generic SQL abstraction.
 
-## 4. Validate don't parse
+That makes Postgres features show up directly in the API surface:
 
-We would rather fail in your test suite than in production at 3am.
-That is the validate-early principle in operation. Concretely:
+- binary results
+- extended-protocol prepared statements
+- SCRAM authentication and channel binding
+- binary `COPY FROM STDIN`
+- row metadata checked against declared decoder OIDs
 
-- Every codec advertises its OIDs. When `RowDescription` arrives,
-  babar checks that each declared OID matches what the server is
-  about to send. Mismatches surface as `Error::SchemaMismatch`
-  carrying the *position*, the *expected* OID, and the *actual* OID
-  — at prepare time, before any rows are decoded.
-- Every decoder advertises its column count. If `RowDescription`
-  advertises a different count, you get `Error::ColumnAlignment`
-  immediately, again before any rows are processed.
-- The schema-aware `query!` / `command!` macros can validate authored schema
-  facts, parameters, and returned columns against a live database when
-  `BABAR_DATABASE_URL` or `DATABASE_URL` is set for opt-in compile-time
-  validation, but that probe currently runs only for schema-aware `SELECT`
-  statements.
-- `typed_query!` remains available as a compatibility alias to that same
-  compiler during the transition, but the surface still stays intentionally
-  small: supported statements only, explicit optional ownership forms, authored
-  Rust schema modules or inline schema, and no generated schema modules,
-  offline caches, or full SQL coverage.
+## 4. Validate, then run
 
-The cost is one round-trip on each prepare. The benefit is that
-schema drift surfaces as a Rust error at the boundary, with a
-caret-rendered message pointing at the offending fragment, rather
-than as a cryptic decode panic on row 47.
+babar pushes verification toward the earliest useful point.
 
-## 5. No unsafe
+- Parameter encoders fix the bind shape before any network I/O.
+- Decoder column counts and OIDs are checked against `RowDescription` at prepare
+  time.
+- Schema-aware `query!` can optionally verify supported `SELECT` statements
+  against a live database during macro expansion.
+- Error values carry SQL text and origin information so failures stay tied to the
+  authored statement.
 
-babar's source contains no `unsafe` blocks. The macro crate sets
-`unsafe_code = "forbid"` and the core crate is held to the same line
-in CI (Miri).
+This principle is why the typed-SQL surface stays narrow. babar would rather make
+unsupported cases explicit than claim broader coverage with weaker guarantees.
 
-## 6. Minimal dependencies, small features
+## 5. Explicit layers beat hidden magic
 
-The default feature set is small. Codec families (`uuid`, `time`,
-`chrono`, `json`, `numeric`, `postgis`, `pgvector`, …) are gated
-behind cargo features so that a pool-and-`text` service does not
-have to compile a `geo-types` dependency it will never use. The TLS
-backend is selectable at compile time (`rustls` by default,
-`native-tls` available). Reduce footprint, reduce blast radius,
-reduce compile time.
+There is a deliberate separation between:
 
-## 7. Operability is the API
+- schema-aware macros for ordinary application SQL
+- `sql!` for lower-level fragment composition
+- raw builders for explicit codec-driven statements
+- simple-protocol raw execution for bootstrap and advanced escape hatches
 
-Pool, statement cache, and `tracing` spans are first-class citizens,
-not afterthoughts. `Session::connect` emits a `db.connect` span;
-prepares emit `db.prepare`; executes emit `db.execute`. The fields
-are OpenTelemetry's database semantic conventions out of the box, so
-your existing tracing backend already understands them. Setting
-`application_name` on `Config` puts your service name in
-`pg_stat_activity` for free. The point is not that babar provides a
-metrics dashboard — it does not — but that the seams a production
-team needs are deliberately exposed.
+That separation keeps each layer legible. It also means the docs can teach one
+primary path without pretending every SQL statement belongs in the same tool.
+
+## 6. No `unsafe`
+
+babar keeps `unsafe` out of the implementation. The macro crate forbids unsafe
+code, and the rest of the codebase follows the same line.
+
+## 7. Small dependency surface, small feature surface
+
+The default feature set is intentionally small. Optional codec families and TLS
+backends are feature-gated so applications only compile the integrations they
+need.
+
+That reduces compile time, narrows dependency risk, and keeps the default build
+focused on the core Postgres client surface.
+
+## 8. Operability is part of the API
+
+Pools, statement caches, and `tracing` spans are not bolt-ons. Connection,
+prepare, and execute paths emit spans that fit standard database observability
+conventions, and `application_name` flows through to `pg_stat_activity`.
+
+The point is not to ship an observability product. The point is to expose the
+seams production services need.
 
 ## Where to read next
 
-- [The driver task](./driver-task.md) for the cancellation-safety
-  story.
-- [Comparisons](./comparisons.md) for the trade-offs against other
-  Rust Postgres clients.
-- [Book Chapter 9 — Error handling](../book/09-error-handling.md) for
-  what `validate-early` looks like at runtime.
+- [The driver task](./driver-task.md) for the cancellation-safety runtime story.
+- [The typed-SQL macro pipeline](./typed-sql-macro-pipeline.md) for the macro
+  architecture.
+- [Comparisons](./comparisons.md) for trade-offs against other Rust Postgres
+  clients.
+- [Book Chapter 9 — Error handling](../book/09-error-handling.md) for how
+  validate-early decisions show up at runtime.

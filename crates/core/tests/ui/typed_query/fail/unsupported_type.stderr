@@ -1,4 +1,4 @@
-error: unsupported typed_query schema type `geometry`; supported types are bool, bytea, varchar, text, int2, int4, int8, float4, float8, uuid, date, time, timestamp, timestamptz, json, jsonb, and numeric
+error: unsupported schema type `geometry`; supported types are bool, bytea, varchar, text, int2, int4, int8, float4, float8, uuid, date, time, timestamp, timestamptz, json, jsonb, and numeric
  --> tests/ui/typed_query/fail/unsupported_type.rs:7:21
   |
 7 |                 id: geometry,

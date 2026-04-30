@@ -10,7 +10,7 @@ babar::schema! {
 }
 
 fn main() {
-    let _query: Query<(), (String,)> = app_schema::typed_query!(
+    let _query: Query<(), (String,)> = app_schema::query!(
         SELECT widgets.handle FROM service.widgets
     );
 }

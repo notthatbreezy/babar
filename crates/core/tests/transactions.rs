@@ -43,14 +43,12 @@ async fn transaction_commits_on_ok_and_rolls_back_on_err() {
         return;
     };
 
-    let create: Command<()> = Command::raw(
-        "CREATE TEMP TABLE tx_demo (id int4 PRIMARY KEY, note text NOT NULL)",
-        (),
-    );
+    let create: Command<()> =
+        Command::raw("CREATE TEMP TABLE tx_demo (id int4 PRIMARY KEY, note text NOT NULL)");
     session.execute(&create, ()).await.expect("create table");
 
     let select: Query<(), (i32, String)> =
-        Query::raw("SELECT id, note FROM tx_demo ORDER BY id", (), (int4, text));
+        Query::raw("SELECT id, note FROM tx_demo ORDER BY id", (int4, text));
 
     session
         .transaction(commit_row)
@@ -75,9 +73,9 @@ async fn dropped_transaction_future_rolls_back() {
         return;
     };
 
-    let create: Command<()> = Command::raw("CREATE TEMP TABLE dropped_tx_demo (id int4)", ());
+    let create: Command<()> = Command::raw("CREATE TEMP TABLE dropped_tx_demo (id int4)");
     let count: Query<(), (i64,)> =
-        Query::raw("SELECT COUNT(*)::int8 FROM dropped_tx_demo", (), (int8,));
+        Query::raw("SELECT COUNT(*)::int8 FROM dropped_tx_demo", (int8,));
     session.execute(&create, ()).await.expect("create table");
 
     {
@@ -102,14 +100,10 @@ async fn panic_rolls_back_and_leaves_connection_clean() {
         return;
     };
 
-    let create: Command<()> = Command::raw("CREATE TEMP TABLE panic_tx_demo (id int4)", ());
-    let count: Query<(), (i64,)> =
-        Query::raw("SELECT COUNT(*)::int8 FROM panic_tx_demo", (), (int8,));
-    let txid: Query<(), (Option<i64>,)> = Query::raw(
-        "SELECT txid_current_if_assigned()::int8",
-        (),
-        (nullable(int8),),
-    );
+    let create: Command<()> = Command::raw("CREATE TEMP TABLE panic_tx_demo (id int4)");
+    let count: Query<(), (i64,)> = Query::raw("SELECT COUNT(*)::int8 FROM panic_tx_demo", (int8,));
+    let txid: Query<(), (Option<i64>,)> =
+        Query::raw("SELECT txid_current_if_assigned()::int8", (nullable(int8),));
     session.execute(&create, ()).await.expect("create table");
 
     let panic_result = std::panic::AssertUnwindSafe(session.transaction(panic_body))
@@ -134,11 +128,9 @@ async fn nested_savepoints_roll_back_middle_scope_and_commit_outer_scope() {
         return;
     };
 
-    let create: Command<()> =
-        Command::raw("CREATE TEMP TABLE savepoint_demo (id int4, note text)", ());
+    let create: Command<()> = Command::raw("CREATE TEMP TABLE savepoint_demo (id int4, note text)");
     let select: Query<(), (i32, String)> = Query::raw(
         "SELECT id, note FROM savepoint_demo ORDER BY id",
-        (),
         (int4, text),
     );
     session.execute(&create, ()).await.expect("create table");
@@ -161,7 +153,7 @@ async fn nested_savepoints_roll_back_middle_scope_and_commit_outer_scope() {
 }
 
 async fn commit_row(tx: Transaction<'_>) -> babar::Result<()> {
-    let insert: Command<(i32, String)> = Command::raw(
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO tx_demo (id, note) VALUES ($1, $2)",
         (int4, text),
     );
@@ -170,7 +162,7 @@ async fn commit_row(tx: Transaction<'_>) -> babar::Result<()> {
 }
 
 async fn rollback_row(tx: Transaction<'_>) -> babar::Result<()> {
-    let insert: Command<(i32, String)> = Command::raw(
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO tx_demo (id, note) VALUES ($1, $2)",
         (int4, text),
     );
@@ -180,7 +172,7 @@ async fn rollback_row(tx: Transaction<'_>) -> babar::Result<()> {
 
 async fn dropped_future_body(tx: Transaction<'_>) -> babar::Result<()> {
     let insert: Command<(i32,)> =
-        Command::raw("INSERT INTO dropped_tx_demo (id) VALUES ($1)", (int4,));
+        Command::raw_with("INSERT INTO dropped_tx_demo (id) VALUES ($1)", (int4,));
     tx.execute(&insert, (1,)).await?;
     future::pending::<()>().await;
     #[allow(unreachable_code)]
@@ -189,13 +181,13 @@ async fn dropped_future_body(tx: Transaction<'_>) -> babar::Result<()> {
 
 async fn panic_body(tx: Transaction<'_>) -> babar::Result<()> {
     let insert: Command<(i32,)> =
-        Command::raw("INSERT INTO panic_tx_demo (id) VALUES ($1)", (int4,));
+        Command::raw_with("INSERT INTO panic_tx_demo (id) VALUES ($1)", (int4,));
     tx.execute(&insert, (1,)).await?;
     panic!("boom");
 }
 
 async fn nested_savepoint_body(tx: Transaction<'_>) -> babar::Result<()> {
-    let insert: Command<(i32, String)> = Command::raw(
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO savepoint_demo (id, note) VALUES ($1, $2)",
         (int4, text),
     );
@@ -209,7 +201,7 @@ async fn nested_savepoint_body(tx: Transaction<'_>) -> babar::Result<()> {
 }
 
 async fn middle_savepoint(tx: Savepoint<'_>) -> babar::Result<()> {
-    let insert: Command<(i32, String)> = Command::raw(
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO savepoint_demo (id, note) VALUES ($1, $2)",
         (int4, text),
     );
@@ -220,7 +212,7 @@ async fn middle_savepoint(tx: Savepoint<'_>) -> babar::Result<()> {
 }
 
 async fn inner_savepoint(tx: Savepoint<'_>) -> babar::Result<()> {
-    let insert: Command<(i32, String)> = Command::raw(
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO savepoint_demo (id, note) VALUES ($1, $2)",
         (int4, text),
     );

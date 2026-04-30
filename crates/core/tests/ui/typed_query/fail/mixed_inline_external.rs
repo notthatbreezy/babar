@@ -10,7 +10,7 @@ babar::schema! {
 }
 
 fn main() {
-    let _query: Query<(), (i32, String)> = app_schema::typed_query!(
+    let _query: Query<(), (i32, String)> = app_schema::query!(
         schema = {
             table public.users {
                 id: int4,

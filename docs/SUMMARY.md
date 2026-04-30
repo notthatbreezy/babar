@@ -31,6 +31,7 @@
 - [What makes babar babar](explanation/what-makes-babar-babar.md)
 - [Why babar](explanation/why-babar.md)
 - [Design principles](explanation/design-principles.md)
+- [The typed-SQL macro pipeline](explanation/typed-sql-macro-pipeline.md)
 - [Comparisons](explanation/comparisons.md)
 - [The background driver task](explanation/driver-task.md)
 - [Roadmap](explanation/roadmap.md)
