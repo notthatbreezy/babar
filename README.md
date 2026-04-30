@@ -321,6 +321,9 @@ token-style `SELECT` subset against that schema, and emits an ordinary
 - `schema!` keeps the schema Rust-visible and authored by hand. v0.1 does not
   include file-based schema inputs, code generation, or live database
   introspection.
+- unique table names stay available as `app_schema::users`; if two SQL schemas
+  share a table name, use schema namespaces like `app_schema::public::users`
+  and `app_schema::reporting::users`.
 - authored fields stay type-first: plain `type_name` for ordinary columns,
   `nullable(type_name)` for nullable columns, and `primary_key(type_name)` /
   `pk(type_name)` for the current primary-key marker.

@@ -216,6 +216,21 @@ babar::schema! {
 }
 
 babar::schema! {
+    mod authored_duplicate_table_name_schema {
+        table public.users {
+            id: primary_key(int4),
+            name: text,
+            active: bool,
+        },
+        table reporting.users {
+            id: primary_key(int8),
+            name: text,
+            active: bool,
+        },
+    }
+}
+
+babar::schema! {
     mod authored_runtime_schema {
         table babar_authored.widgets {
             id: primary_key(int4),
@@ -292,6 +307,65 @@ fn schema_scoped_typed_query_supports_schema_qualified_reuse() {
             },
         },
         SELECT widgets.title FROM reporting.widgets WHERE widgets.active = $active ORDER BY widgets.id
+    );
+    assert_eq!(reporting_query.sql(), reporting_inline.sql());
+    assert_eq!(reporting_query.param_oids(), reporting_inline.param_oids());
+    assert_eq!(
+        reporting_query.output_oids(),
+        reporting_inline.output_oids()
+    );
+}
+
+#[test]
+fn schema_scoped_typed_query_supports_duplicate_table_names_across_sql_schemas() {
+    assert_eq!(
+        authored_duplicate_table_name_schema::public::users::TABLE.schema_name(),
+        Some("public")
+    );
+    assert_eq!(
+        authored_duplicate_table_name_schema::reporting::users::TABLE.schema_name(),
+        Some("reporting")
+    );
+
+    let public_query: Query<(bool,), (String,)> = authored_duplicate_table_name_schema::typed_query!(
+        SELECT users.name FROM public.users WHERE users.active = $active ORDER BY users.id
+    );
+    let public_inline: Query<(bool,), (String,)> = babar::typed_query!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+            table reporting.users {
+                id: int8,
+                name: text,
+                active: bool,
+            },
+        },
+        SELECT users.name FROM public.users WHERE users.active = $active ORDER BY users.id
+    );
+    assert_eq!(public_query.sql(), public_inline.sql());
+    assert_eq!(public_query.param_oids(), public_inline.param_oids());
+    assert_eq!(public_query.output_oids(), public_inline.output_oids());
+
+    let reporting_query: Query<(bool,), (String,)> = authored_duplicate_table_name_schema::typed_query!(
+        SELECT users.name FROM reporting.users WHERE users.active = $active ORDER BY users.id
+    );
+    let reporting_inline: Query<(bool,), (String,)> = babar::typed_query!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+            table reporting.users {
+                id: int8,
+                name: text,
+                active: bool,
+            },
+        },
+        SELECT users.name FROM reporting.users WHERE users.active = $active ORDER BY users.id
     );
     assert_eq!(reporting_query.sql(), reporting_inline.sql());
     assert_eq!(reporting_query.param_oids(), reporting_inline.param_oids());

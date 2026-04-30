@@ -189,6 +189,9 @@
 //! assert!(app_schema::users::id().is_primary_key());
 //! assert_eq!(app_schema::posts::author_id().sql_type(), babar::schema::SqlType::INT4);
 //! assert_eq!(app_schema::SCHEMA.tables().len(), 2);
+//! // When two SQL schemas share a table name, use the schema namespace:
+//! // app_schema::public::users::id()
+//! // app_schema::reporting::users::id()
 //!
 //! let lookup: Query<(i32,), (i32, String)> = app_schema::typed_query!(
 //!     SELECT users.id, users.name FROM users WHERE users.id = $id

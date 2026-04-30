@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -23,12 +23,14 @@ fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
     let SchemaModuleInput { vis, name, tables } = input;
     let typed_query_macro_ident = format_ident!("__babar_typed_query_{}", name);
     let mut seen_tables = HashMap::<String, proc_macro2::Span>::new();
-    let mut seen_modules = HashMap::<String, proc_macro2::Span>::new();
     let mut table_modules = Vec::with_capacity(tables.len());
     let mut table_defs = Vec::with_capacity(tables.len());
     let mut typed_query_tables = Vec::with_capacity(tables.len());
+    let mut table_symbol_counts = HashMap::<String, usize>::new();
+    let mut schema_modules = BTreeMap::<String, (Ident, Vec<(Ident, proc_macro2::Ident)>)>::new();
+    let mut table_reexports = Vec::with_capacity(tables.len());
 
-    for table in tables {
+    for (index, table) in tables.into_iter().enumerate() {
         let qualified_name = table.qualified_name();
         if let Some(previous) = seen_tables.insert(qualified_name.clone(), table.name.span()) {
             let mut err = Error::new(
@@ -39,27 +41,64 @@ fn compile_schema_module(input: SchemaModuleInput) -> Result<TokenStream2> {
             return Err(err);
         }
 
-        let symbol_name = ident_name(&table.name);
-        if let Some(previous) = seen_modules.insert(symbol_name.clone(), table.name.span()) {
-            let mut err = Error::new(
-                table.name.span(),
-                format!(
-                    "duplicate authored table symbol `{symbol_name}`; table modules use unqualified table names"
-                ),
-            );
-            err.combine(Error::new(previous, "first defined here"));
-            return Err(err);
-        }
-
         let module_ident = table.name.clone();
+        let schema_ident = table.schema_name.clone();
+        let symbol_name = ident_name(&module_ident);
+        let helper_ident =
+            format_ident!("__babar_authored_table_{index}", span = module_ident.span());
+
+        *table_symbol_counts.entry(symbol_name.clone()).or_insert(0) += 1;
+        if let Some(schema_ident) = schema_ident.clone() {
+            schema_modules
+                .entry(ident_name(&schema_ident))
+                .or_insert_with(|| (schema_ident, Vec::new()))
+                .1
+                .push((module_ident.clone(), helper_ident.clone()));
+        }
+        table_reexports.push((symbol_name, module_ident, helper_ident.clone()));
         typed_query_tables.push(table.expand_typed_query_bridge());
-        table_modules.push(table.expand()?);
-        table_defs.push(quote! { #module_ident::DEF });
+        table_modules.push(table.expand(helper_ident.clone())?);
+        table_defs.push(quote! { #helper_ident::DEF });
     }
+
+    let schema_module_names = schema_modules.keys().cloned().collect::<Vec<_>>();
+    let schema_namespace_modules = schema_modules.values().map(|(schema_ident, tables)| {
+        let reexports = tables.iter().map(|(table_ident, helper_ident)| {
+            quote! {
+                #[allow(unused_imports)]
+                pub use super::#helper_ident as #table_ident;
+            }
+        });
+        quote! {
+            pub mod #schema_ident {
+                #( #reexports )*
+            }
+        }
+    });
+    let top_level_reexports =
+        table_reexports
+            .into_iter()
+            .filter_map(|(symbol_name, module_ident, helper_ident)| {
+                let is_unique = table_symbol_counts.get(&symbol_name).copied() == Some(1);
+                if is_unique
+                    && !schema_module_names
+                        .iter()
+                        .any(|schema_name| schema_name == &symbol_name)
+                {
+                    Some(quote! {
+                        #[allow(unused_imports)]
+                        pub use #helper_ident as #module_ident;
+                    })
+                } else {
+                    None
+                }
+            });
 
     Ok(quote! {
         #vis mod #name {
             #( #table_modules )*
+            #( #schema_namespace_modules )*
+            #( #top_level_reexports )*
 
             #[doc(hidden)]
             #[macro_export]
@@ -131,7 +170,7 @@ impl SchemaTableInput {
         }
     }
 
-    fn expand(self) -> Result<TokenStream2> {
+    fn expand(self, module_ident: Ident) -> Result<TokenStream2> {
         let Self {
             schema_name,
             name,
@@ -147,8 +186,7 @@ impl SchemaTableInput {
             },
         );
         let table_name_literal = syn::LitStr::new(&table_name, name.span());
-        let module_ident = name;
-        let marker_ident = format_ident!("Table", span = module_ident.span());
+        let marker_ident = format_ident!("Table", span = name.span());
         let mut seen_columns = HashMap::<String, proc_macro2::Span>::new();
         let mut column_items = Vec::with_capacity(columns.len());
         let mut column_defs = Vec::with_capacity(columns.len());
@@ -176,6 +214,7 @@ impl SchemaTableInput {
         }
 
         Ok(quote! {
+            #[doc(hidden)]
             pub mod #module_ident {
                 pub enum #marker_ident {}
 

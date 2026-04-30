@@ -221,6 +221,9 @@ pub fn typed_query(input: TokenStream) -> TokenStream {
 /// The generated module exposes one nested module per table with `TABLE`,
 /// per-column symbols, authored declaration metadata through `SCHEMA`, and a
 /// schema-scoped `typed_query!` wrapper that reuses the authored tables.
+/// Tables with unique names remain available as `app_schema::users`, while
+/// same-name tables from different SQL schemas are namespaced like
+/// `app_schema::public::users` and `app_schema::reporting::users`.
 #[proc_macro]
 pub fn schema(input: TokenStream) -> TokenStream {
     schema_decl::expand_schema(input)
