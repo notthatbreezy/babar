@@ -4,6 +4,11 @@ This guide gets one complete round-trip working: connect to Postgres, create a
 small table, insert a row, and read typed rows back with babar's primary SQL
 surface.
 
+If you want a Rust-first walkthrough of the same example before diving deeper
+into the product docs, take the optional companion detour through
+[Read a babar program](../rust-learning/01-reading-a-babar-program.md) and then
+come right back here.
+
 ## Setup
 
 Add `babar` and Tokio to your `Cargo.toml`, then put this in `src/main.rs`.
@@ -151,5 +156,7 @@ runtime `Query` / `Command` values.
 
 ## Next
 
-Continue with [Chapter 1: Connecting](../book/01-connecting.md) for more on
-connection settings, shutdown, and what the background driver task owns.
+- Continue with [Chapter 1: Connecting](../book/01-connecting.md) for more on
+  connection settings, shutdown, and what the background driver task owns.
+- If you want a Rust-reading companion for this example, pause at
+  [Read a babar program](../rust-learning/01-reading-a-babar-program.md).

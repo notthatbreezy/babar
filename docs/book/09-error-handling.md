@@ -4,6 +4,10 @@ This chapter covers the `babar::Error` enum, classifying failures
 by inspecting the variant directly, and pulling out the SQLSTATE codes
 your retry logic actually wants.
 
+If you want a Rust-first bridge for `?`, `match`, and translating database
+failures at a service boundary, pair this with the optional companion chapter
+[Error handling and service boundaries](../rust-learning/06-error-handling-and-service-boundaries.md).
+
 ## Setup
 
 ```rust
@@ -20,13 +24,11 @@ async fn main() -> babar::Result<()> {
     )
     .await?;
 
-    let create: Command<()> = Command::raw(
-        "CREATE TEMP TABLE err_demo (id int4 PRIMARY KEY, name text NOT NULL UNIQUE)",
-        (),
-    );
+    let create: Command<()> =
+        Command::raw("CREATE TEMP TABLE err_demo (id int4 PRIMARY KEY, name text NOT NULL UNIQUE)");
     session.execute(&create, ()).await?;
 
-    let insert: Command<(i32, String)> = Command::raw(
+    let insert: Command<(i32, String)> = Command::raw_with(
         "INSERT INTO err_demo (id, name) VALUES ($1, $2)",
         (int4, text),
     );
@@ -137,6 +139,7 @@ fn db_error(err: babar::Error) -> (StatusCode, String) {
 
 ## Next
 
-[Chapter 10: Custom codecs](./10-custom-codecs.md) shows how to write
-your own `Encoder<A>` / `Decoder<A>` for types babar doesn't know
-about out of the box.
+- [Chapter 10: Custom codecs](./10-custom-codecs.md) shows how to write your own
+  `Encoder<A>` / `Decoder<A>` for types babar doesn't know about out of the box.
+- For the optional Rust-learning companion, see
+  [Error handling and service boundaries](../rust-learning/06-error-handling-and-service-boundaries.md).

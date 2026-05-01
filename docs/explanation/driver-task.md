@@ -1,11 +1,17 @@
 # The driver task
 
 > See also: [Book Chapter 1 — Connecting](../book/01-connecting.md),
-> [Design principles](./design-principles.md).
+> [Design principles](./design-principles.md), and the optional Rust-learning
+> companion [Async/await and the driver task mental model](../rust-learning/05-async-await-and-the-driver-task.md).
 
 Every `Session` in babar is backed by a single background task that
 owns the underlying `TcpStream`. This page explains what that task is,
 what it does, and why it exists.
+
+If you want the shortest Rust-first mental model before reading the deeper
+architecture details here, start with
+[Async/await and the driver task mental model](../rust-learning/05-async-await-and-the-driver-task.md)
+and then return to this page.
 
 ## Shape of the model
 
@@ -112,6 +118,8 @@ re-invented the driver task with extra steps.
 
 ## Where to read next
 
+- [Async/await and the driver task mental model](../rust-learning/05-async-await-and-the-driver-task.md)
+  — the optional Rust-learning companion.
 - [Book Chapter 6 — Pooling](../book/06-pooling.md) — for the layer
   above the driver task.
 - [Book Chapter 13 — Observability](../book/13-observability.md) — for

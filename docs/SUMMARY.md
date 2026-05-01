@@ -2,6 +2,18 @@
 
 [Welcome](index.md)
 
+# Rust Learning Track (optional)
+- [Learn Rust with babar](rust-learning/index.md)
+  - [1. Read a babar program](rust-learning/01-reading-a-babar-program.md)
+  - [2. Syntax and control flow in context](rust-learning/02-syntax-and-control-flow.md)
+  - [3. Types, structs, and `Result`](rust-learning/03-types-structs-and-results.md)
+  - [4. Ownership and borrowing around queries](rust-learning/04-ownership-and-borrowing.md)
+  - [5. Async/await and the driver task mental model](rust-learning/05-async-await-and-the-driver-task.md)
+  - [6. Error handling and service boundaries](rust-learning/06-error-handling-and-service-boundaries.md)
+  - [7. Traits, generics, and codecs](rust-learning/07-traits-generics-and-codecs.md)
+  - [8. Structs, `impl`, and Rust-flavored OOP](rust-learning/08-structs-impls-and-rust-oop.md)
+  - [9. Iterators, closures, and functional style](rust-learning/09-iterators-closures-and-functional-style.md)
+
 # Get Started
 - [Prerequisites](getting-started/prerequisites.md)
 - [Your first query](getting-started/first-query.md)

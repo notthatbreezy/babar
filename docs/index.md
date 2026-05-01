@@ -97,6 +97,20 @@ That example shows the intended split:
 - explicit raw fallbacks for bootstrap or unsupported statements
 - structs as the normal shape for application-facing rows and parameters
 
+## Choose your path
+
+- **[Product docs path](getting-started/prerequisites.md)** — the direct route for
+  readers who want to connect, query, and ship with `babar`.
+- **[Rust learning track](rust-learning/index.md)** — an optional guided path for
+  readers who want to learn Rust concepts through `babar` examples.
+
+## Rust learning track (optional)
+
+The Rust learning track is a separate top-level section in the book navigation.
+Use it if you want a guided Rust-first tour through `babar`. Skip it if you
+already know Rust or just want the fastest route into the product docs. Start at
+[Learn Rust with babar](rust-learning/index.md) when you want that companion path.
+
 ## How the docs are organized
 
 - **[Get Started](getting-started/first-query.md)** teaches the first successful round-trip.
@@ -112,6 +126,8 @@ That example shows the intended split:
   make the examples observable.
 - **[Your first query →](getting-started/first-query.md)** — connect, create a table,
   insert a row, and read it back.
+- **[Rust learning track →](rust-learning/index.md)** — take the optional guided route
+  if you want to learn Rust through `babar`.
 - **[Selecting rows →](book/02-selecting.md)** — learn the standard query shape with
   schema-scoped wrappers and row structs.
 - **[What makes babar babar →](explanation/what-makes-babar-babar.md)** — see how the

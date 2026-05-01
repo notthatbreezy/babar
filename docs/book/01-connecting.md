@@ -4,6 +4,11 @@ In this chapter we'll use `Config`, `Session::connect`, and the
 background driver task that keeps every call you make
 cancellation-safe.
 
+If the async model or the `Session`/driver-task split still feels new, the
+optional companion chapter
+[Async/await and the driver task mental model](../rust-learning/05-async-await-and-the-driver-task.md)
+gives the shortest Rust-first framing, then points back here.
+
 ## Setup
 
 ```rust
@@ -83,5 +88,7 @@ directly — there's no `Error::kind()` classifier.
 
 ## Next
 
-[Chapter 2: Selecting](./02-selecting.md) walks through reading rows
-back into typed Rust values.
+- [Chapter 2: Selecting](./02-selecting.md) walks through reading rows back into
+  typed Rust values.
+- For the optional Rust-learning companion, see
+  [Async/await and the driver task mental model](../rust-learning/05-async-await-and-the-driver-task.md).

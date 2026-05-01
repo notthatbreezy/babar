@@ -9,6 +9,11 @@ This tutorial walks through a small Postgres-backed HTTP API built with:
 It assumes you already know basic Rust syntax, structs, and `Result`, but have
 not spent much time with Tokio yet.
 
+If you want a shorter Rust-first async refresher before working through the
+service code, the optional companion
+[Async/await and the driver task mental model](../rust-learning/05-async-await-and-the-driver-task.md)
+pairs well with this tutorial.
+
 We will start from an empty directory, bootstrap a tiny server, then grow it
 into a coherent one-resource JSON API for tracking elephant `herds` and their grazing grounds.
 
@@ -248,7 +253,6 @@ async fn initialize_schema(
             name text NOT NULL,
             grazing_ground text NOT NULL
         )",
-        (),
     );
 
     conn.execute(&create_herds, ()).await?;
@@ -466,7 +470,6 @@ async fn initialize_schema(
             name text NOT NULL,
             grazing_ground text NOT NULL
         )",
-        (),
     );
 
     conn.execute(&create_herds, ()).await?;
@@ -483,7 +486,7 @@ async fn create_herd(
 ) -> Result<(StatusCode, Json<Herd>), HttpError> {
     let conn = state.pool.acquire().await.map_err(pool_error_http)?;
 
-    let insert_herd: Command<(String, String)> = Command::raw(
+    let insert_herd: Command<(String, String)> = Command::raw_with(
         "INSERT INTO herds (name, grazing_ground) VALUES ($1, $2)",
         (text, text),
     );
@@ -493,7 +496,6 @@ async fn create_herd(
 
     let current_herd_id: Query<(), (i64,)> = Query::raw(
         "SELECT currval(pg_get_serial_sequence('herds', 'id'))",
-        (),
         (int8,),
     );
     let herd_id = conn
@@ -510,7 +512,7 @@ async fn create_herd(
             )
         })?;
 
-    let select_herd: Query<(i64,), (i64, String, String)> = Query::raw(
+    let select_herd: Query<(i64,), (i64, String, String)> = Query::raw_with(
         "SELECT id, name, grazing_ground FROM herds WHERE id = $1",
         (int8,),
         (int8, text, text),
@@ -537,7 +539,6 @@ async fn list_herds(State(state): State<AppState>) -> Result<Json<Vec<Herd>>, Ht
 
     let list_herds: Query<(), (i64, String, String)> = Query::raw(
         "SELECT id, name, grazing_ground FROM herds ORDER BY id",
-        (),
         (int8, text, text),
     );
     let herds = conn
@@ -557,7 +558,7 @@ async fn get_herd(
 ) -> Result<Json<Herd>, HttpError> {
     let conn = state.pool.acquire().await.map_err(pool_error_http)?;
 
-    let get_herd: Query<(i64,), (i64, String, String)> = Query::raw(
+    let get_herd: Query<(i64,), (i64, String, String)> = Query::raw_with(
         "SELECT id, name, grazing_ground FROM herds WHERE id = $1",
         (int8,),
         (int8, text, text),
@@ -718,7 +719,7 @@ turning SQL into typed Rust values.
 The insert step is:
 
 ```rust
-let insert_herd: Command<(String, String)> = Command::raw(
+let insert_herd: Command<(String, String)> = Command::raw_with(
     "INSERT INTO herds (name, grazing_ground) VALUES ($1, $2)",
     (text, text),
 );
@@ -748,7 +749,6 @@ that was just created on this same connection:
 ```rust
 let current_herd_id: Query<(), (i64,)> = Query::raw(
     "SELECT currval(pg_get_serial_sequence('herds', 'id'))",
-    (),
     (int8,),
 );
 ```
@@ -756,7 +756,7 @@ let current_herd_id: Query<(), (i64,)> = Query::raw(
 Then it runs another query to fetch the full herd:
 
 ```rust
-let select_herd: Query<(i64,), (i64, String, String)> = Query::raw(
+let select_herd: Query<(i64,), (i64, String, String)> = Query::raw_with(
     "SELECT id, name, grazing_ground FROM herds WHERE id = $1",
     (int8,),
     (int8, text, text),
@@ -775,7 +775,6 @@ The list endpoint does not need parameters, so its input type is `()`:
 ```rust
 let list_herds: Query<(), (i64, String, String)> = Query::raw(
     "SELECT id, name, grazing_ground FROM herds ORDER BY id",
-    (),
     (int8, text, text),
 );
 ```
@@ -788,7 +787,7 @@ That says: “no input values, and every row should decode as
 The single-herd lookup takes one `i64` id and expects one decoded row shape:
 
 ```rust
-let get_herd: Query<(i64,), (i64, String, String)> = Query::raw(
+let get_herd: Query<(i64,), (i64, String, String)> = Query::raw_with(
     "SELECT id, name, grazing_ground FROM herds WHERE id = $1",
     (int8,),
     (int8, text, text),
@@ -1025,7 +1024,6 @@ async fn initialize_schema(
             name text NOT NULL,
             grazing_ground text NOT NULL
         )",
-        (),
     );
 
     conn.execute(&create_herds, ()).await?;
