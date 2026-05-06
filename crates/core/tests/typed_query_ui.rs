@@ -88,6 +88,14 @@ fn multi_statement_fixture() -> &'static str {
     }
 }
 
+fn schema_scoped_struct_shape_selection_precedence_fixture() -> &'static str {
+    if rust_1_88_trybuild() {
+        "tests/ui/typed_query/fail/schema_scoped_struct_shape_selection_precedence_rust_1_88.rs"
+    } else {
+        "tests/ui/typed_query/fail/schema_scoped_struct_shape_selection_precedence.rs"
+    }
+}
+
 #[test]
 fn public_typed_sql_ui() {
     with_env(
@@ -120,9 +128,7 @@ fn public_typed_sql_ui() {
             tests.compile_fail(
                 "tests/ui/typed_query/fail/schema_scoped_struct_shape_ambiguous_row_names.rs",
             );
-            tests.compile_fail(
-                "tests/ui/typed_query/fail/schema_scoped_struct_shape_selection_precedence.rs",
-            );
+            tests.compile_fail(schema_scoped_struct_shape_selection_precedence_fixture());
             tests.compile_fail(multi_statement_fixture());
             tests.compile_fail("tests/ui/typed_query/fail/returning_wildcard.rs");
             tests.compile_fail("tests/ui/typed_query/fail/unsupported_type.rs");

@@ -1,0 +1,53 @@
+error[E0308]: mismatched types
+  --> tests/ui/typed_query/fail/schema_scoped_struct_shape_selection_precedence_rust_1_88.rs:3:1
+   |
+3  | / babar::schema! {
+4  | |     mod app_schema {
+5  | |         table public.users {
+6  | |             id: primary_key(int4),
+...  |
+11 | | }
+   | | ^
+   | | |
+   | |_expected `Fragment<WrongLookupArgs>`, found `Fragment<LookupArgs>`
+   |   arguments to this function are incorrect
+...
+35 |       let _: Query<WrongLookupArgs, WrongUserRow> = app_schema::query!(
+   |  ___________________________________________________-
+36 | |         params = LookupArgs,
+37 | |         row = UserRow,
+38 | |         SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = true
+39 | |     );
+   | |_____- in this macro invocation
+   |
+   = note: expected struct `Fragment<WrongLookupArgs>`
+              found struct `Fragment<LookupArgs>`
+note: associated function defined here
+  --> src/query/mod.rs
+   |
+   |     pub fn from_fragment<D>(fragment: Fragment<A>, decoder: D) -> Self
+   |            ^^^^^^^^^^^^^
+   = note: this error originates in the macro `::babar::query` which comes from the expansion of the macro `app_schema::query` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+  --> tests/ui/typed_query/fail/schema_scoped_struct_shape_selection_precedence_rust_1_88.rs:3:1
+   |
+3  | / babar::schema! {
+4  | |     mod app_schema {
+5  | |         table public.users {
+6  | |             id: primary_key(int4),
+...  |
+11 | | }
+   | |_^ expected `Query<WrongLookupArgs, WrongUserRow>`, found `Query<_, UserRow>`
+...
+35 |       let _: Query<WrongLookupArgs, WrongUserRow> = app_schema::query!(
+   |  ___________________________________________________-
+36 | |         params = LookupArgs,
+37 | |         row = UserRow,
+38 | |         SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = true
+39 | |     );
+   | |_____- in this macro invocation
+   |
+   = note: expected struct `Query<WrongLookupArgs, WrongUserRow>`
+              found struct `Query<_, UserRow>`
+   = note: this error originates in the macro `::babar::query` which comes from the expansion of the macro `app_schema::query` (in Nightly builds, run with -Z macro-backtrace for more info)
