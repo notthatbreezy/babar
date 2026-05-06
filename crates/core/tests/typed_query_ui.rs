@@ -100,6 +100,8 @@ fn public_typed_sql_ui() {
             tests.pass("tests/ui/typed_query/pass/insert_command.rs");
             tests.pass("tests/ui/typed_query/pass/schema_scoped.rs");
             tests.pass("tests/ui/typed_query/pass/schema_scoped_command.rs");
+            tests.pass("tests/ui/typed_query/pass/schema_scoped_struct_alias_match.rs");
+            tests.pass("tests/ui/typed_query/pass/schema_scoped_struct_shape_selection.rs");
             tests.pass("tests/ui/typed_query/pass/update_returning.rs");
             tests.compile_fail("tests/ui/typed_query/fail/ambiguous_optional_ownership.rs");
             tests.compile_fail("tests/ui/typed_query/fail/authored_unknown_column.rs");
@@ -115,6 +117,12 @@ fn public_typed_sql_ui() {
             tests.compile_fail("tests/ui/typed_query/fail/insert_select.rs");
             tests.compile_fail("tests/ui/typed_query/fail/mixed_inline_external.rs");
             tests.compile_fail(schema_scoped_aliases_removed_fixture());
+            tests.compile_fail(
+                "tests/ui/typed_query/fail/schema_scoped_struct_shape_ambiguous_row_names.rs",
+            );
+            tests.compile_fail(
+                "tests/ui/typed_query/fail/schema_scoped_struct_shape_selection_precedence.rs",
+            );
             tests.compile_fail(multi_statement_fixture());
             tests.compile_fail("tests/ui/typed_query/fail/returning_wildcard.rs");
             tests.compile_fail("tests/ui/typed_query/fail/unsupported_type.rs");

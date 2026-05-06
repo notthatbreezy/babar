@@ -1,0 +1,5 @@
+error: strict row selection requires unique final output names before matching a row struct; duplicate output names: id
+  --> tests/ui/typed_macro/fail/struct_shape_ambiguous_row_names.rs:18:9
+   |
+18 |         SELECT users.id, users.id AS id FROM users
+   |         ^^^^^^

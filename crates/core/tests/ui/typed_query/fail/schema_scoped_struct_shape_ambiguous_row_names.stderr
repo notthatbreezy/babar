@@ -1,0 +1,5 @@
+error: strict row selection requires unique final output names before matching a row struct; duplicate output names: id
+  --> tests/ui/typed_query/fail/schema_scoped_struct_shape_ambiguous_row_names.rs:21:9
+   |
+21 |         SELECT users.id, users.id AS id FROM users
+   |         ^^^^^^

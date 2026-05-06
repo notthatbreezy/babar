@@ -1,0 +1,41 @@
+error[E0308]: mismatched types
+  --> tests/ui/typed_macro/fail/struct_shape_selection_precedence.rs:25:51
+   |
+25 |       let _: Query<WrongLookupArgs, WrongUserRow> = babar::query!(
+   |  ___________________________________________________^
+26 | |         schema = {
+27 | |             table public.users {
+28 | |                 id: int4,
+...  |
+35 | |         SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = true
+36 | |     );
+   | |     ^
+   | |     |
+   | |_____expected `Fragment<WrongLookupArgs>`, found `Fragment<LookupArgs>`
+   |       arguments to this function are incorrect
+   |
+   = note: expected struct `Fragment<WrongLookupArgs>`
+              found struct `Fragment<LookupArgs>`
+note: associated function defined here
+  --> src/query/mod.rs
+   |
+   |     pub fn from_fragment<D>(fragment: Fragment<A>, decoder: D) -> Self
+   |            ^^^^^^^^^^^^^
+   = note: this error originates in the macro `babar::query` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0308]: mismatched types
+  --> tests/ui/typed_macro/fail/struct_shape_selection_precedence.rs:25:51
+   |
+25 |       let _: Query<WrongLookupArgs, WrongUserRow> = babar::query!(
+   |  ___________________________________________________^
+26 | |         schema = {
+27 | |             table public.users {
+28 | |                 id: int4,
+...  |
+35 | |         SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = true
+36 | |     );
+   | |_____^ expected `Query<WrongLookupArgs, WrongUserRow>`, found `Query<_, UserRow>`
+   |
+   = note: expected struct `Query<WrongLookupArgs, WrongUserRow>`
+              found struct `Query<_, UserRow>`
+   = note: this error originates in the macro `babar::query` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -41,20 +41,52 @@ impl LoweredQuery {
         quote! { (#(#tokens,)*) }
     }
 
+    pub(crate) fn parameter_type_tokens(&self) -> TokenStream {
+        let tokens = self
+            .parameters
+            .iter()
+            .map(LoweredParameter::template_value_type_tokens)
+            .chain(self.toggle_group_ids.iter().map(|_| quote! { bool }))
+            .collect::<Vec<_>>();
+        quote! { (#(#tokens,)*) }
+    }
+
     pub(crate) fn row_codec_tokens(&self) -> TokenStream {
         tuple_codec_tokens(self.columns.iter().map(|column| column.codec).collect())
     }
 
-    pub(crate) fn emit_query_tokens(&self) -> TokenStream {
-        if self.parameters.iter().any(|parameter| parameter.optional)
+    pub(crate) fn row_type_tokens(&self) -> TokenStream {
+        let tokens = self
+            .columns
+            .iter()
+            .map(LoweredColumn::value_type_tokens)
+            .collect::<Vec<_>>();
+        quote! { (#(#tokens,)*) }
+    }
+
+    pub(crate) fn is_dynamic(&self) -> bool {
+        self.parameters.iter().any(|parameter| parameter.optional)
             || !self.toggle_group_ids.is_empty()
-        {
-            return self.emit_dynamic_query_tokens();
+    }
+
+    pub(crate) fn emit_query_tokens(&self) -> TokenStream {
+        self.emit_query_tokens_with(self.parameter_codec_tokens(), self.row_codec_tokens())
+    }
+
+    pub(crate) fn emit_command_tokens(&self) -> TokenStream {
+        self.emit_command_tokens_with(self.parameter_codec_tokens())
+    }
+
+    pub(crate) fn emit_query_tokens_with(
+        &self,
+        params: TokenStream,
+        row: TokenStream,
+    ) -> TokenStream {
+        if self.is_dynamic() {
+            return self.emit_dynamic_query_tokens_with(params, row);
         }
 
         let sql = LitStr::new(&self.sql, Span::call_site());
-        let params = self.parameter_codec_tokens();
-        let row = self.row_codec_tokens();
         let n_params = self.parameters.len();
 
         quote! {{
@@ -72,15 +104,12 @@ impl LoweredQuery {
         }}
     }
 
-    pub(crate) fn emit_command_tokens(&self) -> TokenStream {
-        if self.parameters.iter().any(|parameter| parameter.optional)
-            || !self.toggle_group_ids.is_empty()
-        {
-            return self.emit_dynamic_command_tokens();
+    pub(crate) fn emit_command_tokens_with(&self, params: TokenStream) -> TokenStream {
+        if self.is_dynamic() {
+            return self.emit_dynamic_command_tokens_with(params);
         }
 
         let sql = LitStr::new(&self.sql, Span::call_site());
-        let params = self.parameter_codec_tokens();
         let n_params = self.parameters.len();
 
         quote! {{
@@ -98,10 +127,8 @@ impl LoweredQuery {
         }}
     }
 
-    fn emit_dynamic_query_tokens(&self) -> TokenStream {
+    fn emit_dynamic_query_tokens_with(&self, params: TokenStream, row: TokenStream) -> TokenStream {
         let sql = LitStr::new(&self.sql, Span::call_site());
-        let params = self.parameter_codec_tokens();
-        let row = self.row_codec_tokens();
         let n_params = self.parameters.len();
         let renderer = self.runtime_sql_renderer_tokens();
 
@@ -121,9 +148,8 @@ impl LoweredQuery {
         }}
     }
 
-    fn emit_dynamic_command_tokens(&self) -> TokenStream {
+    fn emit_dynamic_command_tokens_with(&self, params: TokenStream) -> TokenStream {
         let sql = LitStr::new(&self.sql, Span::call_site());
-        let params = self.parameter_codec_tokens();
         let n_params = self.parameters.len();
         let renderer = self.runtime_sql_renderer_tokens();
 
@@ -464,6 +490,12 @@ impl LoweredParameter {
         } else {
             value
         }
+    }
+}
+
+impl LoweredColumn {
+    fn value_type_tokens(&self) -> TokenStream {
+        self.codec.value_type_tokens()
     }
 }
 
@@ -1485,6 +1517,22 @@ fn lower_runtime_codec(
         },
         Nullability::Nullable => RuntimeCodec::Nullable(base),
     })
+}
+
+pub(crate) fn runtime_codec_tokens(
+    sql_type: SqlType,
+    nullability: Nullability,
+    span: Option<SourceSpan>,
+) -> Result<TokenStream> {
+    Ok(lower_runtime_codec(sql_type, nullability, span)?.tokens())
+}
+
+pub(crate) fn runtime_value_type_tokens(
+    sql_type: SqlType,
+    nullability: Nullability,
+    span: Option<SourceSpan>,
+) -> Result<TokenStream> {
+    Ok(lower_runtime_codec(sql_type, nullability, span)?.value_type_tokens())
 }
 
 fn tuple_codec_tokens(codecs: Vec<RuntimeCodec>) -> TokenStream {

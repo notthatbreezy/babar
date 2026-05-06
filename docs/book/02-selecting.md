@@ -11,19 +11,12 @@ use babar::query::{Command, Query};
 use babar::{Config, Session};
 
 #[derive(Debug, Clone, PartialEq, babar::Codec)]
-struct NewUser {
-    id: i32,
-    name: String,
-    active: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, babar::Codec)]
 struct ActiveUsers {
     active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, babar::Codec)]
-struct UserSummary {
+struct UserRecord {
     id: i32,
     name: String,
     active: bool,
@@ -59,12 +52,12 @@ async fn main() -> babar::Result<()> {
     );
     session.execute(&create, ()).await?;
 
-    let insert: Command<NewUser> =
+    let insert: Command<UserRecord> =
         app_schema::command!(INSERT INTO users (id, name, active) VALUES ($id, $name, $active));
     session
         .execute(
             &insert,
-            NewUser {
+            UserRecord {
                 id: 1,
                 name: "alice".to_string(),
                 active: true,
@@ -74,7 +67,7 @@ async fn main() -> babar::Result<()> {
     session
         .execute(
             &insert,
-            NewUser {
+            UserRecord {
                 id: 2,
                 name: "bert".to_string(),
                 active: false,
@@ -82,14 +75,14 @@ async fn main() -> babar::Result<()> {
         )
         .await?;
 
-    let active_users: Query<ActiveUsers, UserSummary> = app_schema::query!(
+    let active_users: Query<ActiveUsers, UserRecord> = app_schema::query!(
         SELECT users.id, users.name, users.active
         FROM users
         WHERE users.active = $active
         ORDER BY users.id
     );
 
-    let rows: Vec<UserSummary> = session
+    let rows: Vec<UserRecord> = session
         .query(&active_users, ActiveUsers { active: true })
         .await?;
     for row in &rows {
@@ -109,10 +102,10 @@ Every `Query<A, B>` has two public-facing type parameters:
 - `B` — the decoded row value returned for each result row
 
 That type is the contract for the round-trip. In the example above,
-`Query<ActiveUsers, UserSummary>` means:
+`Query<ActiveUsers, UserRecord>` means:
 
 - call `session.query(&query, ActiveUsers { ... })`
-- get back `Vec<UserSummary>`
+- get back `Vec<UserRecord>`
 
 `query!` is the main way to build that value. With authored schema facts, the
 macro can infer both shapes directly from the SQL you wrote.
@@ -182,6 +175,54 @@ let user_by_id: Query<UserById, UserSummary> = babar::query!(
     WHERE users.id = $id AND users.active = true
 );
 ```
+
+## Pinning or exposing struct shapes
+
+Schema-aware macros can also spell the intended struct contract directly at the
+macro site:
+
+```rust
+use babar::query::Query;
+
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct UserLookup {
+    active: bool,
+    id: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct UserCard {
+    id: i32,
+    display_name: String,
+}
+
+let user_card: Query<UserLookup, UserCard> = app_schema::query!(
+    params = UserLookup,
+    row = UserCard,
+    SELECT users.name AS display_name, users.id
+    FROM users
+    WHERE users.id = $id AND users.active = $active
+);
+```
+
+Use `params = Type` and `row = Type` when the macro site should name the
+contract directly. Use `params = _` and `row = _` when you want the surrounding
+`Query<A, B>` or `Command<A>` type annotation to stay the source of truth while
+still making that choice explicit at the macro site. Omit both when the inferred
+tuple shapes are acceptable. If both are present, the explicit selection wins.
+
+Current limitation: `params = Type` and `params = _` are not yet supported for
+typed SQL statements that use optional placeholders (`$value?`) or toggle groups
+(`(...)?`). Those statements must omit the `params` selection and use the
+default tuple-shaped parameter contract.
+
+Struct matching stays strict:
+
+- input structs must contain every required placeholder-backed field
+- extra input or row fields are rejected
+- field types and nullability must match the SQL contract
+- row structs match by final output names, so aliases such as `display_name` must
+  line up with the Rust field name
 
 ## Supported subset and explicit fallbacks
 

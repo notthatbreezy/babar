@@ -21,19 +21,16 @@ These lines describe Rust values that will cross the database boundary:
 
 ```rust
 #[derive(Debug, Clone, PartialEq, babar::Codec)]
-struct NewUser {
-    id: i32,
-    name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, babar::Codec)]
-struct UserRow {
+struct User {
     id: i32,
     name: String,
 }
 ```
 
-At first read, the most important fact is simple: `NewUser` is the value shape sent into SQL, and `UserRow` is the value shape read back out. You do **not** need to understand every derive right away. It is enough to notice that these structs make the database boundary explicit.
+At first read, the most important fact is simple: `User` is the value shape sent
+into SQL and read back out. You do **not** need to understand every derive right
+away. It is enough to notice that this struct makes the database boundary
+explicit.
 
 ### 2. Schema and statement lines
 
@@ -49,10 +46,10 @@ babar::schema! {
     }
 }
 
-let insert: Command<NewUser> =
+let insert: Command<User> =
     app_schema::command!(INSERT INTO demo_users (id, name) VALUES ($id, $name));
 
-let users: Query<(), UserRow> = app_schema::query!(
+let users: Query<(), User> = app_schema::query!(
     SELECT demo_users.id, demo_users.name
     FROM demo_users
     ORDER BY demo_users.id
@@ -61,8 +58,8 @@ let users: Query<(), UserRow> = app_schema::query!(
 
 You can read this as: authored schema facts live in one place, then typed statement values are built from them.
 
-- `Command<NewUser>` means “run SQL with a `NewUser` value; no rows come back.”
-- `Query<(), UserRow>` means “run SQL with no input parameters; each row decodes into `UserRow`.”
+- `Command<User>` means “run SQL with a `User` value; no rows come back.”
+- `Query<(), User>` means “run SQL with no input parameters; each row decodes into `User`.”
 
 That is already enough to follow the high-level flow.
 
@@ -73,8 +70,8 @@ These are the lines that actually talk to Postgres and therefore return futures 
 ```rust
 let session: Session = Session::connect(cfg).await?;
 session.execute(&create, ()).await?;
-session.execute(&insert, NewUser { id: 1, name: "Ada".to_string() }).await?;
-let rows: Vec<UserRow> = session.query(&users, ()).await?;
+session.execute(&insert, User { id: 1, name: "Ada".to_string() }).await?;
+let rows: Vec<User> = session.query(&users, ()).await?;
 session.close().await?;
 ```
 

@@ -1,0 +1,18 @@
+error: pattern requires `..` due to inaccessible fields
+  --> tests/ui/typed_macro/fail/struct_shape_extra_params.rs:12:38
+   |
+12 |       let _command: Command<NewUser> = babar::command!(
+   |  ______________________________________^
+13 | |         schema = {
+14 | |             table public.users {
+15 | |                 id: int4,
+...  |
+21 | |         INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
+22 | |     );
+   | |_____^
+   |
+   = note: this error originates in the macro `babar::command` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: ignore the inaccessible and unused fields
+   |
+22 |     ), ..;
+   |      ++++

@@ -236,6 +236,190 @@ fn public_query_and_command_macros_match_raw_builders() {
 }
 
 #[test]
+fn public_query_and_command_macros_accept_struct_shape_selection() {
+    #[derive(Clone, Debug, PartialEq, babar::Codec)]
+    struct LookupArgs {
+        id: i32,
+        active: bool,
+    }
+
+    #[derive(Clone, Debug, PartialEq, babar::Codec)]
+    struct UserRow {
+        id: i32,
+        name: String,
+    }
+
+    #[derive(Clone, Debug, PartialEq, babar::Codec)]
+    struct NewUser {
+        id: i32,
+        name: String,
+        active: bool,
+    }
+
+    let query: Query<LookupArgs, UserRow> = babar::query!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        params = LookupArgs,
+        row = UserRow,
+        SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = $active
+    );
+    assert_eq!(
+        query.sql(),
+        "SELECT users.id, users.name FROM users AS users WHERE ((users.id = $1) AND (users.active = $2))"
+    );
+    assert_eq!(query.param_oids(), &[types::INT4, types::BOOL]);
+    assert_eq!(query.output_oids(), &[types::INT4, types::TEXT]);
+
+    let inferred_query: Query<LookupArgs, UserRow> = babar::query!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        params = _,
+        row = _,
+        SELECT users.id, users.name FROM users WHERE users.id = $id AND users.active = $active
+    );
+    assert_eq!(inferred_query.param_oids(), query.param_oids());
+    assert_eq!(inferred_query.output_oids(), query.output_oids());
+
+    let command: Command<NewUser> = babar::command!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        params = NewUser,
+        INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
+    );
+    assert_eq!(
+        command.sql(),
+        "INSERT INTO users AS users (id, name, active) VALUES ($1, $2, $3)"
+    );
+    assert_eq!(
+        command.param_oids(),
+        &[types::INT4, types::TEXT, types::BOOL]
+    );
+
+    let inferred_command: Command<NewUser> = babar::command!(
+        schema = {
+            table public.users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        params = _,
+        INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
+    );
+    assert_eq!(inferred_command.param_oids(), command.param_oids());
+}
+
+#[tokio::test]
+async fn public_query_and_command_macros_match_struct_fields_by_name() {
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
+
+    #[derive(Clone, Debug, PartialEq, babar::Codec)]
+    struct NewUser {
+        active: bool,
+        name: String,
+        id: i32,
+    }
+
+    #[derive(Clone, Debug, PartialEq, babar::Codec)]
+    struct LookupArgs {
+        active: bool,
+        id: i32,
+    }
+
+    #[derive(Clone, Debug, PartialEq, babar::Codec)]
+    struct UserRow {
+        id: i32,
+        display_name: String,
+    }
+
+    session
+        .simple_query_raw(
+            "CREATE TEMP TABLE typed_struct_contract_users (\
+                id int4 PRIMARY KEY, \
+                name text NOT NULL, \
+                active bool NOT NULL\
+            )",
+        )
+        .await
+        .expect("create table");
+
+    let insert: Command<NewUser> = babar::command!(
+        schema = {
+            table typed_struct_contract_users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        params = NewUser,
+        INSERT INTO typed_struct_contract_users (id, name, active) VALUES ($id, $name, $active)
+    );
+    let affected = session
+        .execute(
+            &insert,
+            NewUser {
+                active: true,
+                name: "alice".to_string(),
+                id: 7,
+            },
+        )
+        .await
+        .expect("insert row");
+    assert_eq!(affected, 1);
+
+    let select: Query<LookupArgs, UserRow> = babar::query!(
+        schema = {
+            table typed_struct_contract_users {
+                id: int4,
+                name: text,
+                active: bool,
+            },
+        },
+        params = LookupArgs,
+        row = UserRow,
+        SELECT typed_struct_contract_users.name AS display_name, typed_struct_contract_users.id
+        FROM typed_struct_contract_users
+        WHERE typed_struct_contract_users.id = $id AND typed_struct_contract_users.active = $active
+    );
+    let rows = session
+        .query(
+            &select,
+            LookupArgs {
+                active: true,
+                id: 7,
+            },
+        )
+        .await
+        .expect("select rows");
+    assert_eq!(
+        rows,
+        vec![UserRow {
+            id: 7,
+            display_name: "alice".to_string(),
+        }]
+    );
+
+    session.close().await.expect("close");
+}
+
+#[test]
 fn public_query_macro_matches_raw_builder() {
     let macro_query: Query<(i32,), (i32, String)> = babar::query!(
         schema = {

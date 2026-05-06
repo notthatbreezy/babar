@@ -81,6 +81,17 @@ Important caveats for the new families:
 use babar::query::{Command, Query};
 use babar::{Config, Session};
 
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct DemoUser {
+    id: i32,
+    name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct MinUserId {
+    min_id: i32,
+}
+
 babar::schema! {
     mod app_schema {
         table demo_users {
@@ -97,24 +108,36 @@ async fn main() -> babar::Result<()> {
         .application_name("babar-readme");
     let session = Session::connect(cfg).await?;
 
-    let create: Command<()> = Command::raw(
-        "CREATE TEMP TABLE demo_users (id int4 PRIMARY KEY, name text NOT NULL)",
-        (),
-    );
+    let create: Command<()> =
+        Command::raw("CREATE TEMP TABLE demo_users (id int4 PRIMARY KEY, name text NOT NULL)");
     session.execute(&create, ()).await?;
 
-    let insert: Command<(i32, String)> =
+    let insert: Command<DemoUser> =
         app_schema::command!(INSERT INTO demo_users (id, name) VALUES ($id, $name));
-    session.execute(&insert, (1, "Ada".to_string())).await?;
+    session
+        .execute(
+            &insert,
+            DemoUser {
+                id: 1,
+                name: "Ada".to_string(),
+            },
+        )
+        .await?;
 
-    let select: Query<(i32,), (i32, String)> = app_schema::query!(
+    let select: Query<MinUserId, DemoUser> = app_schema::query!(
         SELECT demo_users.id, demo_users.name
         FROM demo_users
         WHERE demo_users.id >= $min_id
         ORDER BY demo_users.id
     );
-    let rows = session.query(&select, (1,)).await?;
-    assert_eq!(rows, vec![(1, "Ada".to_string())]);
+    let rows = session.query(&select, MinUserId { min_id: 1 }).await?;
+    assert_eq!(
+        rows,
+        vec![DemoUser {
+            id: 1,
+            name: "Ada".to_string(),
+        }]
+    );
 
     session.close().await?;
     Ok(())
@@ -267,7 +290,25 @@ The same tutorial is published via GitHub Pages at
 ```rust
 use babar::query::{Command, Query};
 
-let lookup: Query<(i32,), (i32, String)> = babar::query!(
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct LookupArgs {
+    min_id: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct UserRow {
+    id: i32,
+    name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, babar::Codec)]
+struct NewUser {
+    id: i32,
+    name: String,
+    active: bool,
+}
+
+let lookup: Query<LookupArgs, UserRow> = babar::query!(
     schema = {
         table public.users {
             id: primary_key(int4),
@@ -275,12 +316,14 @@ let lookup: Query<(i32,), (i32, String)> = babar::query!(
             active: bool,
         },
     },
+    params = LookupArgs,
+    row = UserRow,
     SELECT users.id, users.name
     FROM users
-    WHERE users.id = $id AND users.active = true
+    WHERE users.id >= $min_id AND users.active = true
 );
 
-let insert: Command<(i32, String, bool)> = babar::command!(
+let insert: Command<NewUser> = babar::command!(
     schema = {
         table public.users {
             id: primary_key(int4),
@@ -288,6 +331,7 @@ let insert: Command<(i32, String, bool)> = babar::command!(
             active: bool,
         },
     },
+    params = _,
     INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
 );
 
@@ -301,7 +345,9 @@ babar::schema! {
     }
 }
 
-let lookup: Query<(i32,), (i32, String)> = app_schema::query!(
+let lookup: Query<LookupArgs, UserRow> = app_schema::query!(
+    params = _,
+    row = _,
     SELECT users.id, users.name
     FROM users
     WHERE users.id >= $min_id AND users.active = true
@@ -355,14 +401,23 @@ lowering through the query-shaped row path. v1 does not cover
 wildcard `RETURNING *`, or `UPDATE` / `DELETE` without a `WHERE` predicate. It
 is not a general SQL rewrite engine, ORM, or codegen workflow.
 
-The old explicit-codec forms:
+Schema-aware typed SQL can also pin or expose the struct contract at the macro
+site:
 
-- `query!("...", params = ..., row = ...)`
-- `command!("...", params = ...)`
+- `query!(schema = { ... }, params = LookupArgs, row = UserRow, SELECT ...)`
+- `command!(schema = { ... }, params = NewUser, INSERT ...)`
+- `params = _` / `row = _` when you want surrounding `Query<A, B>` /
+  `Command<A>` types to stay the source of inference
+- omit the selection entirely when the inferred tuple contract is the right fit
 
-no longer compile. Migrate those calls by moving schema facts into either an
-inline `schema = { ... }` block or a `schema!` module, then writing token-style
-SQL with named placeholders.
+Explicit `params = Type` / `row = Type` selections win over surrounding type
+inference. The old string-literal explicit-codec forms are still gone; these
+shape selections only apply to the schema-aware token-style macros.
+
+Current limitation: `params = Type` and `params = _` are not yet supported for
+typed SQL statements that use optional placeholders (`$value?`) or toggle
+groups (`(...)?`). Those statements must omit the `params` selection and keep
+the default tuple-shaped parameter contract.
 
 ## Choosing the right SQL surface
 

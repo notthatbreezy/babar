@@ -1,0 +1,5 @@
+error[E0063]: missing field `active` in initializer of `UserRow`
+  --> tests/ui/typed_macro/fail/struct_shape_extra_row.rs:19:15
+   |
+19 |         row = UserRow,
+   |               ^^^^^^^ missing `active`

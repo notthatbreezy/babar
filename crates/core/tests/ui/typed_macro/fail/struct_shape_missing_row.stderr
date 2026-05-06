@@ -1,0 +1,15 @@
+error[E0560]: struct `UserRow` has no field named `name`
+  --> tests/ui/typed_macro/fail/struct_shape_missing_row.rs:9:38
+   |
+ 9 |       let _query: Query<(), UserRow> = babar::query!(
+   |  ______________________________________^
+10 | |         schema = {
+11 | |             table public.users {
+12 | |                 id: int4,
+...  |
+18 | |         SELECT users.id, users.name FROM users
+19 | |     );
+   | |_____^ `UserRow` does not have this field
+   |
+   = note: all struct fields are already assigned
+   = note: this error originates in the macro `babar::query` (in Nightly builds, run with -Z macro-backtrace for more info)

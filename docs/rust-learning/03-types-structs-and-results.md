@@ -37,17 +37,12 @@ That is the main reason the docs keep showing the type names. They are not decor
 
 ## Named structs are the clearest default
 
-The getting-started guide uses named structs for both inserts and rows:
+The getting-started guide uses one named struct for both the insert and row shape
+because the field sets are identical:
 
 ```rust
 #[derive(Debug, Clone, PartialEq, babar::Codec)]
-struct NewUser {
-    id: i32,
-    name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, babar::Codec)]
-struct UserRow {
+struct User {
     id: i32,
     name: String,
 }
@@ -58,7 +53,7 @@ This is usually the best first choice in docs because field names carry meaning 
 ```rust
 session.execute(
     &insert,
-    NewUser {
+    User {
         id: 1,
         name: "Ada".to_string(),
     },

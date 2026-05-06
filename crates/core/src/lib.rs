@@ -375,6 +375,12 @@ pub use babar_macros::Codec;
 
 #[doc(hidden)]
 pub mod __private {
+    pub trait StaticCodec: Sized {
+        type Codec: crate::codec::Codec<Self> + Send + Sync + 'static;
+
+        fn codec() -> Self::Codec;
+    }
+
     pub use crate::query::{push_bound_param, push_null_param, toggle, BoundStatement, Toggle};
     pub use bytes::Bytes;
 }

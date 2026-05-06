@@ -30,12 +30,6 @@ use babar::query::{Command, Query};
 use babar::{Config, Session};
 
 #[derive(Debug, Clone, PartialEq, babar::Codec)]
-struct NewDemoUser {
-    id: i32,
-    name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, babar::Codec)]
 struct DemoUser {
     id: i32,
     name: String,
@@ -63,12 +57,12 @@ async fn main() -> babar::Result<()> {
         Command::raw("CREATE TEMP TABLE demo_users (id int4 PRIMARY KEY, name text NOT NULL)");
     session.execute(&create, ()).await?;
 
-    let insert: Command<NewDemoUser> =
+    let insert: Command<DemoUser> =
         app_schema::command!(INSERT INTO demo_users (id, name) VALUES ($id, $name));
     session
         .execute(
             &insert,
-            NewDemoUser {
+            DemoUser {
                 id: 1,
                 name: "Ada".to_string(),
             },
@@ -95,7 +89,8 @@ That example shows the intended split:
 
 - schema-aware macros for application SQL
 - explicit raw fallbacks for bootstrap or unsupported statements
-- structs as the normal shape for application-facing rows and parameters
+- structs as the normal shape for application-facing rows and parameters, with
+  one shared struct when the input and row field sets are the same
 
 ## Choose your path
 

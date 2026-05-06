@@ -4,7 +4,7 @@ use proc_macro::TokenStream;
 use proc_macro2::{TokenStream as TokenStream2, TokenTree};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
-use syn::{braced, parenthesized, token, Error, Ident, Result, Token};
+use syn::{braced, parenthesized, token, Error, Ident, Result, Token, Type};
 
 use super::lower;
 use super::lower::LoweredQuery;
@@ -23,6 +23,8 @@ use crate::verify::{
 };
 
 mod kw {
+    syn::custom_keyword!(params);
+    syn::custom_keyword!(row);
     syn::custom_keyword!(schema);
     syn::custom_keyword!(__babar_schema);
     syn::custom_keyword!(table);
@@ -92,9 +94,385 @@ fn compile_typed_query(
         debug_assert_eq!(parsed_select.projections.len(), select.projections.len());
     }
     Ok(match checked.result {
-        StatementResultKind::Rows => lowered.emit_query_tokens(),
-        StatementResultKind::Command => lowered.emit_command_tokens(),
+        StatementResultKind::Rows => emit_query_tokens(&front_door, &lowered)?,
+        StatementResultKind::Command => emit_command_tokens(&front_door, &lowered)?,
     })
+}
+
+fn emit_query_tokens(
+    front_door: &TypedSqlFrontDoor,
+    lowered: &LoweredQuery,
+) -> Result<TokenStream2> {
+    if lowered.is_dynamic() && !matches!(front_door.selections.params, TypedSqlSelection::Default) {
+        return Err(front_door.sql.syn_error_message(
+            "`params = ...` selection is not yet supported for typed SQL statements with optional placeholders or toggle groups",
+        ));
+    }
+
+    let infer_params = matches!(front_door.selections.params, TypedSqlSelection::Infer);
+    let infer_row = matches!(front_door.selections.row, TypedSqlSelection::Infer);
+    enforce_strict_row_selection(front_door, lowered)?;
+
+    if !infer_params && !infer_row {
+        return Ok(lowered.emit_query_tokens_with(
+            selection_parameter_codec_tokens(&front_door.selections.params, lowered)?,
+            selection_row_codec_tokens(&front_door.selections.row, lowered)?,
+        ));
+    }
+
+    emit_query_selector(lowered, &front_door.selections)
+}
+
+fn emit_command_tokens(
+    front_door: &TypedSqlFrontDoor,
+    lowered: &LoweredQuery,
+) -> Result<TokenStream2> {
+    if !matches!(front_door.selections.row, TypedSqlSelection::Default) {
+        return Err(front_door
+            .sql
+            .syn_error_message("`row = Type` is only supported for row-producing typed SQL"));
+    }
+    if lowered.is_dynamic() && !matches!(front_door.selections.params, TypedSqlSelection::Default) {
+        return Err(front_door.sql.syn_error_message(
+            "`params = ...` selection is not yet supported for typed SQL statements with optional placeholders or toggle groups",
+        ));
+    }
+
+    if matches!(front_door.selections.params, TypedSqlSelection::Infer) {
+        emit_command_selector(lowered, &front_door.selections.params)
+    } else {
+        Ok(
+            lowered.emit_command_tokens_with(selection_parameter_codec_tokens(
+                &front_door.selections.params,
+                lowered,
+            )?),
+        )
+    }
+}
+
+fn emit_query_selector(
+    lowered: &LoweredQuery,
+    selections: &TypedSqlSelections,
+) -> Result<TokenStream2> {
+    let mut generics = Vec::new();
+    let mut bounds = Vec::new();
+    let selected_params_type = match &selections.params {
+        TypedSqlSelection::Default => lowered.parameter_type_tokens(),
+        TypedSqlSelection::Explicit(ty) => quote::quote! { #ty },
+        TypedSqlSelection::Infer => {
+            generics.push(quote::quote! { __BabarArgs });
+            bounds.push(quote::quote! { __BabarArgs: ::babar::__private::StaticCodec });
+            quote::quote! { __BabarArgs }
+        }
+    };
+    let selected_row_type = match &selections.row {
+        TypedSqlSelection::Default => lowered.row_type_tokens(),
+        TypedSqlSelection::Explicit(ty) => quote::quote! { #ty },
+        TypedSqlSelection::Infer => {
+            generics.push(quote::quote! { __BabarRow });
+            bounds.push(quote::quote! { __BabarRow: ::babar::__private::StaticCodec });
+            quote::quote! { __BabarRow }
+        }
+    };
+    let selected_params_codec = match &selections.params {
+        TypedSqlSelection::Infer => {
+            quote::quote! { <__BabarArgs as ::babar::__private::StaticCodec>::codec() }
+        }
+        _ => selection_parameter_codec_tokens(&selections.params, lowered)?,
+    };
+    let selected_row_codec = match &selections.row {
+        TypedSqlSelection::Infer => {
+            quote::quote! { <__BabarRow as ::babar::__private::StaticCodec>::codec() }
+        }
+        _ => selection_row_codec_tokens(&selections.row, lowered)?,
+    };
+    let selected_expr = lowered.emit_query_tokens_with(selected_params_codec, selected_row_codec);
+    let impl_generics = if generics.is_empty() {
+        quote::quote! {}
+    } else {
+        quote::quote! { <#(#generics,)*> }
+    };
+    let where_clause = if bounds.is_empty() {
+        quote::quote! {}
+    } else {
+        quote::quote! { where #(#bounds,)* }
+    };
+
+    Ok(quote::quote! {{
+        trait __BabarTypedSqlSelection {
+            fn __babar_select() -> Self;
+        }
+
+        impl #impl_generics __BabarTypedSqlSelection for ::babar::query::Query<#selected_params_type, #selected_row_type> #where_clause {
+            fn __babar_select() -> Self {
+                #selected_expr
+            }
+        }
+
+        fn __babar_select<T>() -> T
+        where
+            T: __BabarTypedSqlSelection,
+        {
+            T::__babar_select()
+        }
+
+        __babar_select()
+    }})
+}
+
+fn emit_command_selector(
+    lowered: &LoweredQuery,
+    selection: &TypedSqlSelection,
+) -> Result<TokenStream2> {
+    let (impl_generics, where_clause, selected_type, selected_codec) = match selection {
+        TypedSqlSelection::Infer => (
+            quote::quote! { <__BabarArgs> },
+            quote::quote! { where __BabarArgs: ::babar::__private::StaticCodec },
+            quote::quote! { __BabarArgs },
+            quote::quote! { <__BabarArgs as ::babar::__private::StaticCodec>::codec() },
+        ),
+        TypedSqlSelection::Default => (
+            quote::quote! {},
+            quote::quote! {},
+            lowered.parameter_type_tokens(),
+            lowered.parameter_codec_tokens(),
+        ),
+        TypedSqlSelection::Explicit(ty) => (
+            quote::quote! {},
+            quote::quote! {},
+            quote::quote! { #ty },
+            explicit_parameter_codec_tokens(ty, lowered)?,
+        ),
+    };
+    let selected_expr = lowered.emit_command_tokens_with(selected_codec);
+
+    Ok(quote::quote! {{
+        trait __BabarTypedSqlSelection {
+            fn __babar_select() -> Self;
+        }
+
+        impl #impl_generics __BabarTypedSqlSelection for ::babar::query::Command<#selected_type> #where_clause {
+            fn __babar_select() -> Self {
+                #selected_expr
+            }
+        }
+
+        fn __babar_select<T>() -> T
+        where
+            T: __BabarTypedSqlSelection,
+        {
+            T::__babar_select()
+        }
+
+        __babar_select()
+    }})
+}
+
+fn selection_parameter_codec_tokens(
+    selection: &TypedSqlSelection,
+    lowered: &LoweredQuery,
+) -> Result<TokenStream2> {
+    match selection {
+        TypedSqlSelection::Default | TypedSqlSelection::Infer => {
+            Ok(lowered.parameter_codec_tokens())
+        }
+        TypedSqlSelection::Explicit(ty) => explicit_parameter_codec_tokens(ty, lowered),
+    }
+}
+
+fn selection_row_codec_tokens(
+    selection: &TypedSqlSelection,
+    lowered: &LoweredQuery,
+) -> Result<TokenStream2> {
+    match selection {
+        TypedSqlSelection::Default | TypedSqlSelection::Infer => Ok(lowered.row_codec_tokens()),
+        TypedSqlSelection::Explicit(ty) => explicit_row_codec_tokens(ty, lowered),
+    }
+}
+
+fn explicit_parameter_codec_tokens(ty: &Type, lowered: &LoweredQuery) -> Result<TokenStream2> {
+    let pattern_fields = lowered
+        .parameters
+        .iter()
+        .map(|parameter| {
+            let field_ident = field_ident(&parameter.logical_name);
+            quote::quote! { #field_ident: _ }
+        })
+        .collect::<Vec<_>>();
+    let encode_fields = lowered
+        .parameters
+        .iter()
+        .enumerate()
+        .map(|(index, parameter)| {
+            let field_ident = field_ident(&parameter.logical_name);
+            let field_value = quote::format_ident!("__babar_field_{index}");
+            let codec =
+                lower::runtime_codec_tokens(parameter.sql_type, parameter.nullability, None)
+                    .expect("lowered parameter contract should already support runtime codecs");
+            Ok(quote::quote! {
+                let #field_value = &value.#field_ident;
+                ::babar::codec::Encoder::encode(&#codec, #field_value, params)?;
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let tuple_codecs = lowered
+        .parameters
+        .iter()
+        .map(|parameter| {
+            Ok(
+                lower::runtime_codec_tokens(parameter.sql_type, parameter.nullability, None)
+                    .expect("lowered parameter contract should already support runtime codecs"),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let tuple_types = lowered
+        .parameters
+        .iter()
+        .map(|parameter| {
+            Ok(
+                lower::runtime_value_type_tokens(parameter.sql_type, parameter.nullability, None)
+                    .expect(
+                        "lowered parameter contract should already support runtime value types",
+                    ),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(quote::quote! {{
+        #[derive(Clone, Copy, Debug)]
+        struct __BabarSelectedParamsCodec;
+
+        impl ::babar::codec::Encoder<#ty> for __BabarSelectedParamsCodec {
+            fn encode(
+                &self,
+                value: &#ty,
+                params: &mut ::std::vec::Vec<::core::option::Option<::std::vec::Vec<u8>>>,
+            ) -> ::babar::Result<()> {
+                fn __babar_require_exact_fields(#ty { #(#pattern_fields,)* }: #ty) {}
+                let _ = __babar_require_exact_fields as fn(#ty);
+                #(#encode_fields)*
+                ::core::result::Result::Ok(())
+            }
+
+            fn oids(&self) -> &'static [::babar::types::Oid] {
+                let codec = (#(#tuple_codecs,)*);
+                <_ as ::babar::codec::Encoder<(#(#tuple_types,)*)>>::oids(&codec)
+            }
+
+            fn format_codes(&self) -> &'static [i16] {
+                let codec = (#(#tuple_codecs,)*);
+                <_ as ::babar::codec::Encoder<(#(#tuple_types,)*)>>::format_codes(&codec)
+            }
+        }
+
+        __BabarSelectedParamsCodec
+    }})
+}
+
+fn explicit_row_codec_tokens(ty: &Type, lowered: &LoweredQuery) -> Result<TokenStream2> {
+    let decode_fields = lowered
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| {
+            let field_value = quote::format_ident!("__babar_field_{index}");
+            let codec = lower::runtime_codec_tokens(column.sql_type, column.nullability, None)
+                .expect("lowered row contract should already support runtime codecs");
+            Ok(quote::quote! {
+                let #field_value = ::babar::codec::Decoder::decode(&#codec, &columns[#index..#index + 1])?;
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let struct_fields = lowered
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| {
+            let field_ident = field_ident(&column.label);
+            let field_value = quote::format_ident!("__babar_field_{index}");
+            quote::quote! { #field_ident: #field_value }
+        })
+        .collect::<Vec<_>>();
+    let tuple_codecs = lowered
+        .columns
+        .iter()
+        .map(|column| {
+            Ok(
+                lower::runtime_codec_tokens(column.sql_type, column.nullability, None)
+                    .expect("lowered row contract should already support runtime codecs"),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let tuple_types = lowered
+        .columns
+        .iter()
+        .map(|column| {
+            Ok(
+                lower::runtime_value_type_tokens(column.sql_type, column.nullability, None)
+                    .expect("lowered row contract should already support runtime value types"),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let n_columns = lowered.columns.len();
+
+    Ok(quote::quote! {{
+        #[derive(Clone, Copy, Debug)]
+        struct __BabarSelectedRowCodec;
+
+        impl ::babar::codec::Decoder<#ty> for __BabarSelectedRowCodec {
+            fn decode(
+                &self,
+                columns: &[::core::option::Option<::babar::__private::Bytes>],
+            ) -> ::babar::Result<#ty> {
+                #(#decode_fields)*
+                ::core::result::Result::Ok(#ty { #(#struct_fields,)* })
+            }
+
+            fn n_columns(&self) -> usize {
+                #n_columns
+            }
+
+            fn oids(&self) -> &'static [::babar::types::Oid] {
+                let codec = (#(#tuple_codecs,)*);
+                <_ as ::babar::codec::Decoder<(#(#tuple_types,)*)>>::oids(&codec)
+            }
+
+            fn format_codes(&self) -> &'static [i16] {
+                let codec = (#(#tuple_codecs,)*);
+                <_ as ::babar::codec::Decoder<(#(#tuple_types,)*)>>::format_codes(&codec)
+            }
+        }
+
+        __BabarSelectedRowCodec
+    }})
+}
+
+fn enforce_strict_row_selection(
+    front_door: &TypedSqlFrontDoor,
+    lowered: &LoweredQuery,
+) -> Result<()> {
+    if matches!(front_door.selections.row, TypedSqlSelection::Default) {
+        return Ok(());
+    }
+
+    let mut seen = BTreeSet::new();
+    let duplicates = lowered
+        .columns
+        .iter()
+        .filter_map(|column| (!seen.insert(column.label.clone())).then_some(column.label.clone()))
+        .collect::<Vec<_>>();
+    if duplicates.is_empty() {
+        return Ok(());
+    }
+
+    Err(front_door.sql.syn_error_message(format!(
+        "strict row selection requires unique final output names before matching a row struct; duplicate output names: {}",
+        duplicates.join(", ")
+    )))
+}
+
+fn field_ident(name: &str) -> Ident {
+    syn::parse_str(name).unwrap_or_else(|_| Ident::new_raw(name, proc_macro2::Span::call_site()))
 }
 
 fn enforce_entrypoint_contract(
@@ -244,12 +622,14 @@ fn collect_referenced_columns_expr(
 struct TypedSqlFrontDoorInput {
     source_kind: SchemaSourceKind,
     schema: SchemaInput,
+    selections: TypedSqlSelections,
     sql: PublicSqlInput,
 }
 
 struct TypedSqlFrontDoor {
     source_kind: SchemaSourceKind,
     catalog: SchemaCatalog,
+    selections: TypedSqlSelections,
     sql: PublicSqlInput,
 }
 
@@ -259,6 +639,26 @@ struct TypedQueryInput(TypedSqlFrontDoorInput);
 enum SchemaSourceKind {
     Inline,
     AuthoredBridge,
+}
+
+struct TypedSqlSelections {
+    params: TypedSqlSelection,
+    row: TypedSqlSelection,
+}
+
+impl Default for TypedSqlSelections {
+    fn default() -> Self {
+        Self {
+            params: TypedSqlSelection::Default,
+            row: TypedSqlSelection::Default,
+        }
+    }
+}
+
+enum TypedSqlSelection {
+    Default,
+    Explicit(Type),
+    Infer,
 }
 
 impl Parse for TypedSqlFrontDoorInput {
@@ -275,12 +675,14 @@ impl Parse for TypedSqlFrontDoorInput {
         input.parse::<Token![=]>()?;
         let schema = input.parse()?;
         input.parse::<Token![,]>()?;
+        let selections = parse_typed_sql_selections(input)?;
         let sql_tokens = trim_optional_trailing_comma(input.parse::<TokenStream2>()?);
         reject_extra_schema_argument(&sql_tokens, source_kind)?;
         let sql = PublicSqlInput::parse(sql_tokens)?;
         Ok(Self {
             source_kind,
             schema,
+            selections,
             sql,
         })
     }
@@ -291,6 +693,7 @@ impl TypedSqlFrontDoorInput {
         Ok(TypedSqlFrontDoor {
             source_kind: self.source_kind,
             catalog: self.schema.into_catalog()?,
+            selections: self.selections,
             sql: self.sql,
         })
     }
@@ -355,6 +758,45 @@ fn trim_optional_trailing_comma(tokens: TokenStream2) -> TokenStream2 {
         tokens.pop();
     }
     tokens.into_iter().collect()
+}
+
+fn parse_typed_sql_selections(input: ParseStream<'_>) -> Result<TypedSqlSelections> {
+    let mut selections = TypedSqlSelections::default();
+
+    loop {
+        if input.peek(kw::params) {
+            input.parse::<kw::params>()?;
+            input.parse::<Token![=]>()?;
+            let ty: Type = input.parse()?;
+            if !matches!(selections.params, TypedSqlSelection::Default) {
+                return Err(input.error("duplicate `params = Type` selection"));
+            }
+            selections.params = match ty {
+                Type::Infer(_) => TypedSqlSelection::Infer,
+                ty => TypedSqlSelection::Explicit(ty),
+            };
+        } else if input.peek(kw::row) {
+            input.parse::<kw::row>()?;
+            input.parse::<Token![=]>()?;
+            let ty: Type = input.parse()?;
+            if !matches!(selections.row, TypedSqlSelection::Default) {
+                return Err(input.error("duplicate `row = Type` selection"));
+            }
+            selections.row = match ty {
+                Type::Infer(_) => TypedSqlSelection::Infer,
+                ty => TypedSqlSelection::Explicit(ty),
+            };
+        } else {
+            break;
+        }
+
+        if input.is_empty() {
+            return Err(input.error("expected SQL after typed SQL shape selections"));
+        }
+        input.parse::<Token![,]>()?;
+    }
+
+    Ok(selections)
 }
 
 fn reject_extra_schema_argument(

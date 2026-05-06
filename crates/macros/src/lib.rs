@@ -628,6 +628,14 @@ fn compile_codec_derive(input: &DeriveInput) -> Result<proc_macro2::TokenStream>
             pub const CODEC: #codec_ident = #codec_ident;
         }
 
+        impl ::babar::__private::StaticCodec for #ident {
+            type Codec = #codec_ident;
+
+            fn codec() -> Self::Codec {
+                #codec_ident
+            }
+        }
+
         impl ::babar::codec::Encoder<#ident> for #codec_ident {
             fn encode(
                 &self,

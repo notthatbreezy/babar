@@ -1,0 +1,29 @@
+error[E0609]: no field `active` on type `&NewUser`
+  --> tests/ui/typed_macro/fail/struct_shape_missing_params.rs:10:38
+   |
+10 |       let _command: Command<NewUser> = babar::command!(
+   |  ______________________________________^
+11 | |         schema = {
+12 | |             table public.users {
+13 | |                 id: int4,
+...  |
+19 | |         INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
+20 | |     );
+   | |_____^ unknown field
+   |
+   = note: this error originates in the macro `babar::command` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0026]: struct `NewUser` does not have a field named `active`
+  --> tests/ui/typed_macro/fail/struct_shape_missing_params.rs:10:38
+   |
+10 |       let _command: Command<NewUser> = babar::command!(
+   |  ______________________________________^
+11 | |         schema = {
+12 | |             table public.users {
+13 | |                 id: int4,
+...  |
+19 | |         INSERT INTO users (id, name, active) VALUES ($id, $name, $active)
+20 | |     );
+   | |_____^ struct `NewUser` does not have this field
+   |
+   = note: this error originates in the macro `babar::command` (in Nightly builds, run with -Z macro-backtrace for more info)

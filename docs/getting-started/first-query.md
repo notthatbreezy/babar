@@ -18,13 +18,7 @@ use babar::query::{Command, Query};
 use babar::{Config, Session};
 
 #[derive(Debug, Clone, PartialEq, babar::Codec)]
-struct NewUser {
-    id: i32,
-    name: String,
-}
-
-#[derive(Debug, Clone, PartialEq, babar::Codec)]
-struct UserRow {
+struct User {
     id: i32,
     name: String,
 }
@@ -50,25 +44,25 @@ async fn main() -> babar::Result<()> {
         Command::raw("CREATE TEMP TABLE demo_users (id int4 PRIMARY KEY, name text NOT NULL)");
     session.execute(&create, ()).await?;
 
-    let insert: Command<NewUser> =
+    let insert: Command<User> =
         app_schema::command!(INSERT INTO demo_users (id, name) VALUES ($id, $name));
     session
         .execute(
             &insert,
-            NewUser {
+            User {
                 id: 1,
                 name: "Ada".to_string(),
             },
         )
         .await?;
 
-    let users: Query<(), UserRow> = app_schema::query!(
+    let users: Query<(), User> = app_schema::query!(
         SELECT demo_users.id, demo_users.name
         FROM demo_users
         ORDER BY demo_users.id
     );
 
-    let rows: Vec<UserRow> = session.query(&users, ()).await?;
+    let rows: Vec<User> = session.query(&users, ()).await?;
     for row in &rows {
         println!("id={} name={}", row.id, row.name);
     }
@@ -111,6 +105,10 @@ That is the main path for application SQL:
 - use named placeholders like `$id`
 - let the macro infer the parameter and row shapes
 
+When the same named field set is used on both sides of the round-trip, one Rust
+struct is enough. Add `params = Type` and `row = Type` only when you need to pin
+those shapes explicitly; Chapter 2 shows that form.
+
 ### `query!` and `command!` define runtime values
 
 The important types are still `Query<A, B>` and `Command<A>`:
@@ -120,12 +118,12 @@ The important types are still `Query<A, B>` and `Command<A>`:
 
 In the example above:
 
-- `Command<NewUser>` inserts a `NewUser`
-- `Query<(), UserRow>` returns `Vec<UserRow>`
+- `Command<User>` inserts a `User`
+- `Query<(), User>` returns `Vec<User>`
 
 There is no intermediate `Row` object and no `.get::<T, _>()` step after the
 query finishes. By the time `session.query(...).await?` returns, the bytes are
-already decoded into `UserRow` values.
+already decoded into `User` values.
 
 ### Raw SQL is explicit
 

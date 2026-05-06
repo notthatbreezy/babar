@@ -85,8 +85,17 @@ fn typed_macro_ui() {
         || {
             let tests = trybuild::TestCases::new();
             tests.pass("tests/ui/typed_macro/pass/basic.rs");
+            tests.pass("tests/ui/typed_macro/pass/struct_shape_selection.rs");
             tests.compile_fail("tests/ui/typed_macro/fail/legacy_command_syntax.rs");
             tests.compile_fail("tests/ui/typed_macro/fail/legacy_query_syntax.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/struct_shape_extra_params.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/struct_shape_extra_row.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/struct_shape_missing_params.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/struct_shape_missing_row.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/struct_shape_selection_precedence.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/struct_shape_type_mismatch_params.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/struct_shape_type_mismatch_row.rs");
+            tests.compile_fail("tests/ui/typed_macro/fail/struct_shape_ambiguous_row_names.rs");
             tests.compile_fail(typed_query_alias_removed_fixture());
         },
     );

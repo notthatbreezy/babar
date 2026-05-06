@@ -1,0 +1,35 @@
+error[E0308]: mismatched types
+  --> tests/ui/typed_macro/fail/struct_shape_type_mismatch_row.rs:10:38
+   |
+10 |       let _query: Query<(), UserRow> = babar::query!(
+   |  ______________________________________^
+11 | |         schema = {
+12 | |             table public.users {
+13 | |                 id: int4,
+...  |
+19 | |         SELECT users.id, users.name FROM users
+20 | |     );
+   | |_____^ expected `Option<i32>`, found `i32`
+   |
+   = note: expected enum `Option<i32>`
+              found type `i32`
+   = note: this error originates in the macro `babar::query` (in Nightly builds, run with -Z macro-backtrace for more info)
+help: call `Into::into` on this expression to convert `i32` into `Option<i32>`
+   |
+20 |     ).into();
+   |      +++++++
+
+error[E0308]: mismatched types
+  --> tests/ui/typed_macro/fail/struct_shape_type_mismatch_row.rs:10:38
+   |
+10 |       let _query: Query<(), UserRow> = babar::query!(
+   |  ______________________________________^
+11 | |         schema = {
+12 | |             table public.users {
+13 | |                 id: int4,
+...  |
+19 | |         SELECT users.id, users.name FROM users
+20 | |     );
+   | |_____^ expected `i32`, found `String`
+   |
+   = note: this error originates in the macro `babar::query` (in Nightly builds, run with -Z macro-backtrace for more info)
