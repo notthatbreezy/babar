@@ -57,6 +57,27 @@ fn require_docker() -> bool {
     ok
 }
 
+fn typed_query_alias_removed_fixture() -> &'static str {
+    let rustc = Command::new("rustc")
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok());
+
+    let is_rust_1_88 = rustc
+        .as_deref()
+        .and_then(|version| version.split_whitespace().nth(1))
+        .is_some_and(|version| version.starts_with("1.88."));
+
+    if is_rust_1_88 {
+        "tests/ui/typed_macro/fail/typed_query_alias_removed_rust_1_88.rs"
+    } else {
+        "tests/ui/typed_macro/fail/typed_query_alias_removed.rs"
+    }
+}
+
 #[test]
 fn typed_macro_ui() {
     with_env(
@@ -66,7 +87,7 @@ fn typed_macro_ui() {
             tests.pass("tests/ui/typed_macro/pass/basic.rs");
             tests.compile_fail("tests/ui/typed_macro/fail/legacy_command_syntax.rs");
             tests.compile_fail("tests/ui/typed_macro/fail/legacy_query_syntax.rs");
-            tests.compile_fail("tests/ui/typed_macro/fail/typed_query_alias_removed.rs");
+            tests.compile_fail(typed_query_alias_removed_fixture());
         },
     );
 }

@@ -1,0 +1,5 @@
+error[E0433]: failed to resolve: could not find `typed_query` in `babar`
+ --> tests/ui/typed_macro/fail/typed_query_alias_removed_rust_1_88.rs:4:44
+  |
+4 |     let _query: Query<(), (i32,)> = babar::typed_query!(
+  |                                            ^^^^^^^^^^^ could not find `typed_query` in `babar`

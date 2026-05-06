@@ -57,6 +57,37 @@ fn require_docker() -> bool {
     ok
 }
 
+fn rust_1_88_trybuild() -> bool {
+    let rustc = Command::new("rustc")
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok());
+
+    rustc
+        .as_deref()
+        .and_then(|version| version.split_whitespace().nth(1))
+        .is_some_and(|version| version.starts_with("1.88."))
+}
+
+fn schema_scoped_aliases_removed_fixture() -> &'static str {
+    if rust_1_88_trybuild() {
+        "tests/ui/typed_query/fail/schema_scoped_aliases_removed_rust_1_88.rs"
+    } else {
+        "tests/ui/typed_query/fail/schema_scoped_aliases_removed.rs"
+    }
+}
+
+fn multi_statement_fixture() -> &'static str {
+    if rust_1_88_trybuild() {
+        "tests/ui/typed_query/fail/multi_statement_rust_1_88.rs"
+    } else {
+        "tests/ui/typed_query/fail/multi_statement.rs"
+    }
+}
+
 #[test]
 fn public_typed_sql_ui() {
     with_env(
@@ -83,8 +114,8 @@ fn public_typed_sql_ui() {
             tests.compile_fail("tests/ui/typed_query/fail/insert_on_conflict.rs");
             tests.compile_fail("tests/ui/typed_query/fail/insert_select.rs");
             tests.compile_fail("tests/ui/typed_query/fail/mixed_inline_external.rs");
-            tests.compile_fail("tests/ui/typed_query/fail/schema_scoped_aliases_removed.rs");
-            tests.compile_fail("tests/ui/typed_query/fail/multi_statement.rs");
+            tests.compile_fail(schema_scoped_aliases_removed_fixture());
+            tests.compile_fail(multi_statement_fixture());
             tests.compile_fail("tests/ui/typed_query/fail/returning_wildcard.rs");
             tests.compile_fail("tests/ui/typed_query/fail/unsupported_type.rs");
             tests.compile_fail("tests/ui/typed_query/fail/unknown_column.rs");
