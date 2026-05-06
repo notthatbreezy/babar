@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "babar"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "babar-external-schema-export",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "babar-macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "postgres",
  "proc-macro2",
@@ -1782,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "pool-throughput-bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "babar",
  "bb8",
@@ -1862,7 +1862,7 @@ dependencies = [
 
 [[package]]
 name = "prepared-throughput-bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "babar",
  "criterion",

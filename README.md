@@ -604,7 +604,7 @@ the types, `babar` is designed for that workflow.
 
 ## Status
 
-`babar` `0.1.0` is now published on crates.io alongside `babar-macros`, and the
-book is published via GitHub Pages at
-[`https://babar.notthatbreezy.io`](https://babar.notthatbreezy.io). `RELEASE.md`
-remains the maintenance runbook for future releases.
+`babar` `0.2.0` is the next planned release on this branch, building on the
+already-published `0.1.0` crates. The book is published via GitHub Pages at
+[`https://babar.notthatbreezy.io`](https://babar.notthatbreezy.io), and
+`.internal/RELEASE.md` remains the maintenance runbook for future releases.

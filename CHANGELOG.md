@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0
+
+### typed SQL surface
+- public `typed_query!` API shipped on `babar` and `babar-macros`
+- optional omission syntax now lowers through the runtime SQL/bind pipeline
+- authored schema declarations and external-schema resolution for typed SQL macros
+- same table names can now coexist across SQL schemas
+- typed macros now support struct-shaped results
+- typed SQL APIs are unified around the current public query surface
+
+### examples and documentation
+- Axum typed-query example coverage
+- typed-query API documentation and release-facing README refresh
+- Rust learning documentation track and GitHub Pages CNAME publication support
+
+### release and CI follow-ups
+- Rust 1.88 UI-fixture split and related CI fixes
+- clippy and struct-support follow-up fixes after the typed SQL milestone landed
+
 ## 0.1.0
 
 ### Documentation
