@@ -195,8 +195,7 @@ impl SqlTextBuilder {
             _unsupported => Err(syn::Error::new(
                 literal_span,
                 format!(
-                    "typed_sql v1 token input does not support Rust literal `{}` here",
-                    literal_text
+                    "typed_sql v1 token input does not support Rust literal `{literal_text}` here"
                 ),
             )),
         }

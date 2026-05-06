@@ -326,10 +326,6 @@ fn public_query_and_command_macros_accept_struct_shape_selection() {
 
 #[tokio::test]
 async fn public_query_and_command_macros_match_struct_fields_by_name() {
-    let Some((_pg, session)) = fresh_session().await else {
-        return;
-    };
-
     #[derive(Clone, Debug, PartialEq, babar::Codec)]
     struct NewUser {
         active: bool,
@@ -348,6 +344,10 @@ async fn public_query_and_command_macros_match_struct_fields_by_name() {
         id: i32,
         display_name: String,
     }
+
+    let Some((_pg, session)) = fresh_session().await else {
+        return;
+    };
 
     session
         .simple_query_raw(

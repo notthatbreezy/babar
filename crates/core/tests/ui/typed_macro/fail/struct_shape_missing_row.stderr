@@ -1,7 +1,7 @@
 error[E0560]: struct `UserRow` has no field named `name`
   --> tests/ui/typed_macro/fail/struct_shape_missing_row.rs:9:38
    |
- 9 |       let _query: Query<(), UserRow> = babar::query!(
+9  |       let _query: Query<(), UserRow> = babar::query!(
    |  ______________________________________^
 10 | |         schema = {
 11 | |             table public.users {
