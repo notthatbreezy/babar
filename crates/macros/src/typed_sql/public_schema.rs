@@ -158,7 +158,10 @@ fn emit_query_selector(
     let mut bounds = Vec::new();
     let selected_params_type = match &selections.params {
         TypedSqlSelection::Default => lowered.parameter_type_tokens(),
-        TypedSqlSelection::Explicit(ty) => quote::quote! { #ty },
+        TypedSqlSelection::Explicit(ty) => {
+            let ty = ty.as_ref();
+            quote::quote! { #ty }
+        }
         TypedSqlSelection::Infer => {
             generics.push(quote::quote! { __BabarArgs });
             bounds.push(quote::quote! { __BabarArgs: ::babar::__private::StaticCodec });
@@ -167,7 +170,10 @@ fn emit_query_selector(
     };
     let selected_row_type = match &selections.row {
         TypedSqlSelection::Default => lowered.row_type_tokens(),
-        TypedSqlSelection::Explicit(ty) => quote::quote! { #ty },
+        TypedSqlSelection::Explicit(ty) => {
+            let ty = ty.as_ref();
+            quote::quote! { #ty }
+        }
         TypedSqlSelection::Infer => {
             generics.push(quote::quote! { __BabarRow });
             bounds.push(quote::quote! { __BabarRow: ::babar::__private::StaticCodec });
@@ -237,12 +243,15 @@ fn emit_command_selector(
             lowered.parameter_type_tokens(),
             lowered.parameter_codec_tokens(),
         ),
-        TypedSqlSelection::Explicit(ty) => (
-            quote::quote! {},
-            quote::quote! {},
-            quote::quote! { #ty },
-            explicit_parameter_codec_tokens(ty, lowered)?,
-        ),
+        TypedSqlSelection::Explicit(ty) => {
+            let ty = ty.as_ref();
+            (
+                quote::quote! {},
+                quote::quote! {},
+                quote::quote! { #ty },
+                explicit_parameter_codec_tokens(ty, lowered)?,
+            )
+        }
     };
     let selected_expr = lowered.emit_command_tokens_with(selected_codec);
 
@@ -276,7 +285,7 @@ fn selection_parameter_codec_tokens(
         TypedSqlSelection::Default | TypedSqlSelection::Infer => {
             Ok(lowered.parameter_codec_tokens())
         }
-        TypedSqlSelection::Explicit(ty) => explicit_parameter_codec_tokens(ty, lowered),
+        TypedSqlSelection::Explicit(ty) => explicit_parameter_codec_tokens(ty.as_ref(), lowered),
     }
 }
 
@@ -286,7 +295,7 @@ fn selection_row_codec_tokens(
 ) -> Result<TokenStream2> {
     match selection {
         TypedSqlSelection::Default | TypedSqlSelection::Infer => Ok(lowered.row_codec_tokens()),
-        TypedSqlSelection::Explicit(ty) => explicit_row_codec_tokens(ty, lowered),
+        TypedSqlSelection::Explicit(ty) => explicit_row_codec_tokens(ty.as_ref(), lowered),
     }
 }
 
@@ -657,7 +666,7 @@ impl Default for TypedSqlSelections {
 
 enum TypedSqlSelection {
     Default,
-    Explicit(Type),
+    Explicit(Box<Type>),
     Infer,
 }
 
@@ -773,7 +782,7 @@ fn parse_typed_sql_selections(input: ParseStream<'_>) -> Result<TypedSqlSelectio
             }
             selections.params = match ty {
                 Type::Infer(_) => TypedSqlSelection::Infer,
-                ty => TypedSqlSelection::Explicit(ty),
+                ty => TypedSqlSelection::Explicit(Box::new(ty)),
             };
         } else if input.peek(kw::row) {
             input.parse::<kw::row>()?;
@@ -784,7 +793,7 @@ fn parse_typed_sql_selections(input: ParseStream<'_>) -> Result<TypedSqlSelectio
             }
             selections.row = match ty {
                 Type::Infer(_) => TypedSqlSelection::Infer,
-                ty => TypedSqlSelection::Explicit(ty),
+                ty => TypedSqlSelection::Explicit(Box::new(ty)),
             };
         } else {
             break;
